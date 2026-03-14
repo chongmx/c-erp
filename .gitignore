@@ -43,3 +43,6 @@ Desktop.ini
 # Odoo generated files/folders
 uploads/
 filestore/
+
+#development files
+zzref/
