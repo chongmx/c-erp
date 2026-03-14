@@ -10,7 +10,7 @@
 #include <vector>
 
 // Forward declaration — avoids pulling in libpqxx headers everywhere.
-namespace odoo::core { class DbConnection; }
+namespace odoo::infrastructure { class DbConnection; }
 
 namespace odoo::core {
 
@@ -38,7 +38,7 @@ namespace odoo::core {
  */
 class ModelFactory : public BaseFactory<IModel> {
 public:
-    explicit ModelFactory(std::shared_ptr<DbConnection> db)
+    explicit ModelFactory(std::shared_ptr<infrastructure::DbConnection> db)
         : db_(std::move(db)) {}
 
     using BaseFactory<IModel>::registerCreator;
@@ -59,10 +59,10 @@ public:
         });
     }
 
-    std::shared_ptr<DbConnection> db() const { return db_; }
+    std::shared_ptr<infrastructure::DbConnection> db() const { return db_; }
 
 private:
-    std::shared_ptr<DbConnection> db_;
+    std::shared_ptr<infrastructure::DbConnection> db_;
 };
 
 
@@ -90,7 +90,7 @@ private:
  */
 class ServiceFactory : public BaseFactory<IService> {
 public:
-    explicit ServiceFactory(std::shared_ptr<DbConnection> db)
+    explicit ServiceFactory(std::shared_ptr<infrastructure::DbConnection> db)
         : db_(std::move(db)) {}
 
     using BaseFactory<IService>::registerCreator;
@@ -117,10 +117,10 @@ public:
         }
     }
 
-    std::shared_ptr<DbConnection> db() const { return db_; }
+    std::shared_ptr<infrastructure::DbConnection> db() const { return db_; }
 
 private:
-    std::shared_ptr<DbConnection> db_;
+    std::shared_ptr<infrastructure::DbConnection> db_;
 };
 
 

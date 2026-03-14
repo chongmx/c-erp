@@ -1,6 +1,7 @@
 #pragma once
 #include <nlohmann/json.hpp>
 #include <chrono>
+#include <iomanip>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -98,8 +99,9 @@ public:
         s.db        = db;
 
         std::scoped_lock lock{mutex_};
-        store_[s.sessionId] = std::move(s);
-        return store_.rbegin()->second.sessionId;  // return the stored id
+        const std::string id = s.sessionId;
+        store_[id] = std::move(s);
+        return id;
     }
 
     /**

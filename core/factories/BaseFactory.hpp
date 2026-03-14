@@ -1,5 +1,5 @@
 #pragma once
-#include "../interfaces/IFactory.hpp"
+#include "interfaces/IFactory.hpp"
 #include <functional>
 #include <memory>
 #include <stdexcept>

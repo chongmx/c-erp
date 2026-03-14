@@ -1,58 +1,53 @@
 #include "Container.hpp"
 #include "BaseModule.hpp"
-#include <iostream>
 #include <csignal>
+#include <iostream>
 #include <memory>
 
-std::shared_ptr<odoo::Container> g_container;
+static std::shared_ptr<odoo::infrastructure::Container> g_container;
 
 void handleSignal(int sig) {
     std::cout << "\n[odoo-cpp] Shutting down (signal " << sig << ")...\n";
     if (g_container) g_container->shutdown();
 }
 
-int main(int argc, char* argv[]) {
+int main(int, char**) {
     std::signal(SIGINT,  handleSignal);
     std::signal(SIGTERM, handleSignal);
 
-    // -------------------------------------------------------
-    // 1. Configuration
-    // -------------------------------------------------------
-    odoo::infrastructure::DbConfig dbCfg;
-    dbCfg.host     = std::getenv("DB_HOST")     ? std::getenv("DB_HOST")     : "localhost";
-    dbCfg.dbName   = std::getenv("DB_NAME")     ? std::getenv("DB_NAME")     : "odoo";
-    dbCfg.user     = std::getenv("DB_USER")     ? std::getenv("DB_USER")     : "odoo";
-    dbCfg.password = std::getenv("DB_PASSWORD") ? std::getenv("DB_PASSWORD") : "";
-    dbCfg.poolSize = 10;
+    // ------------------------------------------------------------------
+    // 1. Configuration — use AppConfig::fromEnv() or fill fields manually
+    // ------------------------------------------------------------------
+    auto cfg = odoo::infrastructure::AppConfig::fromEnv();
 
-    odoo::infrastructure::HttpConfig httpCfg;
-    httpCfg.host    = "0.0.0.0";
-    httpCfg.port    = 8069;
-    httpCfg.threads = 4;
+    // Override specific fields if needed (AppConfig::fromEnv covers env vars):
+    // cfg.db.host     = "localhost";
+    // cfg.db.name     = "odoo";
+    // cfg.http.port   = 8069;
 
-    // -------------------------------------------------------
-    // 2. Build container
-    // -------------------------------------------------------
-    g_container = std::make_shared<odoo::Container>(dbCfg, httpCfg);
+    // ------------------------------------------------------------------
+    // 2. Build container (infrastructure + empty factories)
+    // ------------------------------------------------------------------
+    g_container = std::make_shared<odoo::infrastructure::Container>(cfg);
 
-    // -------------------------------------------------------
-    // 3. Register modules (add more here as they're ported)
-    // -------------------------------------------------------
-    g_container->moduleFactory->registerCreator("base", [&] {
-        return std::make_shared<odoo::modules::base::BaseModule>(g_container);
-    });
-    // g_container->moduleFactory->registerCreator("account", [&] {
-    //     return std::make_shared<odoo::modules::account::AccountModule>(g_container);
-    // });
+    // ------------------------------------------------------------------
+    // 3. Register modules
+    //    addModule<T>() is the preferred API — it captures factory refs
+    //    and constructs the module during bootAll().
+    //    Uncomment additional modules as they are ported.
+    // ------------------------------------------------------------------
+    g_container->addModule<odoo::modules::base::BaseModule>();
+    // g_container->addModule<odoo::modules::account::AccountModule>();
 
-    // -------------------------------------------------------
+    // ------------------------------------------------------------------
     // 4. Boot + run
-    // -------------------------------------------------------
+    // ------------------------------------------------------------------
     try {
         std::cout << "[odoo-cpp] Booting modules...\n";
         g_container->boot();
-        std::cout << "[odoo-cpp] Listening on http://0.0.0.0:" << httpCfg.port << "\n";
-        g_container->run();   // blocks until shutdown
+        std::cout << "[odoo-cpp] Listening on http://"
+                  << cfg.http.host << ":" << cfg.http.port << "\n";
+        g_container->run();   // blocks until SIGINT / SIGTERM
     } catch (const std::exception& e) {
         std::cerr << "[odoo-cpp] Fatal: " << e.what() << "\n";
         return 1;

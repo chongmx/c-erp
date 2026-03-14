@@ -4,3 +4,7 @@
 [submodule "3rdparty/drogon"]
 	path = 3rdparty/drogon
 	url = https://github.com/drogonframework/drogon.git
+[submodule "3rdparty/libpqxx"]
+	path = 3rdparty/libpqxx
+	url = https://github.com/jtv/libpqxx.git
+	branch = 7.9.2

@@ -1,8 +1,8 @@
 #pragma once
 #include "HttpService.hpp"       // HttpRequestPtr, HttpCallback — no drogon.h needed here
 #include "SessionManager.hpp"
-#include "../../core/factories/Factories.hpp"
-#include "../../core/interfaces/IViewModel.hpp"
+#include "factories/Factories.hpp"
+#include "interfaces/IViewModel.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <string>

@@ -92,3 +92,25 @@ odoo-cpp/
 | `GTest` | Unit testing |
 
 Install via vcpkg: `vcpkg install nlohmann-json crow libpqxx gtest`
+
+## Build (WSL vs Windows)
+
+Use VS Code tasks for deterministic shell target.
+
+### WSL (default)
+
+1. Open Command Palette (Ctrl+Shift+P) → `Terminal: Run Task`
+2. Choose `CMake Build (WSL)`
+3. This runs in WSL and uses your Linux toolchain.
+
+### Windows (PowerShell)
+
+1. Open Command Palette (Ctrl+Shift+P) → `Terminal: Run Task`
+2. Choose `CMake Build (Windows)`
+3. This runs in Windows PowerShell and uses Windows toolchain.
+
+### Notes
+
+- Keep WSL default in `.vscode/settings.json` for most development.
+- Use explicit tasks when switching environment.
+- If you change build directory, update `build` in `.vscode/tasks.json`.
