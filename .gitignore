@@ -39,3 +39,7 @@ Desktop.ini
 *~
 *.bak
 *.tmp
+
+# Odoo generated files/folders
+uploads/
+filestore/
