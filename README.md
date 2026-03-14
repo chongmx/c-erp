@@ -54,26 +54,28 @@ auto svc = services->create("partner", Lifetime::Singleton);
 ```
 odoo-cpp/
 ├── core/
-│   ├── interfaces/     IModel, IService, IViewModel, IView, IFactory, IModule
-│   ├── base/           BaseModel (CRTP+ORM), BaseService, BaseViewModel, BaseView
-│   ├── orm/            Domain (domain→SQL compiler), FieldRegistry
-│   └── factories/      BaseFactory, ModelFactory, ServiceFactory,
-│                       ViewModelFactory, ViewFactory, ModuleFactory
-├── infrastructure/
-│   ├── db/             DbConnection (libpqxx thread-safe pool)
-│   ├── http/           HttpServer (Drogon), JsonRpcDispatcher, SessionManager
-│   ├── websocket/      WebSocketServer (bus.Bus pub/sub)
-│   └── di/             Container (wires all factories + infrastructure)
+│   ├── interfaces/       IModel, IService, IViewModel, IView, IFactory, IModule
+│   ├── factories/        BaseFactory, ModelFactory, ServiceFactory,
+│   │                      ViewModelFactory, ViewFactory, ModuleFactory
+│   ├── infrastructure/   JsonRpcDispatcher, HttpServer, WebSocketServer,
+│   │                      DbConnection, SessionManager
+│   └── Container.hpp
 ├── modules/
-│   └── base/           ResPartner, PartnerService, PartnerFormView,
-│                       PartnerViewModel, BaseModule
+│   └── base/            BaseModule, services, views, viewmodels, models
 ├── 3rdparty/
-│   ├── drogon/         HTTP + WebSocket server (bundled)
-│   ├── json/           nlohmann/json (bundled)
-│   └── libpqxx/        PostgreSQL C++ client (bundled — must match headers exactly)
+│   ├── drogon/          HTTP + WebSocket server (bundled)
+│   ├── json/            nlohmann/json (bundled)
+│   └── libpqxx/         PostgreSQL C++ client (bundled)
+├── scripts/
+│   ├── install_dep.sh
+│   └── setup_db.sh
+├── uploads/
+│   └── tmp/             temporary upload storage
+├── web/                 static web assets
+├── build/               out-of-source CMake build directory
 ├── CMakeLists.txt
-├── install_deps.sh
-└── main.cpp
+├── main.cpp
+└── README.md
 ```
 
 ## Dependencies
@@ -115,7 +117,7 @@ cmake --build build -j$(nproc)
 
 ## Configuration
 
-The server reads configuration from environment variables at startup:
+The server reads configuration from environment variables at startup using `AppConfig::fromEnv()` in `core/Container.hpp`.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -123,15 +125,21 @@ The server reads configuration from environment variables at startup:
 | `DB_PORT` | `5432` | PostgreSQL port |
 | `DB_NAME` | `odoo` | Database name |
 | `DB_USER` | `odoo` | Database user |
-| `DB_PASSWORD` | _(empty)_ | Database password |
+| `DB_PASSWORD` | `odoo` | Database password |
 | `DB_POOL_SIZE` | `10` | Connection pool size |
 | `HTTP_HOST` | `0.0.0.0` | HTTP bind address |
 | `HTTP_PORT` | `8069` | HTTP port |
 | `HTTP_THREADS` | `4` | Drogon worker threads |
+| `HTTP_DOC_ROOT` | `web/static` | Static file root directory (enable serving static files) |
+| `HTTP_INDEX` | `index.html` | Root index file when static serving is enabled |
+
+Note: `HttpConfig` has additional defaults in code: `logRequests = true`, `corsOrigin = "*"`.
 
 ```bash
 DB_NAME=odoo DB_USER=odoo DB_PASSWORD=secret ./build/c-erp
 ```
+
+> Tip: set `HTTP_DOC_ROOT=web/static` to serve local frontend files from `web/static`.
 
 ## Adding a New Module
 
