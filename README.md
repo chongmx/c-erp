@@ -1,7 +1,7 @@
 # odoo-cpp
 
-C++ port of Odoo's Python backend using MVVM architecture.
-Frontend (OWL/JS/HTML) is untouched — this replaces only the Python server.
+**AI assisted** C++ port of Odoo's Python backend.  
+The OWL/JS/HTML frontend is untouched — this replaces only the Python server while preserving the PostgreSQL schema and JSON-RPC API surface.
 
 ## Architecture
 
@@ -9,56 +9,45 @@ Frontend (OWL/JS/HTML) is untouched — this replaces only the Python server.
 HTTP Request (JSON-RPC)
         │
         ▼
-  HttpService (Crow)
+  HttpService (Drogon)
         │
         ▼
 JsonRpcDispatcher
         │  routes by model name
         ▼
-ViewModelFactory ──[Transient/Singleton]──► XViewModel  (BaseViewModel)
-        │                                        │
-        │                               REGISTER_METHOD dispatch table
-        │                                        │
-        ▼                                        ▼
-ServiceFactory  ──[Singleton]──────────► XService       (BaseService)
-                                                 │
-                                         BaseModel::search/create/write
-                                                 │
-                                                 ▼
-                                          DbConnection (libpqxx pool)
-                                                 │
-                                                 ▼
-                                            PostgreSQL
-        │
-        ▼
-  ViewFactory  ──[Singleton]──────────► XJsonView      (BaseView<T>)
-        │
-        ▼
-  JSON Response
+ViewModelFactory ──[Transient]──► XViewModel      (BaseViewModel)
+                                       │
+                                  REGISTER_METHOD dispatch table
+                                       │
+ServiceFactory   ──[Singleton]──► XService         (BaseService)
+                                       │
+                                  BaseModel CRUD + search
+                                       │
+                                       ▼
+                                  DbConnection     (libpqxx pool)
+                                       │
+                                       ▼
+                                   PostgreSQL
+
+ViewFactory      ──[Singleton]──► XView            (BaseView)
+                                       │
+                                  render(json) → JSON Response
 ```
 
 ## Factory Lifetimes
 
-All factories support two lifetimes:
-
-| Lifetime | Behavior | Use for |
+| Lifetime | Behaviour | Use for |
 |---|---|---|
-| `Lifetime::Transient` | New instance every `create()` call | ViewModels (per-request state) |
-| `Lifetime::Singleton` | Single shared instance | Services, Views, DB connections |
+| `Lifetime::Transient` | New instance on every `create()` | ViewModels (per-request state) |
+| `Lifetime::Singleton` | One shared instance per key | Services, Views |
 
 ```cpp
-// Transient — new ViewModel per request (default)
-auto vm = viewModelFactory->create("account.move");
+// Transient — fresh ViewModel per request (default)
+auto vm = viewModels->create("res.partner");
 
 // Singleton — shared service instance
-auto svc = serviceFactory->create("accounting", Lifetime::Singleton);
+auto svc = services->create("partner", Lifetime::Singleton);
 ```
-
-## Adding a New Module
-
-1. Create `modules/<name>/` with: `XModel.hpp`, `XService.hpp`, `XViewModel.hpp`, `XView.hpp`, `XModule.hpp`
-2. In `XModule::register*()` methods, call `container->*Factory->registerCreator(...)`
-3. In `main.cpp`, add: `moduleFactory->registerCreator("<name>", [&]{ return make_shared<XModule>(container); })`
 
 ## Directory Structure
 
@@ -66,51 +55,148 @@ auto svc = serviceFactory->create("accounting", Lifetime::Singleton);
 odoo-cpp/
 ├── core/
 │   ├── interfaces/     IModel, IService, IViewModel, IView, IFactory, IModule
-│   ├── base/           BaseModel, BaseService, BaseViewModel, BaseView
-│   ├── orm/            Domain, FieldRegistry, RecordSet
+│   ├── base/           BaseModel (CRTP+ORM), BaseService, BaseViewModel, BaseView
+│   ├── orm/            Domain (domain→SQL compiler), FieldRegistry
 │   └── factories/      BaseFactory, ModelFactory, ServiceFactory,
 │                       ViewModelFactory, ViewFactory, ModuleFactory
 ├── infrastructure/
-│   ├── db/             DbConnection (libpqxx pool)
-│   ├── http/           HttpService, JsonRpcDispatcher, SessionManager
-│   ├── websocket/      WebSocketService (bus.Bus notifications)
-│   └── di/             Container (wires everything)
+│   ├── db/             DbConnection (libpqxx thread-safe pool)
+│   ├── http/           HttpService (Drogon), JsonRpcDispatcher, SessionManager
+│   ├── websocket/      WebSocketService (bus.Bus pub/sub)
+│   └── di/             Container (wires all factories + infrastructure)
 ├── modules/
-│   ├── base/           ResPartner, PartnerService, PartnerViewModel, BaseModule
-│   ├── account/        (next to port)
-│   └── sale/           (after account)
+│   └── base/           ResPartner, PartnerService, PartnerFormView,
+│                       PartnerViewModel, BaseModule
+├── 3rdparty/
+│   ├── drogon/         HTTP + WebSocket server (bundled)
+│   ├── json/           nlohmann/json (bundled)
+│   └── libpqxx/        PostgreSQL C++ client (bundled — must match headers exactly)
+├── CMakeLists.txt
+├── install_deps.sh
 └── main.cpp
 ```
 
 ## Dependencies
 
-| Library | Purpose |
-|---|---|
-| `nlohmann/json` | JSON parsing and serialization |
-| `Crow` | HTTP server and WebSocket |
-| `libpqxx` | PostgreSQL client |
-| `GTest` | Unit testing |
+| Library | Source | Purpose |
+|---|---|---|
+| `drogon` | `3rdparty/drogon` | HTTP server, WebSocket, routing |
+| `nlohmann/json` | `3rdparty/json` | JSON parsing and serialisation |
+| `libpqxx` | `3rdparty/libpqxx` | PostgreSQL C++ client |
+| `libpq` | system (`libpq-dev`) | PostgreSQL C client (required by libpqxx) |
 
-Install via vcpkg: `vcpkg install nlohmann-json crow libpqxx gtest`
+> **Important:** libpqxx is built from source via `add_subdirectory`.  
+> Do **not** install `libpqxx-dev` from apt — the system package (7.8) has  
+> different exception constructor signatures than the bundled version (7.9),  
+> causing `undefined reference to ... std::source_location` linker errors.
 
-## Build (WSL vs Windows)
+## Setup
 
-Use VS Code tasks for deterministic shell target.
+```bash
+# 1. Clone with submodules
+git clone --recurse-submodules <repo-url>
+cd odoo-cpp
 
-### WSL (default)
+# 2. Install system dependencies and set up libpqxx submodule
+bash install_deps.sh
 
-1. Open Command Palette (Ctrl+Shift+P) → `Terminal: Run Task`
-2. Choose `CMake Build (WSL)`
-3. This runs in WSL and uses your Linux toolchain.
+# 3. Build
+cmake -B build
+cmake --build build -j$(nproc)
+```
 
-### Windows (PowerShell)
+If you already have a `build/` directory from a previous configure run:
 
-1. Open Command Palette (Ctrl+Shift+P) → `Terminal: Run Task`
-2. Choose `CMake Build (Windows)`
-3. This runs in Windows PowerShell and uses Windows toolchain.
+```bash
+rm -rf build   # required if CMakeCache.txt has stale libpqxx paths
+cmake -B build
+cmake --build build -j$(nproc)
+```
 
-### Notes
+## Configuration
 
-- Keep WSL default in `.vscode/settings.json` for most development.
-- Use explicit tasks when switching environment.
-- If you change build directory, update `build` in `.vscode/tasks.json`.
+The server reads configuration from environment variables at startup:
+
+| Variable | Default | Description |
+|---|---|---|
+| `DB_HOST` | `localhost` | PostgreSQL host |
+| `DB_PORT` | `5432` | PostgreSQL port |
+| `DB_NAME` | `odoo` | Database name |
+| `DB_USER` | `odoo` | Database user |
+| `DB_PASSWORD` | _(empty)_ | Database password |
+| `DB_POOL_SIZE` | `10` | Connection pool size |
+| `HTTP_HOST` | `0.0.0.0` | HTTP bind address |
+| `HTTP_PORT` | `8069` | HTTP port |
+| `HTTP_THREADS` | `4` | Drogon worker threads |
+
+```bash
+DB_NAME=odoo DB_USER=odoo DB_PASSWORD=secret ./build/c-erp
+```
+
+## Adding a New Module
+
+1. Create `modules/<name>/` containing `XModel.hpp`, `XService.hpp`, `XView.hpp`, `XViewModel.hpp`, `XModule.hpp`
+2. Implement `XModule` inheriting `IModule` with `staticModuleName()`, and the five `register*()` methods
+3. In `main.cpp`, add:
+   ```cpp
+   container->addModule<odoo::modules::name::XModule>();
+   ```
+
+### Minimal module skeleton
+
+```cpp
+class XModule : public core::IModule {
+public:
+    static constexpr const char* staticModuleName() { return "name"; }
+
+    XModule(core::ModelFactory& m, core::ServiceFactory& s,
+            core::ViewModelFactory& vm, core::ViewFactory& v)
+        : models_(m), services_(s), viewModels_(vm), views_(v) {}
+
+    std::string moduleName() const override { return "name"; }
+
+    void registerModels()     override { /* models_.registerCreator(...) */ }
+    void registerServices()   override { /* services_.registerCreator(...) */ }
+    void registerViews()      override { /* views_.registerView<XView>(...) */ }
+    void registerViewModels() override { /* viewModels_.registerCreator(...) */ }
+    void registerRoutes()     override {}
+private:
+    core::ModelFactory&     models_;
+    core::ServiceFactory&   services_;
+    core::ViewModelFactory& viewModels_;
+    core::ViewFactory&      views_;
+};
+```
+
+## JSON-RPC Wire Format
+
+Standard Odoo JSON-RPC 2.0 — the OWL frontend sends requests unchanged:
+
+```json
+POST /web/dataset/call_kw
+{
+  "jsonrpc": "2.0",
+  "method": "call",
+  "id": 1,
+  "params": {
+    "model":  "res.partner",
+    "method": "search_read",
+    "args":   [[["active", "=", true]]],
+    "kwargs": { "fields": ["name", "email"], "limit": 80 }
+  }
+}
+```
+
+Public methods that bypass session authentication: `authenticate`, `get_session_info`, `logout`, `list_db`, `server_version`.
+
+## Build (WSL / Windows)
+
+Use VS Code tasks for a deterministic shell target.
+
+**WSL (recommended):**  
+`Ctrl+Shift+P` → `Terminal: Run Task` → `CMake Build (WSL)`
+
+**Windows (PowerShell):**  
+`Ctrl+Shift+P` → `Terminal: Run Task` → `CMake Build (Windows)`
+
+Keep WSL as the default in `.vscode/settings.json` for most development. Update the `build` path in `.vscode/tasks.json` if you change the build directory.
