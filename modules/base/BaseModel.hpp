@@ -106,7 +106,7 @@ public:
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        auto row = txn.exec_params1(sql, params);
+        auto row = txn.exec(sql, params).one_row();
         txn.commit();
         id_ = row[0].as<int>();
         return id_;
@@ -122,7 +122,7 @@ public:
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        auto res = txn.exec_params(sql, pqxx::params{idsToArray_(ids)});
+        auto res = txn.exec(sql, pqxx::params{idsToArray_(ids)});
         return rowsToJson_(res);
     }
 
@@ -152,7 +152,7 @@ public:
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        txn.exec_params(sql, params);
+        txn.exec(sql, params);
         txn.commit();
         return true;
     }
@@ -164,7 +164,7 @@ public:
             " WHERE id = ANY($1::int[])";
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        txn.exec_params(sql, pqxx::params{idsToArray_(ids)});
+        txn.exec(sql, pqxx::params{idsToArray_(ids)});
         txn.commit();
         return true;
     }
@@ -190,7 +190,7 @@ public:
             res = txn.exec(sql);
         } else {
             pqxx::params p; for (auto& s : paramVec) p.append(s);
-            res = txn.exec_params(sql, p);
+            res = txn.exec(sql, p);
         }
         std::vector<int> ids;
         for (const auto& row : res) ids.push_back(row[0].as<int>());
@@ -217,7 +217,7 @@ public:
             res = txn.exec(sql);
         } else {
             pqxx::params p; for (auto& s : paramVec) p.append(s);
-            res = txn.exec_params(sql, p);
+            res = txn.exec(sql, p);
         }
         return rowsToJson_(res);
     }
@@ -234,7 +234,7 @@ public:
             res = txn.exec(sql);
         } else {
             pqxx::params p; for (auto& s : paramVec) p.append(s);
-            res = txn.exec_params(sql, p);
+            res = txn.exec(sql, p);
         }
         return res[0][0].as<int>();
     }

@@ -340,14 +340,16 @@ inline AppConfig AppConfig::fromEnv() {
     cfg.db.port     = envInt("DB_PORT",  5432);
     cfg.db.name     = env("DB_NAME",     "odoo");
     cfg.db.user     = env("DB_USER",     "odoo");
-    cfg.db.password = env("DB_PASSWORD", "");
+    cfg.db.password = env("DB_PASSWORD", "odoo");
     cfg.db.poolSize = envInt("DB_POOL_SIZE", 10);
 
     // HTTP
     cfg.http.host    = env("HTTP_HOST",    "0.0.0.0");
     cfg.http.port    = envInt("HTTP_PORT", 8069);
     cfg.http.threads = envInt("HTTP_THREADS", 4);
-
+    cfg.http.docRoot  = env("HTTP_DOC_ROOT",  "web/static");
+    cfg.http.indexFile = env("HTTP_INDEX",    "index.html");
+    
     return cfg;
 }
 

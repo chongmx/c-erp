@@ -20,27 +20,39 @@ struct HttpConfig {
      * Set to the OWL dev server in development, restrict in production.
      */
     std::string corsOrigin  = "*";
+
+    /**
+     * @brief Root directory for static file serving.
+     *
+     * When non-empty, Drogon serves files from this directory for any
+     * request that doesn't match a registered API route.
+     *
+     * For the Odoo OWL frontend, point this at the Odoo web addon's
+     * static directory, e.g.:
+     *   /usr/lib/python3/dist-packages/odoo/addons/web/static
+     *
+     * For a simple test page during development, create a local folder:
+     *   mkdir -p web/static && cp index.html web/static/
+     *   cfg.http.docRoot = "web/static";
+     *
+     * Leave empty to disable static file serving (API-only mode).
+     */
+    std::string docRoot     = "";
+
+    /**
+     * @brief File served when the root path "/" is requested.
+     * Only used when docRoot is non-empty.
+     */
+    std::string indexFile   = "index.html";
 };
 
 
 // ============================================================
 // Request / Response type aliases
 // ============================================================
-/**
- * @brief Public aliases for Drogon request/response types.
- *
- * All other infrastructure files (JsonRpcDispatcher, WebSocketService)
- * include only HttpService.hpp — they never import drogon/drogon.h
- * directly.  These aliases are the stable API boundary.
- */
 using HttpRequestPtr  = drogon::HttpRequestPtr;
 using HttpResponsePtr = drogon::HttpResponsePtr;
-
-/**
- * @brief Async callback type Drogon expects from every handler.
- * Handlers must call this exactly once with the response.
- */
-using HttpCallback = std::function<void(const HttpResponsePtr&)>;
+using HttpCallback    = std::function<void(const HttpResponsePtr&)>;
 
 
 // ============================================================
@@ -49,26 +61,16 @@ using HttpCallback = std::function<void(const HttpResponsePtr&)>;
 /**
  * @brief Thin wrapper around the Drogon HTTP application.
  *
- * Provides a stable API surface so the rest of the codebase never
- * imports drogon/drogon.h directly — only HttpService.hpp and
- * WebSocketService.hpp carry that dependency.
+ * Static file serving:
+ *   Set HttpConfig::docRoot to serve a frontend from disk.
+ *   API routes (/web/dataset/*, /healthz, /websocket) always take
+ *   priority over static files regardless of registration order.
  *
- * Route registration happens before start() is called:
- * @code
- *   dispatcher->registerRoutes(httpService);
- *   wsService->registerRoutes(httpService);
- *   httpService.start();   // blocks
- * @endcode
+ *   // Serve the Odoo OWL frontend:
+ *   cfg.http.docRoot = "/usr/lib/python3/dist-packages/odoo/addons/web/static";
  *
- * Handler contract:
- *   addJsonPost / addJsonGet wrap handlers in try/catch and convert
- *   exceptions to JSON error responses automatically, so ViewModel code
- *   can throw std::runtime_error freely without touching Drogon types.
- *
- * CORS:
- *   Every response includes Access-Control-Allow-Origin from
- *   HttpConfig::corsOrigin. addCorsOptions() mounts the OPTIONS
- *   preflight handler for paths that need it.
+ *   // Serve a local test page:
+ *   cfg.http.docRoot = "web/static";   // relative to CWD at launch
  */
 class HttpService {
 public:
@@ -82,6 +84,22 @@ public:
         app.addListener(cfg_.host, cfg_.port)
            .setThreadNum(cfg_.threads);
 
+        // Static file serving — must be configured before run()
+        if (!cfg_.docRoot.empty()) {
+            app.setDocumentRoot(cfg_.docRoot);
+            app.setFileTypes({"html","js","css","png","jpg","jpeg",
+                              "gif","svg","ico","woff","woff2","ttf",
+                              "eot","map","json","xml","txt"});
+            // "/" → index.html
+            app.registerHandler("/",
+                [this](const HttpRequestPtr&, HttpCallback&& cb) {
+                    auto res = drogon::HttpResponse::newFileResponse(
+                        cfg_.docRoot + "/" + cfg_.indexFile);
+                    cb(res);
+                },
+                {drogon::Get});
+        }
+
         // Built-in health endpoint — no auth required
         app.registerHandler("/healthz",
             [](const HttpRequestPtr&, HttpCallback&& cb) {
@@ -94,7 +112,6 @@ public:
             {drogon::Get});
     }
 
-    // Non-copyable, non-movable — shared via shared_ptr
     HttpService(const HttpService&)            = delete;
     HttpService& operator=(const HttpService&) = delete;
 
@@ -102,22 +119,6 @@ public:
     // Route registration helpers
     // ----------------------------------------------------------
 
-    /**
-     * @brief Register a POST route that receives and returns JSON.
-     *
-     * Handler signature:
-     * @code
-     *   nlohmann::json handler(const HttpRequestPtr& req,
-     *                          const nlohmann::json& body);
-     * @endcode
-     *
-     * Exceptions are caught and converted to structured JSON error responses:
-     *   json::exception  → HTTP 400
-     *   std::exception   → HTTP 500
-     *
-     * @param path     URL path, e.g. "/web/dataset/call_kw"
-     * @param handler  Synchronous callable returning nlohmann::json.
-     */
     template<typename Handler>
     void addJsonPost(const std::string& path, Handler&& handler) {
         const std::string origin = cfg_.corsOrigin;
@@ -152,17 +153,6 @@ public:
             {drogon::Post});
     }
 
-    /**
-     * @brief Register a GET route that returns JSON.
-     *
-     * Handler signature:
-     * @code
-     *   nlohmann::json handler(const HttpRequestPtr& req);
-     * @endcode
-     *
-     * @param path     URL path, e.g. "/web/session/get_session_info"
-     * @param handler  Synchronous callable returning nlohmann::json.
-     */
     template<typename Handler>
     void addJsonGet(const std::string& path, Handler&& handler) {
         const std::string origin = cfg_.corsOrigin;
@@ -188,14 +178,6 @@ public:
             {drogon::Get});
     }
 
-    /**
-     * @brief Register an OPTIONS preflight handler for CORS.
-     *
-     * Call this for every path registered with addJsonPost() so browsers
-     * can complete their preflight check before the actual POST.
-     *
-     * @param path  Must match the path passed to addJsonPost().
-     */
     void addCorsOptions(const std::string& path) {
         const std::string origin = cfg_.corsOrigin;
 
@@ -215,39 +197,13 @@ public:
     // ----------------------------------------------------------
     // Lifecycle
     // ----------------------------------------------------------
-
-    /**
-     * @brief Start the HTTP server and block until stop() is called.
-     *
-     * Must be called from the main thread after all routes are registered.
-     * Drogon runs its own internal event loop; this call does not return
-     * until drogon::app().quit() is invoked (via stop()).
-     */
-    void start() {
-        drogon::app().run();
-    }
-
-    /**
-     * @brief Signal the server to stop and unblock start().
-     * Thread-safe — safe to call from a signal handler or another thread.
-     */
-    void stop() {
-        drogon::app().quit();
-    }
+    void start() { drogon::app().run(); }
+    void stop()  { drogon::app().quit(); }
 
     // ----------------------------------------------------------
     // Accessors
     // ----------------------------------------------------------
-
-    /**
-     * @brief Direct access to the Drogon application singleton.
-     *
-     * Used by WebSocketService to register WebSocket upgrade handlers
-     * via drogon::app().registerHandler() with the WebSocket controller.
-     * Avoid using this in business logic — prefer addJsonPost/addJsonGet.
-     */
     drogon::HttpAppFramework& app() { return drogon::app(); }
-
     const HttpConfig& config() const { return cfg_; }
 
 private:
