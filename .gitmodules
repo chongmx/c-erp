@@ -1,3 +1,6 @@
 [submodule "3rdparty/json"]
 	path = 3rdparty/json
 	url = https://github.com/nlohmann/json.git
+[submodule "3rdparty/drogon"]
+	path = 3rdparty/drogon
+	url = https://github.com/drogonframework/drogon.git
