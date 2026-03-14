@@ -1,10 +1,10 @@
 #pragma once
 #include "factories/Factories.hpp"
-#include "services/DbConnection.hpp"
-#include "services/HttpService.hpp"
-#include "services/JsonRpcDispatcher.hpp"
-#include "services/SessionManager.hpp"
-#include "services/WebSocketService.hpp"
+#include "infrastructure/DbConnection.hpp"
+#include "infrastructure/HttpServer.hpp"
+#include "infrastructure/JsonRpcDispatcher.hpp"
+#include "infrastructure/SessionManager.hpp"
+#include "infrastructure/WebSocketServer.hpp"
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -80,8 +80,8 @@ public:
     // Infrastructure — long-lived singletons, publicly readable
     // ----------------------------------------------------------
     std::shared_ptr<DbConnection>      db;
-    std::shared_ptr<HttpService>       http;
-    std::shared_ptr<WebSocketService>  ws;
+    std::shared_ptr<HttpServer>       http;
+    std::shared_ptr<WebSocketServer>  ws;
     std::shared_ptr<SessionManager>    sessions;
     std::shared_ptr<JsonRpcDispatcher> rpc;
 
@@ -109,8 +109,8 @@ public:
     explicit Container(const AppConfig& cfg) {
         // --- Infrastructure ---
         db       = std::make_shared<DbConnection>(cfg.db);
-        http     = std::make_shared<HttpService>(cfg.http);
-        ws       = std::make_shared<WebSocketService>();
+        http     = std::make_shared<HttpServer>(cfg.http);
+        ws       = std::make_shared<WebSocketServer>();
         sessions = std::make_shared<SessionManager>();
 
         // --- Factories ---

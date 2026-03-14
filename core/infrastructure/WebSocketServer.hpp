@@ -1,5 +1,5 @@
 #pragma once
-#include "HttpService.hpp"
+#include "HttpServer.hpp"
 #include <drogon/WebSocketController.h>
 #include <nlohmann/json.hpp>
 #include <memory>
@@ -10,7 +10,7 @@
 
 namespace odoo::infrastructure {
 
-class WebSocketService;
+class WebSocketServer;
 
 // ================================================================
 // BusController
@@ -30,8 +30,8 @@ class WebSocketService;
 //      NOT value type for the last param.
 //
 // Solution: use AutoCreation=true (default), make BusController default-
-// constructible, and reach WebSocketService via a static pointer set once
-// at boot time. This is safe because WebSocketService is owned by Container
+// constructible, and reach WebSocketServer via a static pointer set once
+// at boot time. This is safe because WebSocketServer is owned by Container
 // which lives for the entire process lifetime.
 // ================================================================
 class BusController
@@ -45,9 +45,9 @@ public:
         WS_PATH_ADD("/websocket");
     WS_PATH_LIST_END
 
-    // Called once from WebSocketService::registerRoutes() before the
+    // Called once from WebSocketServer::registerRoutes() before the
     // server starts accepting connections.
-    static void setService(WebSocketService* svc) { service_ = svc; }
+    static void setService(WebSocketServer* svc) { service_ = svc; }
 
     // ---- Drogon callbacks (correct signatures) ----
     void handleNewMessage(const drogon::WebSocketConnectionPtr& conn,
@@ -60,30 +60,30 @@ public:
     void handleConnectionClosed(const drogon::WebSocketConnectionPtr& conn) override;
 
 private:
-    static WebSocketService* service_;
+    static WebSocketServer* service_;
 };
 
 // Static member definition (in header — ODR-safe with inline)
-inline WebSocketService* BusController::service_ = nullptr;
+inline WebSocketServer* BusController::service_ = nullptr;
 
 
 // ================================================================
-// WebSocketService — owns all pub/sub state
+// WebSocketServer — owns all pub/sub state
 // ================================================================
-class WebSocketService {
+class WebSocketServer {
 public:
     using ConnPtr = drogon::WebSocketConnectionPtr;
     using Channel = std::string;
     using Payload = nlohmann::json;
 
-    WebSocketService() = default;
-    WebSocketService(const WebSocketService&)            = delete;
-    WebSocketService& operator=(const WebSocketService&) = delete;
+    WebSocketServer() = default;
+    WebSocketServer(const WebSocketServer&)            = delete;
+    WebSocketServer& operator=(const WebSocketServer&) = delete;
 
     // ----------------------------------------------------------
     // Route registration — call before http.start()
     // ----------------------------------------------------------
-    void registerRoutes(HttpService& /*http*/) {
+    void registerRoutes(HttpServer& /*http*/) {
         // Point the auto-created controller at this service instance.
         // BusController is registered automatically by Drogon via the
         // WS_PATH_LIST macros; we only need to inject the service pointer.
@@ -199,7 +199,7 @@ private:
 
 
 // ================================================================
-// BusController method definitions (after WebSocketService is complete)
+// BusController method definitions (after WebSocketServer is complete)
 // ================================================================
 inline void BusController::handleNewConnection(
     const drogon::HttpRequestPtr&,

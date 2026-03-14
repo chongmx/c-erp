@@ -1,5 +1,5 @@
 #pragma once
-#include "HttpService.hpp"       // HttpRequestPtr, HttpCallback — no drogon.h needed here
+#include "HttpServer.hpp"       // HttpRequestPtr, HttpCallback — no drogon.h needed here
 #include "SessionManager.hpp"
 #include "factories/Factories.hpp"
 #include "interfaces/IViewModel.hpp"
@@ -16,7 +16,7 @@ namespace odoo::infrastructure {
 /**
  * @brief Routes Odoo JSON-RPC 2.0 requests to the correct ViewModel.
  *
- * Mounts four routes on HttpService that the OWL/JS frontend uses:
+ * Mounts four routes on HttpServer that the OWL/JS frontend uses:
  *
  *   POST /web/dataset/call_kw          — standard model method calls
  *   POST /web/dataset/call             — legacy alias (same handler)
@@ -75,7 +75,7 @@ public:
      * @brief Mount all JSON-RPC routes onto the HTTP server.
      * Called once from Container::boot() after all modules are loaded.
      */
-    void registerRoutes(HttpService& http) {
+    void registerRoutes(HttpServer& http) {
         // Primary endpoint
         http.addJsonPost("/web/dataset/call_kw",
             [this](const HttpRequestPtr& req, const nlohmann::json& body) {

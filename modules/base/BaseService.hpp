@@ -1,6 +1,6 @@
 #pragma once
 #include "interfaces/IService.hpp"
-#include "services/DbConnection.hpp"
+#include "infrastructure/DbConnection.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <string>

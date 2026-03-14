@@ -20,7 +20,7 @@ namespace odoo::core {
  *   2. registerServices()   — populate ServiceFactory
  *   3. registerViewModels() — populate ViewModelFactory
  *   4. registerViews()      — populate ViewFactory
- *   5. registerRoutes()     — add HTTP routes to HttpService
+ *   5. registerRoutes()     — add HTTP routes to HttpServer
  *
  * After all modules have booted, IService::initialize() is called on every
  * registered service so cross-module wiring can complete safely.

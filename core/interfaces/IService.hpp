@@ -20,7 +20,7 @@ namespace odoo::core {
  *   - Business rule enforcement that spans multiple records
  *
  * They do NOT own:
- *   - HTTP / WebSocket concerns (that's HttpService / WebSocketService)
+ *   - HTTP / WebSocket concerns (that's HttpServer / WebSocketServer)
  *   - View rendering (that's IView)
  *   - Request routing (that's IViewModel)
  *

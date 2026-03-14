@@ -9,7 +9,7 @@ The OWL/JS/HTML frontend is untouched — this replaces only the Python server w
 HTTP Request (JSON-RPC)
         │
         ▼
-  HttpService (Drogon)
+  HttpServer (Drogon)
         │
         ▼
 JsonRpcDispatcher
@@ -61,8 +61,8 @@ odoo-cpp/
 │                       ViewModelFactory, ViewFactory, ModuleFactory
 ├── infrastructure/
 │   ├── db/             DbConnection (libpqxx thread-safe pool)
-│   ├── http/           HttpService (Drogon), JsonRpcDispatcher, SessionManager
-│   ├── websocket/      WebSocketService (bus.Bus pub/sub)
+│   ├── http/           HttpServer (Drogon), JsonRpcDispatcher, SessionManager
+│   ├── websocket/      WebSocketServer (bus.Bus pub/sub)
 │   └── di/             Container (wires all factories + infrastructure)
 ├── modules/
 │   └── base/           ResPartner, PartnerService, PartnerFormView,

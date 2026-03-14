@@ -32,8 +32,8 @@ target_include_directories(c-erp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/core/factories
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/infrastructure
     ${CMAKE_CURRENT_SOURCE_DIR}/core/interfaces
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/services
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/base
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/include
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/drogon/lib/inc

@@ -56,7 +56,7 @@ using HttpCallback    = std::function<void(const HttpResponsePtr&)>;
 
 
 // ============================================================
-// HttpService
+// HttpServer
 // ============================================================
 /**
  * @brief Thin wrapper around the Drogon HTTP application.
@@ -72,9 +72,9 @@ using HttpCallback    = std::function<void(const HttpResponsePtr&)>;
  *   // Serve a local test page:
  *   cfg.http.docRoot = "web/static";   // relative to CWD at launch
  */
-class HttpService {
+class HttpServer {
 public:
-    explicit HttpService(const HttpConfig& cfg = {}) : cfg_(cfg) {
+    explicit HttpServer(const HttpConfig& cfg = {}) : cfg_(cfg) {
         auto& app = drogon::app();
 
         app.setLogLevel(cfg_.logRequests
@@ -112,8 +112,8 @@ public:
             {drogon::Get});
     }
 
-    HttpService(const HttpService&)            = delete;
-    HttpService& operator=(const HttpService&) = delete;
+    HttpServer(const HttpServer&)            = delete;
+    HttpServer& operator=(const HttpServer&) = delete;
 
     // ----------------------------------------------------------
     // Route registration helpers
