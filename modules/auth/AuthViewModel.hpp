@@ -100,20 +100,59 @@ private:
         if (!ok)
             throw std::runtime_error("Invalid credentials");
 
+        // Enrich session with display name, partner, company, and admin flag
+        {
+            auto conn = db_->acquire();
+            pqxx::work etxn{conn.get()};
+            auto rows = etxn.exec(
+                "SELECT u.partner_id, u.company_id, "
+                "       COALESCE(p.name, u.login) AS uname, "
+                "       COALESCE(c.name, '')      AS cname, "
+                "       EXISTS(SELECT 1 FROM res_groups_users_rel r "
+                "              WHERE r.uid = u.id AND r.gid = 3) AS is_admin "
+                "FROM res_users u "
+                "LEFT JOIN res_partner p ON p.id = u.partner_id "
+                "LEFT JOIN res_company c ON c.id = u.company_id "
+                "WHERE u.id = $1",
+                pqxx::params{session.uid});
+
+            if (!rows.empty()) {
+                const auto& r = rows[0];
+                session.partnerId   = r["partner_id"].is_null() ? 0 : r["partner_id"].as<int>();
+                session.companyId   = r["company_id"].is_null() ? 0 : r["company_id"].as<int>();
+                session.name        = r["uname"].c_str();
+                session.companyName = r["cname"].c_str();
+                session.isAdmin     = std::string(r["is_admin"].c_str()) == "t";
+            }
+        }
+
         // Write the populated session back
         sessions_->update(activeSid, [&](infrastructure::Session& s) {
-            s.uid     = session.uid;
-            s.login   = session.login;
-            s.db      = session.db;
-            s.context = session.context;
+            s.uid         = session.uid;
+            s.login       = session.login;
+            s.db          = session.db;
+            s.context     = session.context;
+            s.name        = session.name;
+            s.partnerId   = session.partnerId;
+            s.companyId   = session.companyId;
+            s.companyName = session.companyName;
+            s.isAdmin     = session.isAdmin;
         });
 
         return {
-            {"uid",        session.uid},
-            {"login",      session.login},
-            {"session_id", activeSid},
-            {"db",         db},
-            {"context",    session.context},
+            {"uid",          session.uid},
+            {"login",        session.login},
+            {"session_id",   activeSid},
+            {"db",           db},
+            {"name",         session.name},
+            {"partner_id",   session.partnerId > 0
+                             ? nlohmann::json(session.partnerId)
+                             : nlohmann::json(false)},
+            {"company_id",   session.companyId > 0
+                             ? nlohmann::json(session.companyId)
+                             : nlohmann::json(false)},
+            {"is_admin",     session.isAdmin},
+            {"context",      session.context},
         };
     }
 

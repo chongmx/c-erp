@@ -31,10 +31,17 @@ namespace odoo::infrastructure {
  */
 struct Session {
     std::string    sessionId;
-    int            uid      = 0;       ///< res.users id; 0 = anonymous
+    int            uid         = 0;    ///< res.users id; 0 = anonymous
     std::string    login;              ///< e.g. "admin"
     std::string    db;                 ///< database name
     nlohmann::json context = nlohmann::json::object(); ///< user context
+
+    // Enriched fields populated after authentication
+    std::string    name;               ///< display name from res_partner
+    int            partnerId  = 0;     ///< res_partner.id
+    int            companyId  = 0;     ///< res_company.id
+    std::string    companyName;        ///< res_company.name
+    bool           isAdmin    = false; ///< member of Administrator group (id=3)
 
     using Clock     = std::chrono::steady_clock;
     using TimePoint = Clock::time_point;
@@ -46,11 +53,17 @@ struct Session {
 
     nlohmann::json toJson() const {
         return {
-            {"session_id",  sessionId},
-            {"uid",         uid},
-            {"login",       login},
-            {"db",          db},
-            {"context",     context},
+            {"session_id",   sessionId},
+            {"uid",          uid},
+            {"login",        login},
+            {"db",           db},
+            {"context",      context},
+            {"name",         name},
+            {"partner_id",   partnerId > 0  ? nlohmann::json(partnerId)  : nlohmann::json(false)},
+            {"company_id",   companyId > 0  ? nlohmann::json(companyId)  : nlohmann::json(false)},
+            {"company_name", companyName},
+            {"is_admin",     isAdmin},
+            {"is_system",    isAdmin},
         };
     }
 };

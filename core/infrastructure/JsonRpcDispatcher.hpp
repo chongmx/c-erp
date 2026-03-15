@@ -154,9 +154,40 @@ private:
     }
 
     nlohmann::json handleGetSessionInfo_(const HttpRequestPtr& req) {
-        const std::string sid = resolveOrCreateSid_(req);
-        auto session = sessions_->get(sid).value_or(Session{});
-        return successResponse_(nullptr, session.toJson());
+        const std::string sid     = resolveOrCreateSid_(req);
+        const Session     session = sessions_->get(sid).value_or(Session{});
+
+        nlohmann::json info = session.toJson();
+
+        // Standard Odoo session_info fields expected by the webclient
+        info["server_version"]   = "19.0+e (odoo-cpp)";
+        info["is_public"]        = !session.isAuthenticated();
+        info["is_internal_user"] = session.isAuthenticated() && !session.isAdmin;
+        info["username"]         = session.login;
+
+        info["user_context"] = {
+            {"uid",        session.uid},
+            {"lang",       session.context.value("lang", "en_US")},
+            {"tz",         session.context.value("tz",   "UTC")},
+        };
+
+        // Minimal user_companies structure (populated when a company is set)
+        if (session.companyId > 0) {
+            info["user_companies"] = {
+                {"current_company", session.companyId},
+                {"allowed_companies", {
+                    {std::to_string(session.companyId), {
+                        {"id",       session.companyId},
+                        {"name",     session.companyName},
+                        {"sequence", 1},
+                        {"child_ids", nlohmann::json::array()},
+                        {"parent_id", false},
+                    }},
+                }},
+            };
+        }
+
+        return successResponse_(nullptr, info);
     }
 
     nlohmann::json handleFieldsGet_(const HttpRequestPtr& req,

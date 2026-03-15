@@ -182,18 +182,23 @@ private:
         // res_company
         txn.exec(R"(
             CREATE TABLE IF NOT EXISTS res_company (
-                id         SERIAL PRIMARY KEY,
-                name       VARCHAR NOT NULL,
-                email      VARCHAR,
-                phone      VARCHAR,
-                website    VARCHAR,
-                vat        VARCHAR,
-                parent_id  INTEGER REFERENCES res_company(id) ON DELETE SET NULL,
-                active     BOOLEAN NOT NULL DEFAULT TRUE,
+                id          SERIAL  PRIMARY KEY,
+                name        VARCHAR NOT NULL,
+                email       VARCHAR,
+                phone       VARCHAR,
+                website     VARCHAR,
+                vat         VARCHAR,
+                parent_id   INTEGER REFERENCES res_company(id)  ON DELETE SET NULL,
+                active      BOOLEAN   NOT NULL DEFAULT TRUE,
                 create_date TIMESTAMP DEFAULT now(),
                 write_date  TIMESTAMP DEFAULT now()
             )
         )");
+        // partner_id and currency_id added after base module runs
+        txn.exec("ALTER TABLE res_company ADD COLUMN IF NOT EXISTS "
+                 "partner_id  INTEGER REFERENCES res_partner(id)  ON DELETE SET NULL");
+        txn.exec("ALTER TABLE res_company ADD COLUMN IF NOT EXISTS "
+                 "currency_id INTEGER REFERENCES res_currency(id) ON DELETE SET NULL");
 
         // res_groups
         txn.exec(R"(
@@ -260,34 +265,46 @@ private:
     }
 
     // ----------------------------------------------------------
-    // Seed admin user (idempotent — only if no users exist)
+    // Seed admin user + default company (idempotent)
     // ----------------------------------------------------------
     void seedAdminUser_() {
         auto conn = services_.db()->acquire();
         pqxx::work txn{conn.get()};
 
-        auto res = txn.exec("SELECT COUNT(*) FROM res_users");
-        if (res[0][0].as<int>() > 0) return;
+        if (txn.exec("SELECT COUNT(*) FROM res_users")[0][0].as<int>() > 0) return;
 
-        // Ensure a partner record exists for admin
+        // Partner for the company
+        auto compPartner = txn.exec(
+            "INSERT INTO res_partner (name, email, is_company) "
+            "VALUES ('My Company', 'company@example.com', TRUE) "
+            "RETURNING id");
+        const int compPartnerId = compPartner[0][0].as<int>();
+
+        // Default company (currency_id=1 = USD seeded by base module)
+        auto companyRes = txn.exec(
+            "INSERT INTO res_company (id, name, partner_id, currency_id) "
+            "VALUES (1, 'My Company', $1, 1) "
+            "ON CONFLICT (id) DO NOTHING RETURNING id",
+            pqxx::params{compPartnerId});
+        txn.exec("SELECT setval('res_company_id_seq', 1, true)");
+
+        // Partner for the admin user
         auto partnerRes = txn.exec(
-            "INSERT INTO res_partner (name, email) VALUES ('Administrator', 'admin@example.com') "
-            "ON CONFLICT DO NOTHING RETURNING id");
+            "INSERT INTO res_partner (name, email) "
+            "VALUES ('Administrator', 'admin@example.com') "
+            "RETURNING id");
+        const int adminPartnerId = partnerRes[0][0].as<int>();
 
-        int partnerId = 1;
-        if (!partnerRes.empty())
-            partnerId = partnerRes[0][0].as<int>();
-
-        // Hash the default password "admin"
+        // Admin user
         const std::string hash = AuthService::hashPassword("admin");
-
         txn.exec(
-            "INSERT INTO res_users (id, login, password, partner_id, lang, tz, active, share) "
-            "VALUES (1, 'admin', $1, $2, 'en_US', 'UTC', TRUE, FALSE) "
+            "INSERT INTO res_users (id, login, password, partner_id, company_id, "
+            "                       lang, tz, active, share) "
+            "VALUES (1, 'admin', $1, $2, 1, 'en_US', 'UTC', TRUE, FALSE) "
             "ON CONFLICT (login) DO NOTHING",
-            pqxx::params{hash, partnerId});
+            pqxx::params{hash, adminPartnerId});
 
-        // Add admin to Administrator group
+        // Add admin to Administrator group (id=3)
         txn.exec(
             "INSERT INTO res_groups_users_rel (gid, uid) VALUES (3, 1) "
             "ON CONFLICT DO NOTHING");
