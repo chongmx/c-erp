@@ -93,3 +93,119 @@ input:focus, select:focus { border-color: var(--accent); }
            border-top-color: var(--accent); border-radius: 50%;
            animation: spin .6s linear infinite; vertical-align: middle; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ================================================================
+   Login page
+   ================================================================ */
+.login-shell {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+}
+
+.login-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 40px 36px;
+    width: 360px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.4);
+}
+
+.login-logo {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 4px;
+    text-align: center;
+}
+
+.login-sub {
+    text-align: center;
+    color: var(--muted);
+    font-size: .8rem;
+    margin: 0 0 28px;
+}
+
+.login-error {
+    background: rgba(244,71,71,.12);
+    border: 1px solid rgba(244,71,71,.3);
+    color: var(--err);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: .85rem;
+    margin-bottom: 16px;
+}
+
+.form-group {
+    margin-bottom: 16px;
+}
+
+.form-group label {
+    display: block;
+    font-size: .8rem;
+    color: var(--muted);
+    margin-bottom: 5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .4px;
+}
+
+.form-group input {
+    width: 100%;
+}
+
+.login-btn {
+    width: 100%;
+    padding: 10px;
+    font-size: .95rem;
+    margin-top: 8px;
+    border-radius: 6px;
+}
+
+/* Boot splash */
+.boot-screen {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* ================================================================
+   User menu in topbar
+   ================================================================ */
+.topbar {
+    justify-content: space-between;
+}
+
+.user-menu {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.user-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.user-avatar {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-size: .75rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.user-login {
+    font-size: .875rem;
+    color: var(--text);
+}
