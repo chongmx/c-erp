@@ -1,8 +1,8 @@
 #pragma once
-#include "HttpServer.hpp"       // HttpRequestPtr, HttpCallback — no drogon.h needed here
+#include "HttpServer.hpp"
 #include "SessionManager.hpp"
-#include "factories/Factories.hpp"
-#include "interfaces/IViewModel.hpp"
+#include "../../core/factories/Factories.hpp"
+#include "../../core/interfaces/IViewModel.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <string>
@@ -17,47 +17,19 @@ namespace odoo::infrastructure {
  * @brief Routes Odoo JSON-RPC 2.0 requests to the correct ViewModel.
  *
  * Mounts four routes on HttpServer that the OWL/JS frontend uses:
- *
  *   POST /web/dataset/call_kw          — standard model method calls
- *   POST /web/dataset/call             — legacy alias (same handler)
+ *   POST /web/dataset/call             — legacy alias
  *   POST /web/dataset/fields_get       — fields_get shortcut
  *   GET  /web/session/get_session_info — session introspection
+ *   POST /web/session/authenticate     — direct login endpoint (Odoo 19)
  *
- * Wire format (request):
- * @code
- * {
- *   "jsonrpc": "2.0",
- *   "method":  "call",
- *   "id":      1,
- *   "params": {
- *     "model":  "res.partner",
- *     "method": "search_read",
- *     "args":   [[["active","=",true]]],
- *     "kwargs": { "fields": ["name","email"], "limit": 80 }
- *   }
- * }
- * @endcode
+ * Session cookie:
+ *   Resolved from Cookie header on every request.
+ *   After authenticate() succeeds the session_id is set as a
+ *   Set-Cookie header on the response so the browser stores it.
  *
- * Wire format (success response):
- * @code
- * { "jsonrpc": "2.0", "id": 1, "result": { ... } }
- * @endcode
- *
- * Wire format (error response):
- * @code
- * {
- *   "jsonrpc": "2.0", "id": 1,
- *   "error": { "code": 200, "message": "...", "data": { "name": "...", "message": "..." } }
- * }
- * @endcode
- *
- * Session handling:
- *   The session_id cookie is extracted from the Cookie header.
- *   If missing or expired an anonymous session is created on-the-fly
- *   (the OWL frontend always expects a valid session cookie to be present).
- *
- * Public methods (no auth required):
- *   "authenticate", "get_session_info", "logout", "list_db", "server_version"
+ * Public methods (bypass auth check):
+ *   authenticate, get_session_info, logout, list_db, server_version
  */
 class JsonRpcDispatcher {
 public:
@@ -67,69 +39,111 @@ public:
         , sessions_ (std::move(sessions))
     {}
 
-    // ----------------------------------------------------------
-    // Route registration
-    // ----------------------------------------------------------
-
-    /**
-     * @brief Mount all JSON-RPC routes onto the HTTP server.
-     * Called once from Container::boot() after all modules are loaded.
-     */
     void registerRoutes(HttpServer& http) {
-        // Primary endpoint
-        http.addJsonPost("/web/dataset/call_kw",
-            [this](const HttpRequestPtr& req, const nlohmann::json& body) {
-                return handleCallKw_(req, body);
+        // Primary call_kw endpoint
+        http.addJsonPostWithResponse("/web/dataset/call_kw",
+            [this](const HttpRequestPtr& req,
+                   const nlohmann::json& body,
+                   HttpResponsePtr&      res) {
+                return handleCallKw_(req, body, res);
             });
         http.addCorsOptions("/web/dataset/call_kw");
 
-        // Legacy alias used by older Odoo JS bundles
-        http.addJsonPost("/web/dataset/call",
-            [this](const HttpRequestPtr& req, const nlohmann::json& body) {
-                return handleCallKw_(req, body);
+        // Legacy alias
+        http.addJsonPostWithResponse("/web/dataset/call",
+            [this](const HttpRequestPtr& req,
+                   const nlohmann::json& body,
+                   HttpResponsePtr&      res) {
+                return handleCallKw_(req, body, res);
             });
         http.addCorsOptions("/web/dataset/call");
 
-        // fields_get shortcut (some Odoo versions call this separately)
+        // fields_get shortcut
         http.addJsonPost("/web/dataset/fields_get",
             [this](const HttpRequestPtr& req, const nlohmann::json& body) {
                 return handleFieldsGet_(req, body);
             });
         http.addCorsOptions("/web/dataset/fields_get");
 
-        // Session info (GET — no body)
+        // Session info
         http.addJsonGet("/web/session/get_session_info",
             [this](const HttpRequestPtr& req) {
                 return handleGetSessionInfo_(req);
             });
+
+        // Direct authenticate endpoint (Odoo 19 webclient uses this)
+        http.addJsonPostWithResponse("/web/session/authenticate",
+            [this](const HttpRequestPtr& req,
+                   const nlohmann::json& body,
+                   HttpResponsePtr&      res) {
+                return handleCallKw_(req, body, res);
+            });
+        http.addCorsOptions("/web/session/authenticate");
     }
 
 private:
     // ----------------------------------------------------------
-    // Handlers
+    // Main handler — with response access for Set-Cookie
     // ----------------------------------------------------------
 
-    nlohmann::json handleCallKw_(const HttpRequestPtr&  req,
-                                  const nlohmann::json&  body) {
+    nlohmann::json handleCallKw_(const HttpRequestPtr& req,
+                                  const nlohmann::json& body,
+                                  HttpResponsePtr&      res) {
         const auto id = body.value("id", nlohmann::json{});
 
         try {
-            const auto& params = body.at("params");
+            // Support /web/session/authenticate body format:
+            // { "params": { "db": "odoo", "login": "admin", "password": "x" } }
+            nlohmann::json workBody = body;
+            if (workBody.contains("params") &&
+                !workBody["params"].contains("model") &&
+                workBody["params"].contains("login")) {
+                // Rewrite to call_kw format for res.users.authenticate
+                auto& p = workBody["params"];
+                workBody["params"] = {
+                    {"model",  "res.users"},
+                    {"method", "authenticate"},
+                    {"args",   nlohmann::json::array({
+                        p.value("db",       std::string{}),
+                        p.value("login",    std::string{}),
+                        p.value("password", std::string{})
+                    })},
+                    {"kwargs", nlohmann::json::object()},
+                };
+            }
+
+            const auto& params = workBody.at("params");
             auto call = parseCallKw_(params);
 
-            auto session = resolveSession_(req);
+            // Resolve (or create) session
+            const std::string sid = resolveOrCreateSid_(req);
+            auto sessionOpt = sessions_->get(sid);
+            Session session  = sessionOpt.value_or(Session{});
 
+            // Auth check
             if (!isPublicMethod_(call.method) && !session.isAuthenticated())
                 return errorResponse_(id, 100, "Session expired",
                                       "Please authenticate first.");
 
-            // Inject uid into kwargs.context so ViewModels can read it
+            // Inject session_id + uid into context
             if (!call.kwargs.contains("context"))
                 call.kwargs["context"] = nlohmann::json::object();
-            call.kwargs["context"]["uid"] = session.uid;
+            call.kwargs["context"]["uid"]        = session.uid;
+            call.kwargs["context"]["session_id"] = sid;
 
             auto vm     = vmFactory_->create(call.model, core::Lifetime::Transient);
             auto result = vm->callKw(call);
+
+            // After authenticate: set session cookie so browser persists it
+            if (call.method == "authenticate" && result.contains("uid") &&
+                result["uid"].is_number_integer() && result["uid"].get<int>() > 0) {
+                const std::string cookieSid = result.value("session_id", sid);
+                res->addHeader("Set-Cookie",
+                    std::string(SessionManager::cookieName()) +
+                    "=" + cookieSid +
+                    "; HttpOnly; Path=/; SameSite=Lax");
+            }
+
             return successResponse_(id, result);
 
         } catch (const std::out_of_range& e) {
@@ -140,15 +154,29 @@ private:
     }
 
     nlohmann::json handleGetSessionInfo_(const HttpRequestPtr& req) {
-        return successResponse_(nullptr, resolveSession_(req).toJson());
+        const std::string sid = resolveOrCreateSid_(req);
+        auto session = sessions_->get(sid).value_or(Session{});
+        return successResponse_(nullptr, session.toJson());
     }
 
-    nlohmann::json handleFieldsGet_(const HttpRequestPtr&  req,
-                                     const nlohmann::json&  body) {
+    nlohmann::json handleFieldsGet_(const HttpRequestPtr& req,
+                                     const nlohmann::json& body) {
         auto patched = body;
         if (patched.contains("params"))
             patched["params"]["method"] = "fields_get";
-        return handleCallKw_(req, patched);
+        HttpResponsePtr dummy = drogon::HttpResponse::newHttpResponse();
+        return handleCallKw_(req, patched, dummy);
+    }
+
+    // ----------------------------------------------------------
+    // Session helpers
+    // ----------------------------------------------------------
+
+    std::string resolveOrCreateSid_(const HttpRequestPtr& req) {
+        const std::string cookie = req->getHeader("Cookie");
+        const std::string sid    = SessionManager::extractFromCookie(cookie);
+        if (!sid.empty() && sessions_->get(sid).has_value()) return sid;
+        return sessions_->create();
     }
 
     // ----------------------------------------------------------
@@ -162,24 +190,6 @@ private:
         call.args   = params.value("args",   nlohmann::json::array());
         call.kwargs = params.value("kwargs", nlohmann::json::object());
         return call;
-    }
-
-    // ----------------------------------------------------------
-    // Session
-    // ----------------------------------------------------------
-
-    Session resolveSession_(const HttpRequestPtr& req) {
-        const std::string cookie = req->getHeader("Cookie");
-        const std::string sid    = SessionManager::extractFromCookie(cookie);
-
-        if (!sid.empty()) {
-            auto s = sessions_->get(sid);
-            if (s.has_value()) return *s;
-        }
-
-        // Always return a valid session object — create anonymous if needed
-        const std::string newSid = sessions_->create();
-        return sessions_->get(newSid).value_or(Session{});
     }
 
     // ----------------------------------------------------------
@@ -203,11 +213,7 @@ private:
 
     static nlohmann::json successResponse_(const nlohmann::json& id,
                                             const nlohmann::json& result) {
-        return {
-            {"jsonrpc", "2.0"},
-            {"id",      id},
-            {"result",  result},
-        };
+        return {{"jsonrpc","2.0"}, {"id",id}, {"result",result}};
     }
 
     static nlohmann::json errorResponse_(const nlohmann::json& id,
@@ -215,8 +221,7 @@ private:
                                           const std::string&     message,
                                           const std::string&     detail = "") {
         return {
-            {"jsonrpc", "2.0"},
-            {"id",      id},
+            {"jsonrpc","2.0"}, {"id",id},
             {"error", {
                 {"code",    code},
                 {"message", message},
@@ -228,9 +233,6 @@ private:
         };
     }
 
-    // ----------------------------------------------------------
-    // Members
-    // ----------------------------------------------------------
     std::shared_ptr<core::ViewModelFactory> vmFactory_;
     std::shared_ptr<SessionManager>         sessions_;
 };

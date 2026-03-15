@@ -153,6 +153,48 @@ public:
             {drogon::Post});
     }
 
+    /**
+     * @brief Like addJsonPost but passes the response object to the handler
+     * so it can set extra headers (e.g. Set-Cookie after authenticate).
+     *
+     * Handler signature:
+     *   nlohmann::json handler(const HttpRequestPtr&, const nlohmann::json& body,
+     *                          HttpResponsePtr& res);
+     */
+    template<typename Handler>
+    void addJsonPostWithResponse(const std::string& path, Handler&& handler) {
+        const std::string origin = cfg_.corsOrigin;
+
+        drogon::app().registerHandler(path,
+            [h = std::forward<Handler>(handler), origin]
+            (const HttpRequestPtr& req, HttpCallback&& cb) {
+                auto res = drogon::HttpResponse::newHttpResponse();
+                res->addHeader("Content-Type",                "application/json");
+                res->addHeader("Access-Control-Allow-Origin", origin);
+
+                try {
+                    const auto body   = nlohmann::json::parse(req->body());
+                    const auto result = h(req, body, res);  // res passed by ref
+                    res->setStatusCode(drogon::k200OK);
+                    res->setBody(result.dump());
+                } catch (const nlohmann::json::exception& e) {
+                    res->setStatusCode(drogon::k400BadRequest);
+                    res->setBody(nlohmann::json{
+                        {"error",  "Invalid JSON"},
+                        {"detail", e.what()}
+                    }.dump());
+                } catch (const std::exception& e) {
+                    res->setStatusCode(drogon::k500InternalServerError);
+                    res->setBody(nlohmann::json{
+                        {"error",  "Internal server error"},
+                        {"detail", e.what()}
+                    }.dump());
+                }
+                cb(res);
+            },
+            {drogon::Post});
+    }
+
     template<typename Handler>
     void addJsonGet(const std::string& path, Handler&& handler) {
         const std::string origin = cfg_.corsOrigin;
