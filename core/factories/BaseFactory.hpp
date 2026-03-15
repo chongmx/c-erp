@@ -31,6 +31,7 @@ public:
     using Creator  = std::function<std::shared_ptr<TBase>()>;
     using Registry = std::unordered_map<std::string, Creator>;
     using Cache    = std::unordered_map<std::string, std::shared_ptr<TBase>>;
+    using Order    = std::vector<std::string>;
 
     virtual ~BaseFactory() = default;
 
@@ -46,6 +47,7 @@ public:
         if (registry_.count(key))
             throw std::invalid_argument("BaseFactory: key already registered: " + key);
         registry_[key] = std::move(creator);
+        insertionOrder_.push_back(key);
     }
 
     /**
@@ -65,6 +67,7 @@ public:
     void overrideCreator(const std::string& key, Creator creator) {
         registry_[key] = std::move(creator);
         singletonCache_.erase(key);
+        // No change to insertionOrder_ — key retains its original position.
     }
 
     // ----------------------------------------------------------
@@ -99,11 +102,9 @@ public:
         return registry_.count(key) > 0;
     }
 
+    // Returns keys in registration (insertion) order.
     std::vector<std::string> registeredNames() const {
-        std::vector<std::string> names;
-        names.reserve(registry_.size());
-        for (const auto& [k, _] : registry_) names.push_back(k);
-        return names;
+        return insertionOrder_;
     }
 
     /**
@@ -123,6 +124,7 @@ public:
 private:
     Registry registry_;
     Cache    singletonCache_;
+    Order    insertionOrder_;   // preserves registration order for deterministic boot
 };
 
 } // namespace odoo::core

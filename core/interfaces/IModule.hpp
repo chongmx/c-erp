@@ -20,7 +20,7 @@ namespace odoo::core {
  *   2. registerServices()   — populate ServiceFactory
  *   3. registerViewModels() — populate ViewModelFactory
  *   4. registerViews()      — populate ViewFactory
- *   5. registerRoutes()     — add HTTP routes to HttpServer
+ *   5. registerRoutes()     — add HTTP routes to HttpService
  *
  * After all modules have booted, IService::initialize() is called on every
  * registered service so cross-module wiring can complete safely.
@@ -156,6 +156,21 @@ public:
      * Default: no-op.
      */
     virtual void registerRoutes() {}
+
+    /**
+     * @brief Post-boot initialization hook.
+     *
+     * Called by Container::initializeServices_() after ALL modules have
+     * finished their register*() sequence. Use for DDL (CREATE TABLE),
+     * data seeding, and cross-module wiring that requires other modules
+     * to already be registered.
+     *
+     * Execution order matches registration order, so a module that
+     * depends on "base" can safely reference res_partner here.
+     *
+     * Default: no-op.
+     */
+    virtual void initialize() {}
 
     // ----------------------------------------------------------
     // Metadata / manifest

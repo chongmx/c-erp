@@ -15,6 +15,7 @@
 #include "Domain.hpp"
 #include "FieldRegistry.hpp"
 #include <nlohmann/json.hpp>
+#include <pqxx/pqxx>
 #include <memory>
 #include <string>
 #include <vector>
@@ -296,11 +297,38 @@ public:
 
     void registerRoutes() override {}
 
+    // Called after ALL modules have finished registering —
+    // safe to create tables here since no cross-module FK deps yet.
+    void initialize() override {
+        ensureSchema_();
+    }
+
 private:
     core::ModelFactory&     models_;
     core::ServiceFactory&   services_;
     core::ViewModelFactory& viewModels_;
     core::ViewFactory&      views_;
+
+    void ensureSchema_() {
+        auto conn = services_.db()->acquire();
+        pqxx::work txn{conn.get()};
+
+        txn.exec(R"(
+            CREATE TABLE IF NOT EXISTS res_partner (
+                id          SERIAL PRIMARY KEY,
+                name        VARCHAR NOT NULL,
+                email       VARCHAR,
+                phone       VARCHAR,
+                is_company  BOOLEAN NOT NULL DEFAULT FALSE,
+                company_id  INTEGER,
+                active      BOOLEAN NOT NULL DEFAULT TRUE,
+                create_date TIMESTAMP DEFAULT now(),
+                write_date  TIMESTAMP DEFAULT now()
+            )
+        )");
+
+        txn.commit();
+    }
 };
 
 } // namespace odoo::modules::base

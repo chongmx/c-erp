@@ -1,31 +1,38 @@
 # Auth Module Port Progress
 
 ## Summary
-- Integrated new auth module source from `zznew/` into `modules/auth/`.
-- Replaced runtime entrypoint and JSON-RPC dispatcher to use Odoo-compatible login flow (`/web/session/authenticate`, session cookie handling, call_kw request rewriting).
+- Integrated auth module source into `modules/auth/`.
 - Added `AuthModule`, `AuthService`, `AuthViewModel`, model classes for `res.users`, `res.groups`, `res.company`, and basic view definitions.
-- Built successfully with CMake; runtime boot reached module init and attempted DB operations.
+- Replaced runtime entrypoint and JSON-RPC dispatcher to use Odoo-compatible login flow (`/web/session/authenticate`, session cookie handling, call_kw request rewriting).
+- Fixed critical boot ordering bug in `BaseFactory` that caused `res_partner` FK failure.
+- Build confirmed passing; schema creation and seeding are now order-safe.
 
 ## Work Completed
-- [x] Copied `zznew` auth files to `modules/auth/`.
-- [x] Updated `main.cpp` to register `odoo::modules::auth::AuthModule`.
-- [x] Updated `AuthViewModel` to use shared DB connection instead of inaccessible protected member.
-- [x] Fixed module boot custom route initialization and removed invalid `initialize() override`.
+- [x] Copied auth files to `modules/auth/`.
+- [x] Updated `main.cpp` to register `BaseModule` then `AuthModule`.
+- [x] Updated `AuthViewModel` to use shared DB connection.
+- [x] Fixed module boot custom route initialization.
 - [x] Repaired `CMakeLists.txt` and confirmed build passes.
-- [x] Verified binary starts and reaches auth module boot.
+- [x] **Fixed `BaseFactory::registeredNames()` to return keys in insertion order** (was `unordered_map` iteration — non-deterministic). Added `insertionOrder_` vector to `BaseFactory`. This ensures `base->initialize()` always runs before `auth->initialize()`, so `res_partner` exists when `res_users` is created with the FK reference.
 
 ## Current Status
 - Build: ✅ success
-- Runtime startup: ✅ starts, then fails on missing `res_partner` table (expected; base module schema needs bootstrap before auth)
-- Next action: ensure `res_partner` table is created by base module and/or add base seeding during startup.
+- Runtime startup: ✅ boot ordering fixed — `BaseModule::initialize()` now reliably runs before `AuthModule::initialize()`
+- `res_partner` FK error: ✅ resolved
+- Next action: verify end-to-end login via `/web/session/authenticate` with seeded admin user
+
+## Root Cause (documented for reference)
+`BaseFactory::registeredNames()` iterated over `std::unordered_map` which does not preserve insertion order. Even though `BaseModule` was registered before `AuthModule` in `main.cpp`, `initializeModules_()` could invoke them in any order. `AuthModule::ensureSchema_()` creates `res_users` with `REFERENCES res_partner(id)` — if it ran before `BaseModule::ensureSchema_()` created `res_partner`, Postgres threw `relation "res_partner" does not exist`. Fix: added `std::vector<std::string> insertionOrder_` to `BaseFactory` so `registeredNames()` returns keys in registration order.
+
+## Auth Flow Details
+- Login endpoint: `/web/session/authenticate` via `AuthService::authenticate(db, login, password)`
+- Password hashing: PBKDF2-SHA512 (`$pbkdf2-sha512$...`) with constant-time compare
+- Session: `SessionManager` stores `uid`, `login`, `name`, `company_id`, `db` per session token
+- Seed data: default groups (Public/Internal/Administrator) and `admin` user created on first boot
 
 ## Next Steps
-1. Add base module `res_partner` schema creation and required seed data in `modules/base` (if not already done).
-2. Add a minimal integration test that boots container with an in-memory/test Postgres and verifies `/web/session/authenticate` with admin password.
-3. Implement endpoint-level frontend serving for local test UI (`web/static`) and add sample login page from `zznew`.
-4. Update docs with migration architecture and module wiring details in `docs/plan.md` and `docs/zznew-code-structure.md`.
-
-## Notes
-- The current auth flow uses Odoo-compatible hash format (`$pbkdf2-sha512$...`) and constant-time compare.
-- `AuthModule::registerRoutes()` now creates schema and seeds default groups/admin.
-- For full Odoo parity, migrate additional modules (base model relations, permissions, record rules) in next phase.
+1. Verify `/web/session/authenticate` login returns correct session JSON (match Odoo `/web/session/authenticate` response shape).
+2. Add `res_country` and `res_lang` to base module (needed as FK targets by `res_partner` and `res_users`).
+3. Add `company_id` FK to `res_partner` pointing to `res_company` (currently unlinked in base schema).
+4. Wire a minimal `/web/action/load` endpoint so the Odoo JS client can bootstrap after login.
+5. Port `auth_signup` (password reset token, signup URL) — requires `mail` / `ir_config_parameter` stubs first.

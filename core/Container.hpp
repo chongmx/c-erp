@@ -198,8 +198,13 @@ public:
         // Stage 1 — module boot (register* calls)
         modules->bootAll();
 
-        // Stage 2 — service post-init (cross-module wiring, warm-up)
+        // Stage 2a — service post-init (cross-module wiring, warm-up)
         initializeServices_();
+
+        // Stage 2b — module initialize() hooks (DDL, seeding)
+        //            Runs after services so DB connections are ready,
+        //            and in registration order so dependencies are satisfied.
+        initializeModules_();
 
         // Stage 3 — HTTP: JSON-RPC dispatcher routes
         rpc->registerRoutes(*http);
@@ -306,6 +311,19 @@ private:
     }
 
     /**
+     * @brief Call IModule::initialize() on every registered module in order.
+     *
+     * Runs after initializeServices_() — DDL and seeding go here.
+     * Modules execute in registration order (base before auth, etc.).
+     */
+    void initializeModules_() {
+        for (const auto& name : modules->registeredNames()) {
+            auto mod = modules->create(name, core::Lifetime::Singleton);
+            mod->initialize();
+        }
+    }
+
+    /**
      * @brief Call IService::shutdown() on every registered service.
      *
      * Order is unspecified; services must not depend on other services
@@ -349,7 +367,7 @@ inline AppConfig AppConfig::fromEnv() {
     cfg.http.threads = envInt("HTTP_THREADS", 4);
     cfg.http.docRoot  = env("HTTP_DOC_ROOT",  "web/static");
     cfg.http.indexFile = env("HTTP_INDEX",    "index.html");
-    
+
     return cfg;
 }
 

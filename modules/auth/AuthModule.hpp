@@ -102,7 +102,13 @@ public:
         });
     }
 
-    void registerRoutes() override {
+    void registerRoutes() override {}
+
+    // ----------------------------------------------------------
+    // initialize — runs after all modules are booted
+    // Ensures tables exist and seeds default data.
+    // ----------------------------------------------------------
+    void initialize() override {
         ensureSchema_();
         seedGroups_();
         seedAdminUser_();
