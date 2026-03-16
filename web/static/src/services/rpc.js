@@ -22,13 +22,18 @@ const RpcService = (() => {
     // Core JSON-RPC call
     // --------------------------------------------------------
     async function call(model, method, args = [], kwargs = {}) {
+        // Inject session_id into context so the server can resolve the session
+        // from the request body (fallback when cookies aren't transmitted).
+        const ctx = Object.assign({ session_id: _session.sessionId }, kwargs.context || {});
+        const fullKwargs = Object.assign({}, kwargs, { context: ctx });
+        console.log('[rpc] call', model, method, 'session_id in body:', ctx.session_id || '(empty)');
         const res = await fetch('/web/dataset/call_kw', {
             method:      'POST',
-            credentials: 'include',   // send session_id cookie
+            credentials: 'include',
             headers:     { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 jsonrpc: '2.0', method: 'call', id: _id++,
-                params:  { model, method, args, kwargs },
+                params:  { model, method, args, kwargs: fullKwargs },
             }),
         });
         const data = await res.json();
@@ -62,6 +67,7 @@ const RpcService = (() => {
             db:        data.result.db || db,
             context:   data.result.context || {},
         });
+        console.log('[rpc] authenticate ok, session:', _session.sessionId, 'uid:', _session.uid);
         return _session;
     }
 
@@ -108,7 +114,7 @@ const RpcService = (() => {
             headers:     { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 jsonrpc: '2.0', method: 'call', id: _id++,
-                params:  { action_id: actionId },
+                params:  { action_id: actionId, session_id: _session.sessionId },
             }),
         });
         const data = await res.json();

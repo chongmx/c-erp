@@ -4,6 +4,7 @@
 #include "../../core/factories/Factories.hpp"
 #include "../../core/interfaces/IViewModel.hpp"
 #include "../../core/interfaces/IView.hpp"
+#include <drogon/Cookie.h>
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <string>
@@ -135,10 +136,17 @@ private:
             const auto& params = workBody.at("params");
             auto call = parseCallKw_(params);
 
-            // Resolve (or create) session
-            const std::string sid = resolveOrCreateSid_(req);
+            // Resolve session: cookie first, then body context (for cookie-less clients)
+            const std::string sid = resolveSessionId_(req, call);
             auto sessionOpt = sessions_->get(sid);
             Session session  = sessionOpt.value_or(Session{});
+
+            const std::string bodySidDbg = call.kwargs.contains("context")
+                ? call.kwargs["context"].value("session_id", std::string{"(none)"})
+                : "(no context)";
+            LOG_INFO << "[rpc] " << call.model << "." << call.method
+                     << " sid=" << sid.substr(0, 8) << "... uid=" << session.uid
+                     << " body_sid=" << bodySidDbg.substr(0, 12);
 
             // Auth check
             if (!isPublicMethod_(call.method) && !session.isAuthenticated())
@@ -159,14 +167,31 @@ private:
             auto vm     = vmFactory_->create(call.model, core::Lifetime::Transient);
             auto result = vm->callKw(call);
 
-            // After authenticate: set session cookie so browser persists it
+            // After authenticate: sync auth data into dispatcher's SM and set cookie
             if (call.method == "authenticate" && result.contains("uid") &&
                 result["uid"].is_number_integer() && result["uid"].get<int>() > 0) {
                 const std::string cookieSid = result.value("session_id", sid);
-                res->addHeader("Set-Cookie",
-                    std::string(SessionManager::cookieName()) +
-                    "=" + cookieSid +
-                    "; HttpOnly; Path=/; SameSite=Lax");
+                const bool updated = sessions_->update(cookieSid, [&result](Session& s) {
+                    s.uid     = result["uid"].get<int>();
+                    s.login   = result.value("login", std::string{});
+                    s.db      = result.value("db",    std::string{});
+                    s.name    = result.value("name",  std::string{});
+                    s.isAdmin = result.value("is_admin", false);
+                    if (result.contains("partner_id") && result["partner_id"].is_number_integer())
+                        s.partnerId = result["partner_id"].get<int>();
+                    if (result.contains("company_id") && result["company_id"].is_number_integer())
+                        s.companyId = result["company_id"].get<int>();
+                    s.context = {{"uid", s.uid}, {"lang", "en_US"}, {"tz", "UTC"}};
+                });
+                LOG_INFO << "[auth] session sync for " << cookieSid
+                         << " uid=" << result["uid"].get<int>()
+                         << " updated=" << updated;
+                drogon::Cookie c(SessionManager::cookieName(), cookieSid);
+                c.setHttpOnly(true);
+                c.setPath("/");
+                c.setSameSite(drogon::Cookie::SameSite::kLax);
+                c.setMaxAge(3600);
+                res->addCookie(c);
             }
 
             return successResponse_(id, result);
@@ -229,9 +254,41 @@ private:
     // ----------------------------------------------------------
 
     std::string resolveOrCreateSid_(const HttpRequestPtr& req) {
-        const std::string cookie = req->getHeader("Cookie");
-        const std::string sid    = SessionManager::extractFromCookie(cookie);
+        const std::string sid = SessionManager::extractFromCookie(req->getHeader("Cookie"));
         if (!sid.empty() && sessions_->get(sid).has_value()) return sid;
+        return sessions_->create();
+    }
+
+    // Resolve session from cookie or a flat body param (for non-callKw endpoints)
+    std::string resolveFromBodyOrCookie_(const HttpRequestPtr& req,
+                                          const nlohmann::json& params) {
+        const std::string cookieSid = SessionManager::extractFromCookie(
+            req->getHeader("Cookie"));
+        if (!cookieSid.empty() && sessions_->get(cookieSid).has_value())
+            return cookieSid;
+        const std::string bodySid = params.value("session_id", std::string{});
+        if (!bodySid.empty() && sessions_->get(bodySid).has_value())
+            return bodySid;
+        return sessions_->create();
+    }
+
+    std::string resolveSessionId_(const HttpRequestPtr& req,
+                                   const core::CallKwArgs& call) {
+        // 1. Try cookie
+        const std::string cookieSid = SessionManager::extractFromCookie(
+            req->getHeader("Cookie"));
+        if (!cookieSid.empty() && sessions_->get(cookieSid).has_value())
+            return cookieSid;
+
+        // 2. Try session_id from kwargs context (sent by JS client in body)
+        if (call.kwargs.contains("context")) {
+            const std::string bodySid =
+                call.kwargs["context"].value("session_id", std::string{});
+            if (!bodySid.empty() && sessions_->get(bodySid).has_value())
+                return bodySid;
+        }
+
+        // 3. Create fresh anonymous session
         return sessions_->create();
     }
 
@@ -317,11 +374,11 @@ private:
             viewEntry["toolbar"] = nlohmann::json::object();
 
             if (viewFactory_ && viewFactory_->hasView(model, vtype)) {
-                auto view = viewFactory_->getView(model, vtype);
+                auto view  = viewFactory_->getView(model, vtype);
+                auto flds  = view->fields();   // must be a named variable — items() holds a ref
                 viewEntry["arch"]   = view->arch();
-                viewEntry["fields"] = view->fields();
-                // Merge fields into allFields
-                for (auto& [k,v] : view->fields().items())
+                viewEntry["fields"] = flds;
+                for (auto& [k,v] : flds.items())
                     allFields[k] = v;
             } else {
                 // Minimal fallback arch
@@ -360,7 +417,7 @@ private:
             }
 
             // Auth check
-            const std::string sid     = resolveOrCreateSid_(req);
+            const std::string sid     = resolveFromBodyOrCookie_(req, params);
             const Session     session = sessions_->get(sid).value_or(Session{});
             if (!session.isAuthenticated())
                 return errorResponse_(id, 100, "Session expired", "Please authenticate first.");

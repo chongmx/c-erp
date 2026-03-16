@@ -49,7 +49,10 @@ public:
     {
         REGISTER_METHOD("authenticate",     handleAuthenticate)
         REGISTER_METHOD("logout",           handleLogout)
+        REGISTER_METHOD("search_read",      handleSearchRead)
+        REGISTER_METHOD("web_search_read",  handleSearchRead)
         REGISTER_METHOD("read",             handleRead)
+        REGISTER_METHOD("web_read",         handleRead)
         REGISTER_METHOD("fields_get",       handleFieldsGet)
         REGISTER_METHOD("change_password",  handleChangePassword)
     }
@@ -171,6 +174,16 @@ private:
             });
         }
         return true;
+    }
+
+    // ----------------------------------------------------------
+    // search_read — list of users (admin-visible fields only)
+    // ----------------------------------------------------------
+    nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
+        ResUsers proto(db_);
+        return proto.searchRead(call.domain(), call.fields(),
+                                call.limit() > 0 ? call.limit() : 80,
+                                call.offset(), "id ASC");
     }
 
     // ----------------------------------------------------------

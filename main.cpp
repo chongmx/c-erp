@@ -5,6 +5,9 @@
 #include <csignal>
 #include <iostream>
 #include <memory>
+#include <execinfo.h>
+#include <cstdio>
+#include <exception>
 
 static std::shared_ptr<odoo::infrastructure::Container> g_container;
 
@@ -14,6 +17,15 @@ void handleSignal(int sig) {
 }
 
 int main(int, char**) {
+    std::set_terminate([]() {
+        fprintf(stderr, "\n=== TERMINATE (pure virtual / unhandled exception) ===\n");
+        void* frames[64];
+        int n = backtrace(frames, 64);
+        backtrace_symbols_fd(frames, n, fileno(stderr));
+        fprintf(stderr, "=====================================================\n");
+        std::abort();
+    });
+
     std::signal(SIGINT,  handleSignal);
     std::signal(SIGTERM, handleSignal);
 

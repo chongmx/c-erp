@@ -41,7 +41,9 @@ public:
     explicit BaseModel(std::shared_ptr<infrastructure::DbConnection> db)
         : db_(std::move(db)), id_(0)
     {
-        static_cast<TDerived*>(this)->registerFields();
+        // Explicit qualification bypasses vtable (which still points to the
+        // base during construction) and calls TDerived::registerFields() directly.
+        static_cast<TDerived*>(this)->TDerived::registerFields();
     }
 
     // ----------------------------------------------------------
