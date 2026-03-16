@@ -95,6 +95,33 @@ const RpcService = (() => {
     }
 
     // --------------------------------------------------------
+    // IR helpers
+    // --------------------------------------------------------
+    async function loadMenus() {
+        return call('ir.ui.menu', 'load_menus', [false], {});
+    }
+
+    async function loadAction(actionId) {
+        const res = await fetch('/web/action/load', {
+            method:      'POST',
+            credentials: 'include',
+            headers:     { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                jsonrpc: '2.0', method: 'call', id: _id++,
+                params:  { action_id: actionId },
+            }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error.data?.message || data.error.message);
+        return data.result;
+    }
+
+    async function getViews(model, views) {
+        // views = [[false, 'list'], [false, 'form']]
+        return call(model, 'get_views', [views], {});
+    }
+
+    // --------------------------------------------------------
     // Convenience helpers
     // --------------------------------------------------------
     async function health() {
@@ -109,5 +136,7 @@ const RpcService = (() => {
     }
 
     return { call, authenticate, logout, restoreSession,
-             isAuthenticated, getSession, health, sessionInfo };
+             isAuthenticated, getSession,
+             loadMenus, loadAction, getViews,
+             health, sessionInfo };
 })();

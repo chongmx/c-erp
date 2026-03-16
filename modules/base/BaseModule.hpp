@@ -370,6 +370,33 @@ public:
 // 3. VIEW
 // ================================================================
 
+class PartnerListView : public core::BaseView {
+public:
+    std::string viewName() const override { return "res.partner.list"; }
+
+    std::string arch() const override {
+        return "<list>"
+               "<field name=\"name\"/>"
+               "<field name=\"email\"/>"
+               "<field name=\"phone\"/>"
+               "<field name=\"is_company\"/>"
+               "</list>";
+    }
+
+    nlohmann::json fields() const override {
+        return {
+            {"name",       {{"type","char"},    {"string","Name"},       {"required",true}}},
+            {"email",      {{"type","char"},    {"string","Email"}}},
+            {"phone",      {{"type","char"},    {"string","Phone"}}},
+            {"is_company", {{"type","boolean"}, {"string","Is Company"}}},
+        };
+    }
+
+    nlohmann::json render(const nlohmann::json& record) const override {
+        return {{"arch", arch()}, {"fields", fields()}, {"record", record}};
+    }
+};
+
 class PartnerFormView : public core::BaseView {
 public:
     std::string viewName() const override { return "res.partner.form"; }
@@ -557,6 +584,7 @@ public:
     }
 
     void registerViews() override {
+        views_.registerView<PartnerListView>("res.partner.list");
         views_.registerView<PartnerFormView>("res.partner.form");
     }
 

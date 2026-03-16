@@ -122,8 +122,8 @@ public:
         modules    = std::make_shared<core::ModuleFactory>();
 
         // --- RPC dispatcher ---
-        // Wired to viewModelFactory + session store; HTTP routes added in boot().
-        rpc = std::make_shared<JsonRpcDispatcher>(viewModels, sessions);
+        // Wired to viewModelFactory + viewFactory + session store; HTTP routes added in boot().
+        rpc = std::make_shared<JsonRpcDispatcher>(viewModels, sessions, views);
     }
 
     // ----------------------------------------------------------

@@ -1,6 +1,7 @@
 #include "Container.hpp"
 #include "BaseModule.hpp"
 #include "modules/auth/AuthModule.hpp"
+#include "modules/ir/IrModule.hpp"
 #include <csignal>
 #include <iostream>
 #include <memory>
@@ -23,6 +24,7 @@ int main(int, char**) {
     // Register modules in dependency order
     g_container->addModule<odoo::modules::base::BaseModule>();
     g_container->addModule<odoo::modules::auth::AuthModule>();
+    g_container->addModule<odoo::modules::ir::IrModule>();
 
     try {
         std::cout << "[odoo-cpp] Booting modules...\n";

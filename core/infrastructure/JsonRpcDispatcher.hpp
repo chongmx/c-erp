@@ -3,10 +3,12 @@
 #include "SessionManager.hpp"
 #include "../../core/factories/Factories.hpp"
 #include "../../core/interfaces/IViewModel.hpp"
+#include "../../core/interfaces/IView.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <string>
 #include <unordered_set>
+#include <sstream>
 
 namespace odoo::infrastructure {
 
@@ -34,9 +36,11 @@ namespace odoo::infrastructure {
 class JsonRpcDispatcher {
 public:
     JsonRpcDispatcher(std::shared_ptr<core::ViewModelFactory> vmFactory,
-                      std::shared_ptr<SessionManager>         sessions)
-        : vmFactory_(std::move(vmFactory))
-        , sessions_ (std::move(sessions))
+                      std::shared_ptr<SessionManager>         sessions,
+                      std::shared_ptr<core::ViewFactory>      viewFactory = nullptr)
+        : vmFactory_  (std::move(vmFactory))
+        , sessions_   (std::move(sessions))
+        , viewFactory_(std::move(viewFactory))
     {}
 
     void registerRoutes(HttpServer& http) {
@@ -79,6 +83,22 @@ public:
                 return handleCallKw_(req, body, res);
             });
         http.addCorsOptions("/web/session/authenticate");
+
+        // Action load — POST /web/action/load {params:{action_id:N}}
+        http.addJsonPostWithResponse("/web/action/load",
+            [this](const HttpRequestPtr& req,
+                   const nlohmann::json& body,
+                   HttpResponsePtr&      res) {
+                return handleActionLoad_(req, body, res);
+            });
+        http.addCorsOptions("/web/action/load");
+
+        // Breadcrumbs stub
+        http.addJsonPost("/web/action/load_breadcrumbs",
+            [this](const HttpRequestPtr& req, const nlohmann::json& body) {
+                return handleActionLoadBreadcrumbs_(req, body);
+            });
+        http.addCorsOptions("/web/action/load_breadcrumbs");
     }
 
 private:
@@ -130,6 +150,11 @@ private:
                 call.kwargs["context"] = nlohmann::json::object();
             call.kwargs["context"]["uid"]        = session.uid;
             call.kwargs["context"]["session_id"] = sid;
+
+            // get_views is handled via ViewFactory when the ViewModel doesn't implement it
+            if (call.method == "get_views" && viewFactory_) {
+                return successResponse_(id, handleGetViews_(call));
+            }
 
             auto vm     = vmFactory_->create(call.model, core::Lifetime::Transient);
             auto result = vm->callKw(call);
@@ -264,8 +289,132 @@ private:
         };
     }
 
+    // ----------------------------------------------------------
+    // get_views — builds view descriptor from ViewFactory
+    // args[0] = [[view_id_or_false, view_type], ...]
+    // ----------------------------------------------------------
+    nlohmann::json handleGetViews_(const core::CallKwArgs& call) {
+        const std::string& model = call.model;
+
+        // Parse requested views from args[0]
+        std::vector<std::string> requestedTypes;
+        if (!call.args.empty() && call.args[0].is_array()) {
+            for (const auto& pair : call.args[0]) {
+                if (pair.is_array() && pair.size() >= 2 && pair[1].is_string())
+                    requestedTypes.push_back(pair[1].get<std::string>());
+            }
+        }
+        if (requestedTypes.empty()) requestedTypes = {"list", "form"};
+
+        nlohmann::json views    = nlohmann::json::object();
+        nlohmann::json allFields= nlohmann::json::object();
+
+        for (const auto& vtype : requestedTypes) {
+            nlohmann::json viewEntry;
+            viewEntry["id"]    = 0;
+            viewEntry["type"]  = vtype;
+            viewEntry["model"] = model;
+            viewEntry["toolbar"] = nlohmann::json::object();
+
+            if (viewFactory_ && viewFactory_->hasView(model, vtype)) {
+                auto view = viewFactory_->getView(model, vtype);
+                viewEntry["arch"]   = view->arch();
+                viewEntry["fields"] = view->fields();
+                // Merge fields into allFields
+                for (auto& [k,v] : view->fields().items())
+                    allFields[k] = v;
+            } else {
+                // Minimal fallback arch
+                viewEntry["arch"]   = "<" + vtype + "/>";
+                viewEntry["fields"] = nlohmann::json::object();
+            }
+            views[vtype] = std::move(viewEntry);
+        }
+
+        // models section: field metadata keyed by model name
+        nlohmann::json models = nlohmann::json::object();
+        if (!allFields.empty())
+            models[model] = {{"fields", allFields}};
+
+        return {{"views", views}, {"models", models}};
+    }
+
+    // ----------------------------------------------------------
+    // /web/action/load
+    // ----------------------------------------------------------
+    nlohmann::json handleActionLoad_(const HttpRequestPtr& req,
+                                      const nlohmann::json& body,
+                                      HttpResponsePtr&      /*res*/) {
+        const auto id  = body.value("id", nlohmann::json{});
+        try {
+            const auto& params = body.value("params", nlohmann::json::object());
+            // action_id can be int or string path
+            int actionId = 0;
+            if (params.contains("action_id")) {
+                if (params["action_id"].is_number_integer())
+                    actionId = params["action_id"].get<int>();
+                else if (params["action_id"].is_string()) {
+                    try { actionId = std::stoi(params["action_id"].get<std::string>()); }
+                    catch (...) {}
+                }
+            }
+
+            // Auth check
+            const std::string sid     = resolveOrCreateSid_(req);
+            const Session     session = sessions_->get(sid).value_or(Session{});
+            if (!session.isAuthenticated())
+                return errorResponse_(id, 100, "Session expired", "Please authenticate first.");
+
+            // Delegate to ir.actions.act_window viewmodel
+            auto vm = vmFactory_->create("ir.actions.act_window", core::Lifetime::Transient);
+            core::CallKwArgs call;
+            call.model  = "ir.actions.act_window";
+            call.method = "read";
+            call.args   = nlohmann::json::array({nlohmann::json::array({actionId})});
+            call.kwargs = nlohmann::json::object();
+
+            auto rows = vm->callKw(call);
+            if (!rows.is_array() || rows.empty())
+                return errorResponse_(id, 404, "Action not found",
+                                      "No action with id " + std::to_string(actionId));
+
+            // Build full action dict
+            nlohmann::json row  = rows[0];
+            nlohmann::json act  = row;
+            act["id"]           = actionId;
+            act["type"]         = "ir.actions.act_window";
+            act["display_name"] = row.value("name", std::string{});
+            act["xml_id"]       = false;
+            act["binding_model_id"]    = false;
+            act["binding_type"]        = "action";
+            act["binding_view_types"]  = "list,form";
+
+            // Build views array from view_mode
+            nlohmann::json viewsArr = nlohmann::json::array();
+            std::string viewMode = row.value("view_mode", std::string{"list,form"});
+            std::istringstream ss(viewMode);
+            std::string tok;
+            while (std::getline(ss, tok, ','))
+                viewsArr.push_back(nlohmann::json::array({false, tok}));
+            act["views"] = viewsArr;
+
+            return successResponse_(id, act);
+
+        } catch (const std::exception& e) {
+            return errorResponse_(id, 200, "Odoo Server Error", e.what());
+        }
+    }
+
+    // Stub — webclient calls this to restore breadcrumbs after reload
+    nlohmann::json handleActionLoadBreadcrumbs_(const HttpRequestPtr& /*req*/,
+                                                 const nlohmann::json& body) {
+        const auto id = body.value("id", nlohmann::json{});
+        return successResponse_(id, nlohmann::json::array());
+    }
+
     std::shared_ptr<core::ViewModelFactory> vmFactory_;
     std::shared_ptr<SessionManager>         sessions_;
+    std::shared_ptr<core::ViewFactory>      viewFactory_;
 };
 
 } // namespace odoo::infrastructure
