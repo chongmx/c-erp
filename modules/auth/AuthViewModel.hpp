@@ -53,6 +53,9 @@ public:
         REGISTER_METHOD("web_search_read",  handleSearchRead)
         REGISTER_METHOD("read",             handleRead)
         REGISTER_METHOD("web_read",         handleRead)
+        REGISTER_METHOD("create",           handleCreate)
+        REGISTER_METHOD("write",            handleWrite)
+        REGISTER_METHOD("unlink",           handleUnlink)
         REGISTER_METHOD("fields_get",       handleFieldsGet)
         REGISTER_METHOD("change_password",  handleChangePassword)
     }
@@ -174,6 +177,36 @@ private:
             });
         }
         return true;
+    }
+
+    // ----------------------------------------------------------
+    // create — new user; hashes password before storing
+    // ----------------------------------------------------------
+    nlohmann::json handleCreate(const core::CallKwArgs& call) {
+        auto vals = call.arg(0).is_object() ? call.arg(0) : nlohmann::json::object();
+        const std::string pw = vals.value("password", std::string{});
+        if (pw.empty()) throw std::runtime_error("password is required");
+        nlohmann::json normalized = vals;
+        normalized["password"] = AuthService::hashPassword(pw);
+        ResUsers proto(db_);
+        return proto.create(normalized);
+    }
+
+    nlohmann::json handleWrite(const core::CallKwArgs& call) {
+        auto vals = call.arg(1).is_object() ? call.arg(1) : nlohmann::json::object();
+        // Hash password if being changed
+        if (vals.contains("password") && vals["password"].is_string()) {
+            const std::string pw = vals["password"].get<std::string>();
+            if (!pw.empty() && pw.front() != '$')   // not already a hash
+                vals["password"] = AuthService::hashPassword(pw);
+        }
+        ResUsers proto(db_);
+        return proto.write(call.ids(), vals);
+    }
+
+    nlohmann::json handleUnlink(const core::CallKwArgs& call) {
+        ResUsers proto(db_);
+        return proto.unlink(call.ids());
     }
 
     // ----------------------------------------------------------

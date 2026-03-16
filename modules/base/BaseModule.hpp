@@ -506,19 +506,11 @@ private:
     nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
         const int  limit = call.limit() > 0 ? call.limit() : 80;
         const auto order = call.order().empty() ? "id ASC" : call.order();
-        auto records = service_->searchRead(call.domain(), call.fields(),
-                                            limit, call.offset(), order);
-        auto view = viewFactory_->getView("res.partner", "form");
-        nlohmann::json result = nlohmann::json::array();
-        for (const auto& rec : records) result.push_back(view->render(rec));
-        return result;
+        return service_->searchRead(call.domain(), call.fields(),
+                                    limit, call.offset(), order);
     }
     nlohmann::json handleRead(const core::CallKwArgs& call) {
-        auto records = service_->read(call.ids(), call.fields());
-        auto view = viewFactory_->getView("res.partner", "form");
-        nlohmann::json result = nlohmann::json::array();
-        for (const auto& rec : records) result.push_back(view->render(rec));
-        return result;
+        return service_->read(call.ids(), call.fields());
     }
     nlohmann::json handleCreate(const core::CallKwArgs& call) {
         const auto v = call.arg(0);

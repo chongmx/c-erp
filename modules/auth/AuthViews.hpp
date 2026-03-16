@@ -79,6 +79,64 @@ public:
 };
 
 // ================================================================
+// UsersListView — res.users.list
+// ================================================================
+class UsersListView : public core::BaseView {
+public:
+    std::string viewName() const override { return "res.users.list"; }
+
+    std::string arch() const override {
+        return "<list>"
+               "<field name=\"login\"/>"
+               "<field name=\"partner_id\"/>"
+               "<field name=\"company_id\"/>"
+               "<field name=\"active\"/>"
+               "</list>";
+    }
+
+    nlohmann::json fields() const override {
+        return {
+            {"login",      {{"type","char"},    {"string","Login"}}},
+            {"partner_id", {{"type","many2one"},{"string","Partner"},  {"relation","res.partner"}}},
+            {"company_id", {{"type","many2one"},{"string","Company"},  {"relation","res.company"}}},
+            {"active",     {{"type","boolean"}, {"string","Active"}}},
+        };
+    }
+
+    nlohmann::json render(const nlohmann::json& record) const override {
+        return {{"arch", arch()}, {"fields", fields()}, {"record", record}};
+    }
+};
+
+// ================================================================
+// CompanyListView — res.company.list
+// ================================================================
+class CompanyListView : public core::BaseView {
+public:
+    std::string viewName() const override { return "res.company.list"; }
+
+    std::string arch() const override {
+        return "<list>"
+               "<field name=\"name\"/>"
+               "<field name=\"email\"/>"
+               "<field name=\"phone\"/>"
+               "</list>";
+    }
+
+    nlohmann::json fields() const override {
+        return {
+            {"name",  {{"type","char"}, {"string","Company Name"}, {"required",true}}},
+            {"email", {{"type","char"}, {"string","Email"}}},
+            {"phone", {{"type","char"}, {"string","Phone"}}},
+        };
+    }
+
+    nlohmann::json render(const nlohmann::json& record) const override {
+        return {{"arch", arch()}, {"fields", fields()}, {"record", record}};
+    }
+};
+
+// ================================================================
 // GroupsListView — res.groups.list
 // ================================================================
 class GroupsListView : public core::BaseView {

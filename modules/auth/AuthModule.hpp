@@ -74,7 +74,9 @@ public:
     }
 
     void registerViews() override {
-        views_.registerView<UsersFormView> ("res.users.form");
+        views_.registerView<UsersListView>  ("res.users.list");
+        views_.registerView<UsersFormView>  ("res.users.form");
+        views_.registerView<CompanyListView>("res.company.list");
         views_.registerView<CompanyFormView>("res.company.form");
         views_.registerView<GroupsListView> ("res.groups.list");
     }
@@ -97,8 +99,7 @@ public:
         });
 
         viewModels_.registerCreator("res.company", [db] {
-            // Minimal viewmodel — company CRUD goes through a service later
-            return std::make_shared<SimpleViewModel>("res.company", db);
+            return std::make_shared<CompanyViewModel>(db);
         });
     }
 
@@ -121,54 +122,61 @@ private:
     core::ViewFactory&      views_;
 
     // ----------------------------------------------------------
-    // Minimal passthrough ViewModel for models without business logic
+    // Full CRUD ViewModel for res.company
     // ----------------------------------------------------------
-    class SimpleViewModel : public core::BaseViewModel {
+    class CompanyViewModel : public core::BaseViewModel {
     public:
-        explicit SimpleViewModel(std::string modelName,
-                                  std::shared_ptr<infrastructure::DbConnection> db)
-            : modelName_(std::move(modelName)), db_(std::move(db))
+        explicit CompanyViewModel(std::shared_ptr<infrastructure::DbConnection> db)
+            : db_(std::move(db))
         {
-            REGISTER_METHOD("search_read", handleSearchRead)
-            REGISTER_METHOD("read",        handleRead)
-            REGISTER_METHOD("fields_get",  handleFieldsGet)
+            REGISTER_METHOD("search_read",  handleSearchRead)
+            REGISTER_METHOD("read",         handleRead)
+            REGISTER_METHOD("web_read",     handleRead)
+            REGISTER_METHOD("create",       handleCreate)
+            REGISTER_METHOD("write",        handleWrite)
+            REGISTER_METHOD("unlink",       handleUnlink)
+            REGISTER_METHOD("fields_get",   handleFieldsGet)
+            REGISTER_METHOD("search_count", handleSearchCount)
         }
 
-        std::string modelName() const override { return modelName_; }
+        std::string modelName() const override { return "res.company"; }
 
     private:
-        std::string modelName_;
         std::shared_ptr<infrastructure::DbConnection> db_;
 
         nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
-            // Generic pass-through using raw SQL
-            auto conn = db_->acquire();
-            pqxx::work txn{conn.get()};
-            const std::string table = modelName_;
-            // Replace dots with underscores for table name
-            std::string tbl = table;
-            std::replace(tbl.begin(), tbl.end(), '.', '_');
-            const int limit = call.limit() > 0 ? call.limit() : 80;
-            auto res = txn.exec(
-                "SELECT * FROM " + tbl + " LIMIT " + std::to_string(limit));
-            nlohmann::json arr = nlohmann::json::array();
-            for (const auto& row : res) {
-                nlohmann::json obj;
-                for (const auto& f : row)
-                    obj[f.name()] = f.is_null()
-                        ? nlohmann::json(nullptr)
-                        : nlohmann::json(f.c_str());
-                arr.push_back(std::move(obj));
-            }
-            return arr;
+            ResCompany proto(db_);
+            return proto.searchRead(call.domain(), call.fields(),
+                                    call.limit() > 0 ? call.limit() : 80,
+                                    call.offset(), "id ASC");
         }
-
         nlohmann::json handleRead(const core::CallKwArgs& call) {
-            return handleSearchRead(call);
+            ResCompany proto(db_);
+            return proto.read(call.ids(), call.fields());
         }
-
-        nlohmann::json handleFieldsGet(const core::CallKwArgs& /*call*/) {
-            return nlohmann::json::object();
+        nlohmann::json handleCreate(const core::CallKwArgs& call) {
+            const auto v = call.arg(0);
+            if (!v.is_object()) throw std::runtime_error("create: args[0] must be a dict");
+            ResCompany proto(db_);
+            return proto.create(v);
+        }
+        nlohmann::json handleWrite(const core::CallKwArgs& call) {
+            const auto v = call.arg(1);
+            if (!v.is_object()) throw std::runtime_error("write: args[1] must be a dict");
+            ResCompany proto(db_);
+            return proto.write(call.ids(), v);
+        }
+        nlohmann::json handleUnlink(const core::CallKwArgs& call) {
+            ResCompany proto(db_);
+            return proto.unlink(call.ids());
+        }
+        nlohmann::json handleFieldsGet(const core::CallKwArgs& call) {
+            ResCompany proto(db_);
+            return proto.fieldsGet(call.fields());
+        }
+        nlohmann::json handleSearchCount(const core::CallKwArgs& call) {
+            ResCompany proto(db_);
+            return proto.searchCount(call.domain());
         }
     };
 

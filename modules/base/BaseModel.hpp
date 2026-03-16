@@ -98,7 +98,7 @@ public:
             if (!first) { colList += ","; placeholders += ","; }
             colList      += col;
             placeholders += "$" + std::to_string(idx++);
-            appendParam_(params, full[col]);
+            appendParam_(params, normalizeForDb_(full[col], col));
             first = false;
         }
 
@@ -141,7 +141,7 @@ public:
             if (!fieldRegistry_.has(it.key())) continue;
             if (!first) setClause += ",";
             setClause += it.key() + "=$" + std::to_string(idx++);
-            appendParam_(params, it.value());
+            appendParam_(params, normalizeForDb_(it.value(), it.key()));
             first = false;
         }
         if (setClause.empty()) return true;
@@ -268,6 +268,27 @@ private:
         for (const auto& f : fields)
             if (f != "id" && fieldRegistry_.has(f)) s += "," + f;
         return s;
+    }
+
+    // Odoo JSON uses `false` for null FK/integer values and `[id,"Name"]` arrays
+    // for set Many2one values.  Neither is accepted by PostgreSQL for integer
+    // columns — normalise them before binding.
+    nlohmann::json normalizeForDb_(const nlohmann::json& val,
+                                   const std::string&    col) const {
+        if (!fieldRegistry_.has(col)) return val;
+        const auto& fdef = fieldRegistry_.get(col);
+
+        // false → NULL for every non-boolean field
+        if (val.is_boolean() && !val.get<bool>() &&
+            fdef.type != FieldType::Boolean)
+            return nlohmann::json(nullptr);
+
+        // [id, "Name"] → id  (Many2one display tuple)
+        if (fdef.type == FieldType::Many2one &&
+            val.is_array() && !val.empty() && val[0].is_number_integer())
+            return nlohmann::json(val[0].get<int>());
+
+        return val;
     }
 
     static void appendParam_(pqxx::params& p, const nlohmann::json& v) {
