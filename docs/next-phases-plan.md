@@ -182,10 +182,10 @@ ProductProduct   → ODOO_MODEL("product.product",   "product_product")
 
 ---
 
-## Phase 9 — Sale
+## ✅ Phase 9 — Sale (COMPLETE — see sale-module-progress.md)
 
 **Reference:** `zzref/odoo/addons/sale/models/sale_order.py`, `sale_order_line.py`
-**Files:** `modules/sale/SaleModule.hpp`, `modules/sale/SaleViews.hpp`
+**Files:** `modules/sale/SaleModule.hpp`
 **Dependency:** product (product_id FK in sale lines)
 
 ### Simplifications vs Odoo
