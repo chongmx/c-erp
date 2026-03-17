@@ -515,16 +515,14 @@ private:
         auto conn = services_.db()->acquire();
         pqxx::work txn{conn.get()};
 
-        if (txn.exec("SELECT COUNT(*) FROM ir_act_window")[0][0].as<int>() > 0) return;
-
         txn.exec(R"(
             INSERT INTO ir_act_window (id, name, res_model, view_mode, path, context) VALUES
-                (1, 'Contacts',  'res.partner', 'list,form', 'contacts', '{}'),
-                (2, 'Users',     'res.users',   'list,form', 'users',    '{}'),
-                (3, 'Companies', 'res.company', 'list,form', 'companies','{}')
+                (1, 'Contacts',  'res.partner', 'list,form', 'contacts',  '{}'),
+                (2, 'Users',     'res.users',   'list,form', 'users',     '{}'),
+                (3, 'Companies', 'res.company', 'list,form', 'companies', '{}')
             ON CONFLICT (id) DO NOTHING
         )");
-        txn.exec("SELECT setval('ir_act_window_id_seq', 3, true)");
+        txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
         txn.commit();
     }
 
@@ -535,8 +533,6 @@ private:
         auto conn = services_.db()->acquire();
         pqxx::work txn{conn.get()};
 
-        if (txn.exec("SELECT COUNT(*) FROM ir_ui_menu")[0][0].as<int>() > 0) return;
-
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
                 (1, 'Contacts',  NULL, 10, 1),
@@ -544,7 +540,7 @@ private:
                 (3, 'Companies', NULL, 30, 3)
             ON CONFLICT (id) DO NOTHING
         )");
-        txn.exec("SELECT setval('ir_ui_menu_id_seq', 3, true)");
+        txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");
         txn.commit();
     }
 };

@@ -2,6 +2,7 @@
 #include "BaseModule.hpp"
 #include "modules/auth/AuthModule.hpp"
 #include "modules/ir/IrModule.hpp"
+#include "modules/account/AccountModule.hpp"
 #include <csignal>
 #include <iostream>
 #include <memory>
@@ -37,6 +38,7 @@ int main(int, char**) {
     g_container->addModule<odoo::modules::base::BaseModule>();
     g_container->addModule<odoo::modules::auth::AuthModule>();
     g_container->addModule<odoo::modules::ir::IrModule>();
+    g_container->addModule<odoo::modules::account::AccountModule>();
 
     try {
         std::cout << "[odoo-cpp] Booting modules...\n";
