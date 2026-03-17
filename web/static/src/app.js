@@ -1,13 +1,18 @@
 /**
- * app.js — IR-driven OWL application.
+ * app.js — IR-driven OWL application with Odoo 14-style navigation.
  *
- * Flow after login:
- *   1. load_menus()  → build sidebar from ir.ui.menu
- *   2. Click menu    → loadAction(actionId) → get action dict
- *   3. Action loaded → getViews(model, [[false,'list']]) → render list
- *   4. Click record  → getViews(model, [[false,'form']]) → render form
+ * Navigation flow:
+ *   Home screen → click app tile → app context (horizontal nav)
+ *   Top nav section → click direct link → load action
+ *   Top nav section (with children) → dropdown → click leaf → load action
  */
 const { Component, useState, xml, mount, onMounted } = owl;
+
+// App tile background colors (cycled by index)
+const APP_COLORS = [
+    '#875A7B', '#00A09D', '#E74C3C', '#1ABC9C',
+    '#3498DB', '#F39C12', '#9B59B6', '#2ECC71',
+];
 
 // ----------------------------------------------------------------
 // ListView — renders a list from get_views + search_read
@@ -87,13 +92,8 @@ class ListView extends Component {
         return String(val);
     }
 
-    onRowClick(id) {
-        this.props.onOpenForm(id);
-    }
-
-    onNew() {
-        this.props.onOpenForm(null);
-    }
+    onRowClick(id) { this.props.onOpenForm(id); }
+    onNew()        { this.props.onOpenForm(null); }
 }
 
 // ----------------------------------------------------------------
@@ -172,9 +172,7 @@ class FormView extends Component {
         return String(val);
     }
 
-    onFieldChange(name, value) {
-        this.state.record[name] = value;
-    }
+    onFieldChange(name, value) { this.state.record[name] = value; }
 
     async onSave() {
         try {
@@ -207,7 +205,7 @@ class FormView extends Component {
 }
 
 // ----------------------------------------------------------------
-// ActionView — orchestrates list ↔ form switching for one action
+// ActionView — orchestrates list ↔ form switching
 // ----------------------------------------------------------------
 class ActionView extends Component {
     static template = xml`
@@ -269,27 +267,128 @@ class ActionView extends Component {
 }
 
 // ----------------------------------------------------------------
-// MainApp — IR-driven shell with sidebar from load_menus()
+// HomeScreen — grid of colored app tiles
+// ----------------------------------------------------------------
+class HomeScreen extends Component {
+    static template = xml`
+        <div class="home-screen">
+            <div class="home-header">
+                <span class="home-title">odoo-cpp</span>
+                <UserMenu/>
+            </div>
+            <div class="app-grid">
+                <t t-foreach="props.apps" t-as="app" t-key="app.id">
+                    <div class="app-tile"
+                         t-on-click="() => props.onSelectApp(app)"
+                         t-att-style="'--tile-color:' + appColor(app_index)">
+                        <div class="app-tile-icon">
+                            <span t-esc="appIcon(app.web_icon)"/>
+                        </div>
+                        <div class="app-tile-name" t-esc="app.name"/>
+                    </div>
+                </t>
+            </div>
+        </div>
+    `;
+
+    static components = { UserMenu };
+
+    appColor(index) { return APP_COLORS[index % APP_COLORS.length]; }
+
+    appIcon(webIcon) {
+        const icons = { accounting: '📒', contacts: '👥', settings: '⚙', sales: '💰', purchase: '🛒' };
+        return icons[webIcon] || '◉';
+    }
+}
+
+// ----------------------------------------------------------------
+// AppTopNav — horizontal nav bar with dropdowns
+// ----------------------------------------------------------------
+class AppTopNav extends Component {
+    static template = xml`
+        <nav class="app-nav" t-on-click="onNavClick">
+            <div class="app-nav-left">
+                <span class="nav-home-btn" t-on-click.stop="props.onHome">⊞</span>
+                <span class="nav-separator"/>
+                <span class="nav-app-title" t-esc="props.appName"/>
+            </div>
+            <div class="app-nav-items">
+                <t t-foreach="props.sections" t-as="sec" t-key="sec.id">
+                    <div class="nav-section-wrap">
+                        <div t-attf-class="nav-section-btn{{ isActive(sec) ? ' active' : '' }}"
+                             t-on-click.stop="() => this.onSectionClick(sec)">
+                            <span t-esc="sec.name"/>
+                            <t t-if="sec.children.length > 0">
+                                <span class="nav-caret">▾</span>
+                            </t>
+                        </div>
+                        <t t-if="state.openSection === sec.id">
+                            <div class="dropdown-menu" t-on-click.stop="">
+                                <t t-foreach="sec.children" t-as="leaf" t-key="leaf.id">
+                                    <div t-attf-class="dropdown-item{{ props.activeMenuId === leaf.id ? ' active' : '' }}"
+                                         t-on-click="() => this.onLeafClick(leaf)"
+                                         t-esc="leaf.name"/>
+                                </t>
+                            </div>
+                        </t>
+                    </div>
+                </t>
+            </div>
+            <div class="app-nav-right">
+                <UserMenu/>
+            </div>
+        </nav>
+    `;
+
+    static components = { UserMenu };
+
+    setup() {
+        this.state = useState({ openSection: null });
+    }
+
+    isActive(sec) {
+        if (this.props.activeMenuId === sec.id) return true;
+        return sec.children.some(c => c.id === this.props.activeMenuId);
+    }
+
+    onNavClick() {
+        // Close dropdown when clicking outside a section-wrap
+        this.state.openSection = null;
+    }
+
+    onSectionClick(sec) {
+        if (sec.children.length > 0) {
+            // Toggle dropdown
+            this.state.openSection = this.state.openSection === sec.id ? null : sec.id;
+        } else {
+            // Direct link
+            this.state.openSection = null;
+            this.props.onSelectLeaf(sec);
+        }
+    }
+
+    onLeafClick(leaf) {
+        this.state.openSection = null;
+        this.props.onSelectLeaf(leaf);
+    }
+}
+
+// ----------------------------------------------------------------
+// MainApp — orchestrates home screen ↔ app context
 // ----------------------------------------------------------------
 class MainApp extends Component {
     static template = xml`
         <div class="shell">
-            <nav class="sidebar">
-                <div class="sidebar-logo">odoo-cpp</div>
-                <t t-foreach="state.menus" t-as="menu" t-key="menu.id">
-                    <div t-attf-class="nav-item {{ state.activeMenuId === menu.id ? 'active' : '' }}"
-                         t-on-click="() => this.activateMenu(menu)"
-                         t-esc="menu.name"/>
-                </t>
-                <t t-if="state.loadingMenus">
-                    <div class="nav-item">Loading…</div>
-                </t>
-            </nav>
-            <div class="main">
-                <div class="topbar">
-                    <h1 t-esc="state.currentTitle || 'odoo-cpp'"/>
-                    <UserMenu/>
-                </div>
+            <t t-if="state.mode === 'home'">
+                <HomeScreen apps="state.apps" onSelectApp.bind="selectApp"/>
+            </t>
+            <t t-else="">
+                <AppTopNav
+                    appName="state.activeApp ? state.activeApp.name : ''"
+                    sections="state.sections"
+                    activeMenuId="state.activeMenuId"
+                    onHome.bind="goHome"
+                    onSelectLeaf.bind="activateLeaf"/>
                 <div class="content">
                     <t t-if="state.loadingAction">
                         <div class="loading">Loading…</div>
@@ -299,23 +398,25 @@ class MainApp extends Component {
                     </t>
                     <t t-else="">
                         <div class="welcome">
-                            <h2>Welcome to odoo-cpp</h2>
+                            <h2 t-esc="state.activeApp ? state.activeApp.name : ''"/>
                             <p>Select a menu item to get started.</p>
                         </div>
                     </t>
                 </div>
-            </div>
+            </t>
         </div>
     `;
 
-    static components = { ActionView, UserMenu };
+    static components = { HomeScreen, AppTopNav, ActionView };
 
     setup() {
         this.state = useState({
-            menus:         [],
-            loadingMenus:  true,
+            mode:          'home',
+            apps:          [],
+            allMenus:      {},
+            activeApp:     null,
+            sections:      [],
             activeMenuId:  null,
-            currentTitle:  '',
             action:        null,
             loadingAction: false,
         });
@@ -324,31 +425,55 @@ class MainApp extends Component {
 
     async loadMenus() {
         try {
-            const data = await RpcService.loadMenus();
-            // data is flat dict keyed by id string + "root"
-            const root     = data.root || {};
-            const rootIds  = root.children || [];
-            this.state.menus = rootIds
+            const data    = await RpcService.loadMenus();
+            const rootIds = (data.root || {}).children || [];
+            this.state.allMenus = data;
+            this.state.apps = rootIds
                 .map(id => data[String(id)])
                 .filter(Boolean)
                 .sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
         } catch (e) {
             console.error('load_menus failed:', e);
-        } finally {
-            this.state.loadingMenus = false;
         }
     }
 
-    async activateMenu(menu) {
-        this.state.activeMenuId  = menu.id;
-        this.state.currentTitle  = menu.name;
-        this.state.action        = null;
+    selectApp(app) {
+        const data = this.state.allMenus;
 
-        if (!menu.action_id) return;
+        // Build sections: direct children of app, with their own children attached
+        const sections = (app.children || [])
+            .map(id => {
+                const sec = data[String(id)];
+                if (!sec) return null;
+                const children = (sec.children || [])
+                    .map(cid => data[String(cid)])
+                    .filter(Boolean)
+                    .sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
+                return { ...sec, children };
+            })
+            .filter(Boolean)
+            .sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
+
+        this.state.activeApp    = app;
+        this.state.sections     = sections;
+        this.state.mode         = 'app';
+        this.state.activeMenuId = null;
+        this.state.action       = null;
+    }
+
+    goHome() {
+        this.state.mode      = 'home';
+        this.state.activeApp = null;
+        this.state.action    = null;
+    }
+
+    async activateLeaf(leaf) {
+        this.state.activeMenuId = leaf.id;
+        if (!leaf.action_id) return;
 
         this.state.loadingAction = true;
         try {
-            this.state.action = await RpcService.loadAction(menu.action_id);
+            this.state.action = await RpcService.loadAction(leaf.action_id);
         } catch (e) {
             console.error('loadAction failed:', e);
         } finally {

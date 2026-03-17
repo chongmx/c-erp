@@ -1239,12 +1239,28 @@ private:
         )");
         txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
 
+        // Level 1: Accounting app — direct links + section header
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-                (4, 'Chart of Accounts', NULL, 40, 4),
-                (5, 'Journals',          NULL, 50, 5),
-                (6, 'Journal Entries',   NULL, 60, 6),
-                (7, 'Payments',          NULL, 70, 7)
+                (11, 'Journal Entries', 10, 10, 6),
+                (12, 'Customers',       10, 20, NULL),
+                (13, 'Vendors',         10, 30, NULL),
+                (14, 'Configuration',   10, 40, NULL)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Level 2: Customers dropdown
+        txn.exec(R"(
+            INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
+                (15, 'Payments', 12, 10, 7)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Level 2: Configuration dropdown
+        txn.exec(R"(
+            INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
+                (16, 'Chart of Accounts', 14, 10, 4),
+                (17, 'Journals',          14, 20, 5)
             ON CONFLICT (id) DO NOTHING
         )");
         txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");

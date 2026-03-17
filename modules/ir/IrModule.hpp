@@ -527,19 +527,42 @@ private:
     }
 
     // ----------------------------------------------------------
-    // Seed root menus
+    // Seed root menus — 3-level hierarchy:
+    //   Level 0: App tiles (parent_id=NULL, no action)
+    //   Level 1: Section/direct links (parent=app)
+    //   Level 2: Dropdown leaves (parent=section, have action)
     // ----------------------------------------------------------
     void seedMenus_() {
         auto conn = services_.db()->acquire();
         pqxx::work txn{conn.get()};
 
+        // Remove old flat menu rows (ids 1-9) that predate the 3-level hierarchy
+        txn.exec("DELETE FROM ir_ui_menu WHERE id < 10");
+
+        // Level 0: App tiles shown on home screen
         txn.exec(R"(
-            INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-                (1, 'Contacts',  NULL, 10, 1),
-                (2, 'Users',     NULL, 20, 2),
-                (3, 'Companies', NULL, 30, 3)
+            INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id, web_icon) VALUES
+                (10, 'Accounting', NULL, 10, NULL, 'accounting'),
+                (20, 'Contacts',   NULL, 20, NULL, 'contacts'),
+                (30, 'Settings',   NULL, 30, NULL, 'settings')
             ON CONFLICT (id) DO NOTHING
         )");
+
+        // Level 1: Contacts app — single direct leaf
+        txn.exec(R"(
+            INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
+                (21, 'Contacts', 20, 10, 1)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Level 1: Settings app — direct leaves (Users, Companies)
+        txn.exec(R"(
+            INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
+                (31, 'Users',     30, 10, 2),
+                (32, 'Companies', 30, 20, 3)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
         txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");
         txn.commit();
     }
