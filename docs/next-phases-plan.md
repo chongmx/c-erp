@@ -459,7 +459,7 @@ This phase is large enough to be a full sub-project. Recommend implementing afte
 
 ---
 
-## Phase 12 — HR (Optional, Independent)
+## ✅ Phase 12 — HR (COMPLETE — see hr-module-progress.md)
 
 **Reference:** `zzref/odoo/addons/hr/models/`, `zzref/odoo/addons/resource/models/`
 **Dependency:** base (independent of sale/purchase)
@@ -585,5 +585,5 @@ The menu system now uses a **3-level hierarchy** (App → Section → Leaf) with
 | 8     | product  | 2      | Low-Medium | ✅ DONE |
 | 9     | sale     | 2      | Medium     | **NEXT** |
 | 10    | purchase | 2      | Medium     | **NEXT** |
-| 12    | hr       | 4      | Low-Medium | NEXT (independent) |
+| 12    | hr       | 4      | Low-Medium | ✅ DONE |
 | 11    | stock    | 3-9    | High       | Deferred |

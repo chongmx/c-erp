@@ -29,6 +29,7 @@ target_include_directories(c-erp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/product
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/sale
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/purchase
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/hr
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/include
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/drogon/lib/inc
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/drogon

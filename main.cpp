@@ -7,6 +7,7 @@
 #include "modules/product/ProductModule.hpp"
 #include "modules/sale/SaleModule.hpp"
 #include "modules/purchase/PurchaseModule.hpp"
+#include "modules/hr/HrModule.hpp"
 #include <csignal>
 #include <iostream>
 #include <memory>
@@ -47,6 +48,7 @@ int main(int, char**) {
     g_container->addModule<odoo::modules::product::ProductModule>();
     g_container->addModule<odoo::modules::sale::SaleModule>();
     g_container->addModule<odoo::modules::purchase::PurchaseModule>();
+    g_container->addModule<odoo::modules::hr::HrModule>();
 
     try {
         std::cout << "[odoo-cpp] Booting modules...\n";
