@@ -5,9 +5,10 @@
 // Implements the Odoo IR (Information Repository) layer needed
 // for a compatible webclient:
 //
-//   ir.ui.menu       — sidebar navigation tree
+//   ir.ui.menu            — sidebar navigation tree
 //   ir.actions.act_window — window actions (list/form launchers)
-//   ir.model         — introspects registered C++ models (no DB)
+//   ir.model              — introspects registered C++ models (no DB)
+//   ir.config.parameter   — system key-value configuration store
 //
 // initialize() creates tables and seeds a minimal menu tree
 // pointing at res.partner and res.users.
@@ -16,6 +17,7 @@
 #include "Factories.hpp"
 #include "BaseModel.hpp"
 #include "BaseViewModel.hpp"
+#include "GenericViewModel.hpp"
 #include "DbConnection.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
@@ -166,6 +168,41 @@ public:
     }
 };
 
+
+// ----------------------------------------------------------------
+// IrConfigParameter — ir.config.parameter
+// ----------------------------------------------------------------
+class IrConfigParameter : public core::BaseModel<IrConfigParameter> {
+public:
+    ODOO_MODEL("ir.config.parameter", "ir_config_parameter")
+
+    std::string key;
+    std::string value;
+
+    explicit IrConfigParameter(std::shared_ptr<infrastructure::DbConnection> db)
+        : core::BaseModel<IrConfigParameter>(std::move(db)) {}
+
+    void registerFields() override {
+        fieldRegistry_.add({"key",   core::FieldType::Char, "Key",   true});
+        fieldRegistry_.add({"value", core::FieldType::Char, "Value", false});
+    }
+
+    void serializeFields(nlohmann::json& j) const override {
+        j["key"]   = key;
+        j["value"] = value;
+    }
+
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("key")   && j["key"].is_string())   key   = j["key"].get<std::string>();
+        if (j.contains("value") && j["value"].is_string()) value = j["value"].get<std::string>();
+    }
+
+    std::vector<std::string> validate() const override {
+        std::vector<std::string> e;
+        if (key.empty()) e.push_back("Key is required");
+        return e;
+    }
+};
 
 // ================================================================
 // 2. VIEWMODELS
@@ -433,6 +470,9 @@ public:
         models_.registerCreator("ir.actions.act_window", [db]{
             return std::make_shared<IrActWindow>(db);
         });
+        models_.registerCreator("ir.config.parameter", [db]{
+            return std::make_shared<IrConfigParameter>(db);
+        });
     }
 
     void registerServices() override {}
@@ -454,12 +494,17 @@ public:
             return std::make_shared<IrModelViewModel>(
                 std::shared_ptr<core::ModelFactory>(&mf, [](auto*){}));
         });
+
+        viewModels_.registerCreator("ir.config.parameter", [db]{
+            return std::make_shared<core::GenericViewModel<IrConfigParameter>>(db);
+        });
     }
 
     void initialize() override {
         ensureSchema_();
         seedActions_();
         seedMenus_();
+        seedConfigParams_();
     }
 
 private:
@@ -500,6 +545,16 @@ private:
                 action_id INTEGER REFERENCES ir_act_window(id) ON DELETE SET NULL,
                 web_icon  VARCHAR,
                 active    BOOLEAN NOT NULL DEFAULT TRUE,
+                create_date TIMESTAMP DEFAULT now(),
+                write_date  TIMESTAMP DEFAULT now()
+            )
+        )");
+
+        txn.exec(R"(
+            CREATE TABLE IF NOT EXISTS ir_config_parameter (
+                id         SERIAL  PRIMARY KEY,
+                key        VARCHAR NOT NULL UNIQUE,
+                value      TEXT    NOT NULL DEFAULT '',
                 create_date TIMESTAMP DEFAULT now(),
                 write_date  TIMESTAMP DEFAULT now()
             )
@@ -564,6 +619,24 @@ private:
         )");
 
         txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");
+        txn.commit();
+    }
+
+    // ----------------------------------------------------------
+    // Seed ir_config_parameter defaults
+    // ----------------------------------------------------------
+    void seedConfigParams_() {
+        auto conn = services_.db()->acquire();
+        pqxx::work txn{conn.get()};
+
+        txn.exec(R"(
+            INSERT INTO ir_config_parameter (key, value) VALUES
+                ('web.base.url',           'http://localhost:8069'),
+                ('auth_signup.allow',      'True'),
+                ('auth_signup.reset_pwd',  'True'),
+                ('database.uuid',          gen_random_uuid()::text)
+            ON CONFLICT (key) DO NOTHING
+        )");
         txn.commit();
     }
 };
