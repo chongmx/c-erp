@@ -1,31 +1,30 @@
-# Next Implementation Phases — Roadmap
+# Upcoming Implementation Phases — Roadmap
 
 Reference: `zzref/odoo/addons/`
-Current state: base, auth, ir, account (Phases 1–6) complete and compiling.
+Current state: base, auth, ir, account, uom, product (Phases 1–8) complete and compiling.
 
 ---
 
 ## Critical Path
 
 ```
-[DONE] base → auth → ir → account
-         ↓
-Phase 7:  uom
-         ↓
-Phase 8:  product
-         ↓
-Phase 9:  sale
-         ↓
-Phase 10: purchase
-         ↓
-Phase 11: stock  (most complex — optional, deferred)
+[DONE] base → auth → ir → account → uom → product
+                                               ↓
+                                    Phase 9:  sale
+                                               ↓
+                                    Phase 10: purchase
+                                               ↓
+                                    Phase 11: stock  (most complex — deferred)
+
+[INDEPENDENT]
+                                    Phase 12: hr  (no product dep)
 ```
 
-Each phase depends on all previous. `uom` and `product` are the critical unlocking steps — `sale` and `purchase` both require product.
+`sale` and `purchase` both require `product` and `uom` (now complete).
 
 ---
 
-## Phase 7 — UOM (Units of Measure)
+## ✅ Phase 7 — UOM (COMPLETE — see uom-product-progress.md)
 
 **Reference:** `zzref/odoo/addons/uom/models/uom_uom.py`
 **File:** `modules/uom/UomModule.hpp`
@@ -87,7 +86,7 @@ CREATE TABLE IF NOT EXISTS uom_uom (
 
 ---
 
-## Phase 8 — Product
+## ✅ Phase 8 — Product (COMPLETE — see uom-product-progress.md)
 
 **Reference:** `zzref/odoo/addons/product/models/`
 **Files:** `modules/product/ProductModule.hpp`, `modules/product/ProductViews.hpp`
@@ -518,20 +517,48 @@ CREATE SEQUENCE IF NOT EXISTS sale_order_seq START 1;
 ```
 Name = `SO/2026/` + LPAD(nextval, 4, '0').
 
-### `AccountViewModel<T>` reuse
-All new simple models (UomUom, ProductCategory, ProductProduct, SaleOrderLine, PurchaseOrderLine) use `AccountViewModel<T>` from `AccountModule.hpp` directly — no new template needed. Just specialize for the module's model types.
-
-Actually, since `AccountViewModel<T>` is in the `account` namespace, consider moving it to a shared header (`core/GenericViewModel.hpp`) or re-declare it in each module. Simplest: copy-paste the template to a new `modules/shared/GenericViewModel.hpp` and include from both account and future modules.
+### `GenericViewModel<T>` — DONE
+Extracted to `modules/base/GenericViewModel.hpp`. Include it in new modules with `#include "GenericViewModel.hpp"` (already on include path via `modules/base`).
 
 ### IR menu id continuity
+The menu system now uses a **3-level hierarchy** (App → Section → Leaf) with non-sequential IDs. Old flat IDs 1-9 were deleted on boot.
+
+**ir_act_window IDs (flat sequence):**
 ```
-1-3  : ir (Contacts, Users, Companies)
-4-7  : account (Chart of Accounts, Journals, Entries, Payments)
-8    : uom (Units of Measure)
-9-10 : product (Products, Categories)
-11   : sale (Sales Orders)
-12   : purchase (Purchase Orders)
-13-14: hr (Employees, Departments)
+1  : res.partner  (Contacts)
+2  : res.users    (Users)
+3  : res.company  (Companies)
+4  : account.account
+5  : account.journal
+6  : account.move
+7  : account.payment
+8  : uom.uom
+9  : product.product
+10 : product.category
+11 : sale.order          ← next
+12 : purchase.order      ← next
+13 : hr.employee         ← next
+14 : hr.department       ← next
+```
+
+**ir_ui_menu IDs (hierarchical, by tens):**
+```
+10  Accounting app
+  11  Journal Entries, 12  Customers, 13  Vendors, 14  Configuration
+  15  Payments, 16  Chart of Accounts, 17  Journals
+20  Contacts app
+  21  Contacts
+30  Settings app
+  31  Users, 32  Companies
+50  Products app
+  51  Products, 52  Configuration
+  53  Units of Measure, 54  Categories
+60  Sales app          ← next (SaleModule to create)
+  61  Sales Orders
+70  Purchase app       ← next (PurchaseModule to create)
+  71  Purchase Orders
+80  HR app             ← next (HrModule to create)
+  81  Employees, 82  Departments
 ```
 
 ---
@@ -552,11 +579,11 @@ Actually, since `AccountViewModel<T>` is in the `account` namespace, consider mo
 
 ## Priority Order
 
-| Phase | Module  | Tables | Complexity | Value |
-|-------|---------|--------|------------|-------|
-| 7     | uom     | 1      | Low        | Unlocks product |
-| 8     | product | 2      | Low-Medium | Core catalog |
-| 9     | sale    | 2      | Medium     | Core revenue process |
-| 10    | purchase| 2      | Medium     | Core procurement |
-| 12    | hr      | 4      | Low-Medium | Independent |
-| 11    | stock   | 3-9    | High       | Inventory control |
+| Phase | Module   | Tables | Complexity | Status |
+|-------|----------|--------|------------|--------|
+| 7     | uom      | 1      | Low        | ✅ DONE |
+| 8     | product  | 2      | Low-Medium | ✅ DONE |
+| 9     | sale     | 2      | Medium     | **NEXT** |
+| 10    | purchase | 2      | Medium     | **NEXT** |
+| 12    | hr       | 4      | Low-Medium | NEXT (independent) |
+| 11    | stock    | 3-9    | High       | Deferred |

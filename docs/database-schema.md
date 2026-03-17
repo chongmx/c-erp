@@ -364,8 +364,8 @@ Sequence reset to `setval('ir_ui_menu_id_seq', 3, true)` after seed.
 | 7 | res_groups | auth | 3 | Public, Internal, Admin |
 | 8 | res_users | auth | 1 | admin / admin |
 | 9 | res_groups_users_rel | auth | 1 | admin → Admin group |
-| 10 | ir_act_window | ir | 7 | Contacts, Users, Companies + 4 account menus |
-| 11 | ir_ui_menu | ir | 7 | Contacts, Users, Companies + 4 account menus |
+| 10 | ir_act_window | ir | 10 | actions 1-10 (base/account/uom/product) |
+| 11 | ir_ui_menu | ir | 17 | 3-level hierarchy: apps 10/20/30/50 + leaves |
 | 12 | account_account | account | 9 | Minimal chart of accounts |
 | 13 | account_journal | account | 4 | SAL, PUR, BNK, CSH |
 | 14 | account_tax | account | 2 | 15% Sales Tax, 15% Purchase Tax |
@@ -373,8 +373,11 @@ Sequence reset to `setval('ir_ui_menu_id_seq', 3, true)` after seed.
 | 16 | account_move_line | account | 0 | Journal entry lines |
 | 17 | account_payment | account | 0 | Payments (user-created) |
 | 18 | account_payment_term | account | 2 | Immediate Payment, 30 Days |
+| 19 | uom_uom | uom | 15 | Units, kg, L, Hours, m, etc. |
+| 20 | product_category | product | 3 | All, Goods, Services |
+| 21 | product_product | product | 0 | Products (user-created) |
 
-**Total: 18 tables**
+**Total: 21 tables**
 
 ---
 
@@ -620,3 +623,66 @@ res_partner   ←── account_payment
 - Many2one fields stored as bare `INTEGER` FK column (the `[id, "Name"]` tuple used in API responses is assembled at serialization time, not stored).
 - `BaseModel<T>::normalizeForDb_()` converts JSON `false` → `NULL` and `[id,"Name"]` → `id` before binding SQL params.
 - Boolean fields use PostgreSQL native `BOOLEAN` (`t`/`f` wire format, parsed in `rowsToJson_`).
+
+---
+
+## Module: uom  (`modules/uom/UomModule.hpp`)
+
+### uom_uom
+
+```sql
+CREATE TABLE IF NOT EXISTS uom_uom (
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR NOT NULL,
+    category    VARCHAR NOT NULL DEFAULT 'Unit',
+    uom_type    VARCHAR NOT NULL DEFAULT 'reference',
+    factor      NUMERIC(12,6) NOT NULL DEFAULT 1.0,
+    rounding    NUMERIC(12,6) NOT NULL DEFAULT 0.01,
+    active      BOOLEAN NOT NULL DEFAULT TRUE,
+    create_date TIMESTAMP DEFAULT now(),
+    write_date  TIMESTAMP DEFAULT now()
+)
+```
+
+---
+
+## Module: product  (`modules/product/ProductModule.hpp`)
+
+### product_category
+
+```sql
+CREATE TABLE IF NOT EXISTS product_category (
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR NOT NULL,
+    parent_id   INTEGER REFERENCES product_category(id) ON DELETE SET NULL,
+    active      BOOLEAN NOT NULL DEFAULT TRUE,
+    create_date TIMESTAMP DEFAULT now(),
+    write_date  TIMESTAMP DEFAULT now()
+)
+```
+
+### product_product
+
+```sql
+CREATE TABLE IF NOT EXISTS product_product (
+    id               SERIAL PRIMARY KEY,
+    name             VARCHAR NOT NULL,
+    default_code     VARCHAR,
+    barcode          VARCHAR,
+    description      TEXT,
+    type             VARCHAR NOT NULL DEFAULT 'consu',
+    categ_id         INTEGER REFERENCES product_category(id) ON DELETE SET NULL,
+    uom_id           INTEGER NOT NULL REFERENCES uom_uom(id) DEFAULT 1,
+    uom_po_id        INTEGER NOT NULL REFERENCES uom_uom(id) DEFAULT 1,
+    list_price       NUMERIC(16,4) NOT NULL DEFAULT 0,
+    standard_price   NUMERIC(16,4) NOT NULL DEFAULT 0,
+    volume           NUMERIC(16,4) NOT NULL DEFAULT 0,
+    weight           NUMERIC(16,4) NOT NULL DEFAULT 0,
+    sale_ok          BOOLEAN NOT NULL DEFAULT TRUE,
+    purchase_ok      BOOLEAN NOT NULL DEFAULT TRUE,
+    company_id       INTEGER REFERENCES res_company(id) ON DELETE SET NULL,
+    active           BOOLEAN NOT NULL DEFAULT TRUE,
+    create_date      TIMESTAMP DEFAULT now(),
+    write_date       TIMESTAMP DEFAULT now()
+)
+```
