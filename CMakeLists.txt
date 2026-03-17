@@ -25,6 +25,8 @@ target_include_directories(c-erp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core/interfaces
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/base
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/auth
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/uom
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/product
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/include
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/drogon/lib/inc
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/drogon

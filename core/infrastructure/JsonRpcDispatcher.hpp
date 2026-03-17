@@ -237,6 +237,36 @@ private:
             };
         }
 
+        // Active currencies indexed by code: { "USD": { symbol, position, digits } }
+        nlohmann::json currencies = nlohmann::json::object();
+        if (vmFactory_) {
+            try {
+                core::CallKwArgs cc;
+                cc.model  = "res.currency";
+                cc.method = "search_read";
+                cc.args   = nlohmann::json::array({nlohmann::json::array()});
+                cc.kwargs = {{"fields", nlohmann::json::array(
+                                {"name", "symbol", "position", "decimal_places"})}};
+                auto vm   = vmFactory_->create("res.currency", core::Lifetime::Transient);
+                auto rows = vm->callKw(cc);
+                if (rows.is_array()) {
+                    for (const auto& row : rows) {
+                        const std::string code   = row.value("name",           std::string{});
+                        const std::string symbol = row.value("symbol",         code);
+                        const std::string pos    = row.value("position",       std::string{"after"});
+                        const int         dec    = row.value("decimal_places", 2);
+                        if (!code.empty())
+                            currencies[code] = {
+                                {"symbol",   symbol},
+                                {"position", pos},
+                                {"digits",   nlohmann::json::array({0, dec})},
+                            };
+                    }
+                }
+            } catch (...) { /* currencies are nice-to-have — never break session_info */ }
+        }
+        info["currencies"] = currencies;
+
         return successResponse_(nullptr, info);
     }
 
