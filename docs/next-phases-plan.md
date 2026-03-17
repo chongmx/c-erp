@@ -321,10 +321,10 @@ WHERE id = $1
 
 ---
 
-## Phase 10 — Purchase
+## ✅ Phase 10 — Purchase (COMPLETE — see purchase-module-progress.md)
 
 **Reference:** `zzref/odoo/addons/purchase/models/purchase_order.py`
-**Files:** `modules/purchase/PurchaseModule.hpp`, `modules/purchase/PurchaseViews.hpp`
+**Files:** `modules/purchase/PurchaseModule.hpp`
 **Dependency:** product, account
 
 ### Simplifications vs Odoo
