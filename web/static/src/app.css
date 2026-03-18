@@ -455,7 +455,7 @@ input:focus, select:focus { border-color: var(--accent); }
     display: grid;
     grid-template-columns: 160px 1fr;
     gap: 12px 16px;
-    max-width: 640px;
+    max-width: 900px;
 }
 .form-row   { display: contents; }
 .form-label { padding-top: 6px; color: var(--muted); font-size: .875rem; }
@@ -485,3 +485,70 @@ input:focus, select:focus { border-color: var(--accent); }
 .field-name  { font-size: .8rem; color: var(--accent); font-weight: 600; margin-bottom: 2px; }
 .field-label { font-size: .85rem; }
 .field-type  { font-size: .75rem; color: var(--muted); margin-top: 2px; }
+
+/* ================================================================
+   One2many sublist tables
+   ================================================================ */
+.o2m-section {
+    grid-column: 1 / -1;
+    margin-top: 20px;
+}
+.o2m-title {
+    font-weight: 600;
+    font-size: .8rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    padding: 6px 0 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 8px;
+}
+.o2m-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .875rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    table-layout: auto;
+}
+.o2m-table th {
+    text-align: left;
+    padding: 7px 10px;
+    background: var(--bg) !important;
+    border-bottom: 1px solid var(--border) !important;
+    color: var(--muted) !important;
+    font-weight: 600;
+    font-size: .75rem;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    white-space: nowrap;
+}
+.o2m-table td {
+    padding: 4px 6px;
+    border-bottom: 1px solid rgba(255,255,255,.04);
+    min-width: 100px;
+    white-space: nowrap;
+}
+.o2m-table td:last-child { min-width: unset; width: 36px; white-space: nowrap; }
+.o2m-table tr:last-child td { border-bottom: none; }
+.o2m-input {
+    width: 100%;
+    background: var(--surface) !important;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: .875rem;
+    color: var(--text) !important;
+    box-sizing: border-box;
+    transition: border-color .12s;
+}
+.o2m-input:hover { border-color: var(--border); }
+.o2m-input:focus { outline: none; border-color: var(--accent); }
+/* native <select> popup also needs dark colours where supported */
+.o2m-table select.o2m-input option {
+    background: var(--surface);
+    color: var(--text);
+}
+.btn-sm { padding: 2px 8px; font-size: .8rem; line-height: 1.4; }

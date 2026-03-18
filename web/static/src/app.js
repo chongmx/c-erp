@@ -96,7 +96,6 @@ class ListView extends Component {
     onNew()        { this.props.onOpenForm(null); }
 }
 
-// ----------------------------------------------------------------
 // FormView — renders a form from get_views + read
 // ----------------------------------------------------------------
 class FormView extends Component {
@@ -115,8 +114,8 @@ class FormView extends Component {
                 <div class="error" t-esc="state.error"/>
             </t>
             <t t-else="">
-                <div class="form-body" t-on-change="onFormChange" t-on-input="onFormInput">
-                    <t t-foreach="formFields" t-as="f" t-key="f.name">
+                <div class="form-body" t-on-change="onFormChange" t-on-input="onFormInput" t-on-click="onFormClick">
+                    <t t-foreach="scalarFields" t-as="f" t-key="f.name">
                         <div class="form-row">
                             <label class="form-label" t-esc="f.label"/>
                             <t t-if="f.type === 'many2one'">
@@ -140,13 +139,77 @@ class FormView extends Component {
                             </t>
                         </div>
                     </t>
+                    <t t-foreach="o2mFields" t-as="f" t-key="f.name">
+                        <div class="o2m-section">
+                            <div class="o2m-title" t-esc="f.label"/>
+                            <table class="o2m-table">
+                                <thead>
+                                    <tr>
+                                        <t t-foreach="this.o2mColumns(f.name)" t-as="col" t-key="col.name">
+                                            <th t-esc="col.label"/>
+                                        </t>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <t t-foreach="state.o2mLines[f.name] || []" t-as="line" t-key="line._key">
+                                        <tr>
+                                            <t t-foreach="this.o2mColumns(f.name)" t-as="col" t-key="col.name">
+                                                <td>
+                                                    <t t-if="col.type === 'many2one'">
+                                                        <select class="o2m-input"
+                                                                t-att-data-o2m="f.name"
+                                                                t-att-data-key="line._key"
+                                                                t-att-data-field="col.name">
+                                                            <option value="0">—</option>
+                                                            <t t-foreach="state.relOptions[col.name] || []" t-as="opt" t-key="opt.id">
+                                                                <option t-att-value="opt.id"
+                                                                        t-att-selected="this.getM2oId(line[col.name]) === opt.id ? true : undefined">
+                                                                    <t t-esc="opt.display"/>
+                                                                </option>
+                                                            </t>
+                                                        </select>
+                                                    </t>
+                                                    <t t-elif="col.readonly">
+                                                        <span t-esc="line[col.name] !== undefined ? String(line[col.name]) : ''"/>
+                                                    </t>
+                                                    <t t-else="">
+                                                        <input t-att-type="col.type === 'float' || col.type === 'integer' || col.type === 'monetary' ? 'number' : 'text'"
+                                                               t-att-step="col.type === 'float' || col.type === 'monetary' ? '0.01' : undefined"
+                                                               class="o2m-input"
+                                                               t-att-value="line[col.name] !== undefined ? line[col.name] : ''"
+                                                               t-att-data-o2m="f.name"
+                                                               t-att-data-key="line._key"
+                                                               t-att-data-field="col.name"/>
+                                                    </t>
+                                                </td>
+                                            </t>
+                                            <td>
+                                                <button class="btn btn-sm btn-danger"
+                                                        t-att-data-del-o2m="f.name"
+                                                        t-att-data-key="line._key">✕</button>
+                                            </td>
+                                        </tr>
+                                    </t>
+                                </tbody>
+                            </table>
+                            <button class="btn btn-sm" t-att-data-add-o2m="f.name">+ Add a line</button>
+                        </div>
+                    </t>
                 </div>
             </t>
         </div>
     `;
 
     setup() {
-        this.state = useState({ loading: true, record: {}, isNew: !this.props.recordId, error: '', relOptions: {} });
+        this.state = useState({
+            loading: true, record: {}, isNew: !this.props.recordId, error: '',
+            relOptions: {},
+            o2mLines:   {},
+            o2mMeta:    {},
+            deletedIds: {},
+        });
+        this._nextKey = 1;
         onMounted(() => this.load());
     }
 
@@ -154,9 +217,31 @@ class FormView extends Component {
         const fields = (this.props.viewDef || {}).fields || {};
         return Object.entries(fields).map(([name, meta]) => ({
             name,
-            label:    meta.string   || name,
-            type:     meta.type     || 'char',
-            relation: meta.relation || null,
+            label:         meta.string        || name,
+            type:          meta.type          || 'char',
+            relation:      meta.relation      || null,
+            relationField: meta.relation_field || null,
+            readonly:      !!meta.readonly,
+        }));
+    }
+
+    get scalarFields() {
+        return this.formFields.filter(f => f.type !== 'one2many' && f.type !== 'many2many');
+    }
+
+    get o2mFields() {
+        return this.formFields.filter(f => f.type === 'one2many' && f.relation);
+    }
+
+    o2mColumns(fieldName) {
+        const meta = this.state.o2mMeta[fieldName];
+        if (!meta) return [];
+        return Object.entries(meta).map(([name, m]) => ({
+            name,
+            label:    m.string   || name,
+            type:     m.type     || 'char',
+            relation: m.relation || null,
+            readonly: !!m.readonly,
         }));
     }
 
@@ -165,14 +250,14 @@ class FormView extends Component {
         this.state.error   = '';
         try {
             if (this.props.recordId) {
-                const cols = this.formFields.map(f => f.name);
+                const cols = this.scalarFields.map(f => f.name);
                 const rows = await RpcService.call(
                     this.props.action.res_model, 'read',
                     [[this.props.recordId]], { fields: cols });
                 this.state.record = (Array.isArray(rows) ? rows[0] : rows) || {};
             } else {
                 try {
-                    const fieldNames = this.formFields.map(f => f.name);
+                    const fieldNames = this.scalarFields.map(f => f.name);
                     const defaults = await RpcService.call(
                         this.props.action.res_model, 'default_get',
                         [fieldNames], {});
@@ -182,6 +267,7 @@ class FormView extends Component {
                 }
             }
             await this.loadRelOptions();
+            await this.loadO2mData();
         } catch (e) {
             this.state.error = e.message;
         } finally {
@@ -190,14 +276,14 @@ class FormView extends Component {
     }
 
     async loadRelOptions() {
-        const m2oFields = this.formFields.filter(f => f.type === 'many2one' && f.relation);
+        const m2oFields = this.scalarFields.filter(f => f.type === 'many2one' && f.relation);
         await Promise.all(m2oFields.map(async f => {
             try {
                 const recs = await RpcService.call(f.relation, 'search_read', [[]],
-                    { fields: ['id', 'name', 'complete_name'], limit: 200 });
+                    { fields: ['id', 'name'], limit: 200 });
                 this.state.relOptions[f.name] = (Array.isArray(recs) ? recs : []).map(r => ({
                     id:      r.id,
-                    display: r.complete_name || r.name || String(r.id),
+                    display: r.name || String(r.id),
                 }));
             } catch (_) {
                 this.state.relOptions[f.name] = [];
@@ -205,7 +291,62 @@ class FormView extends Component {
         }));
     }
 
-    // Extracts the integer id from a Many2one value (int, [id,name] array, or string).
+    async loadO2mData() {
+        const ALWAYS_SKIP = new Set(['id', 'create_date', 'write_date',
+                                     'company_id', 'currency_id', 'sequence',
+                                     'tax_ids', 'tax_ids_json']);
+        await Promise.all(this.o2mFields.map(async f => {
+            this.state.o2mLines[f.name]   = [];
+            this.state.deletedIds[f.name] = [];
+
+            // Load child model field metadata
+            try {
+                const meta = await RpcService.call(f.relation, 'fields_get', [], {});
+                const skip = new Set([...ALWAYS_SKIP, f.relationField]);
+                const filtered = {};
+                for (const [k, v] of Object.entries(meta || {})) {
+                    if (skip.has(k)) continue;
+                    if (v.type === 'one2many' || v.type === 'many2many') continue;
+                    filtered[k] = v;
+                }
+                this.state.o2mMeta[f.name] = filtered;
+
+                // Load relOptions for Many2one fields within the sublist
+                await Promise.all(Object.entries(filtered)
+                    .filter(([, m]) => m.type === 'many2one' && m.relation)
+                    .map(async ([colName, m]) => {
+                        if (this.state.relOptions[colName]) return;
+                        try {
+                            const recs = await RpcService.call(m.relation, 'search_read', [[]],
+                                { fields: ['id', 'name'], limit: 200 });
+                            this.state.relOptions[colName] = (Array.isArray(recs) ? recs : []).map(r => ({
+                                id:      r.id,
+                                display: r.name || String(r.id),
+                            }));
+                        } catch (_) {
+                            this.state.relOptions[colName] = [];
+                        }
+                    }));
+            } catch (_) {
+                this.state.o2mMeta[f.name] = {};
+            }
+
+            // Load existing lines
+            if (this.props.recordId && f.relationField) {
+                try {
+                    const colNames = Object.keys(this.state.o2mMeta[f.name] || {});
+                    const lines = await RpcService.call(f.relation, 'search_read',
+                        [[[f.relationField, '=', this.props.recordId]]],
+                        { fields: ['id', ...colNames], limit: 500 });
+                    this.state.o2mLines[f.name] = (Array.isArray(lines) ? lines : []).map(line => ({
+                        _key: String(this._nextKey++),
+                        ...line,
+                    }));
+                } catch (_) {}
+            }
+        }));
+    }
+
     getM2oId(val) {
         if (!val && val !== 0) return 0;
         if (typeof val === 'number') return val;
@@ -222,9 +363,13 @@ class FormView extends Component {
 
     onFieldChange(name, value) { this.state.record[name] = value; }
 
-    // Delegated handlers — attached to form-body so they're outside the t-foreach loop,
-    // avoiding OWL 2's inability to resolve method names from within loop scope.
     onFormChange(e) {
+        const o2mField = e.target.dataset.o2m;
+        if (o2mField) {
+            this.updateO2mLine(o2mField, e.target.dataset.key, e.target.dataset.field,
+                e.target.tagName === 'SELECT' ? (parseInt(e.target.value) || 0) : e.target.value);
+            return;
+        }
         const field = e.target.dataset.field;
         if (!field) return;
         if (e.target.tagName === 'SELECT') {
@@ -233,10 +378,91 @@ class FormView extends Component {
             this.onFieldChange(field, e.target.checked);
         }
     }
+
     onFormInput(e) {
+        const o2mField = e.target.dataset.o2m;
+        if (o2mField) {
+            this.updateO2mLine(o2mField, e.target.dataset.key, e.target.dataset.field, e.target.value);
+            return;
+        }
         const field = e.target.dataset.field;
         if (field && e.target.type !== 'checkbox') {
             this.onFieldChange(field, e.target.value);
+        }
+    }
+
+    onFormClick(e) {
+        const addField = e.target.dataset.addO2m;
+        if (addField) { e.preventDefault(); this.addO2mLine(addField); return; }
+        const delField = e.target.dataset.delO2m;
+        if (delField) { e.preventDefault(); this.removeO2mLine(delField, e.target.dataset.key); }
+    }
+
+    addO2mLine(fieldName) {
+        if (!this.state.o2mLines[fieldName]) this.state.o2mLines[fieldName] = [];
+        this.state.o2mLines[fieldName].push({ _key: String(this._nextKey++), id: null });
+    }
+
+    removeO2mLine(fieldName, key) {
+        const lines = this.state.o2mLines[fieldName] || [];
+        const line  = lines.find(l => l._key === key);
+        if (line && line.id) {
+            if (!this.state.deletedIds[fieldName]) this.state.deletedIds[fieldName] = [];
+            this.state.deletedIds[fieldName].push(line.id);
+        }
+        this.state.o2mLines[fieldName] = lines.filter(l => l._key !== key);
+    }
+
+    updateO2mLine(fieldName, key, colName, value) {
+        const line = (this.state.o2mLines[fieldName] || []).find(l => l._key === key);
+        if (!line) return;
+        line[colName] = value;
+        if (colName === 'product_id' && value > 0) {
+            this.applyProductDefaults(fieldName, key, value);
+        }
+    }
+
+    async applyProductDefaults(fieldName, key, productId) {
+        try {
+            const rows = await RpcService.call('product.product', 'search_read',
+                [[['id', '=', productId]]],
+                { fields: ['id', 'name', 'list_price', 'standard_price', 'uom_id', 'uom_po_id'], limit: 1 });
+            if (!rows || !rows.length) return;
+            const prod = rows[0];
+            const line = (this.state.o2mLines[fieldName] || []).find(l => l._key === key);
+            if (!line) return;
+            const rel = (this.o2mFields.find(f => f.name === fieldName) || {}).relation || '';
+            const isPurchase = rel === 'purchase.order.line';
+            line.name       = prod.name || '';
+            line.price_unit = isPurchase ? (prod.standard_price || 0) : (prod.list_price || 0);
+            // uom: purchase uses uom_po_id (fallback uom_id), sale uses uom_id
+            const uomRaw = isPurchase ? (prod.uom_po_id || prod.uom_id) : prod.uom_id;
+            line.product_uom_id = Array.isArray(uomRaw) ? uomRaw[0] : (uomRaw || 0);
+            // default qty to 1 if not already set
+            const qtyField = isPurchase ? 'product_qty' : 'product_uom_qty';
+            if (!line[qtyField]) line[qtyField] = 1;
+        } catch (_) {}
+    }
+
+    async syncO2mLines(parentId) {
+        for (const f of this.o2mFields) {
+            const deletedIds = this.state.deletedIds[f.name] || [];
+            if (deletedIds.length)
+                await RpcService.call(f.relation, 'unlink', [deletedIds], {});
+
+            for (const line of (this.state.o2mLines[f.name] || [])) {
+                const vals = { [f.relationField]: parentId };
+                for (const colName of Object.keys(this.state.o2mMeta[f.name] || {})) {
+                    const meta = this.state.o2mMeta[f.name][colName];
+                    if (!meta.readonly && line[colName] !== undefined)
+                        vals[colName] = line[colName];
+                }
+                if (!line.id) {
+                    await RpcService.call(f.relation, 'create', [vals], {});
+                } else {
+                    await RpcService.call(f.relation, 'write', [[line.id], vals], {});
+                }
+            }
         }
     }
 
@@ -245,15 +471,17 @@ class FormView extends Component {
             await RpcService.call(
                 this.props.action.res_model, 'write',
                 [[this.state.record.id], this.state.record], {});
+            await this.syncO2mLines(this.state.record.id);
             this.props.onBack();
         } catch (e) { this.state.error = e.message; }
     }
 
     async onCreate() {
         try {
-            await RpcService.call(
+            const newId = await RpcService.call(
                 this.props.action.res_model, 'create',
                 [this.state.record], {});
+            await this.syncO2mLines(newId);
             this.props.onBack();
         } catch (e) { this.state.error = e.message; }
     }

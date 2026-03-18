@@ -121,6 +121,7 @@ public:
         fieldRegistry_.add({"amount_untaxed",     FieldType::Monetary,  "Untaxed Amount",      false, true});
         fieldRegistry_.add({"amount_tax",         FieldType::Monetary,  "Taxes",               false, true});
         fieldRegistry_.add({"amount_total",       FieldType::Monetary,  "Total",               false, true});
+        fieldRegistry_.add({"order_line", FieldType::One2many, "Order Lines", false, false, false, false, "sale.order.line", "order_id"});
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -365,6 +366,8 @@ public:
             {"amount_tax",          {{"type","monetary"},  {"string","Taxes"}}},
             {"amount_total",        {{"type","monetary"},  {"string","Total"}}},
             {"note",                {{"type","text"},      {"string","Terms and Conditions"}}},
+            {"order_line",          {{"type","one2many"},  {"string","Order Lines"},
+                                     {"relation","sale.order.line"}, {"relation_field","order_id"}}},
         };
     }
     nlohmann::json render(const nlohmann::json&) const override { return {}; }
