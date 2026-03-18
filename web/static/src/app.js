@@ -131,7 +131,7 @@ class FormView extends Component {
                             </t>
                             <t t-else="">
                                 <input class="form-input"
-                                       t-att-type="f.type === 'boolean' ? 'checkbox' : 'text'"
+                                       t-att-type="f.type === 'boolean' ? 'checkbox' : f.type === 'date' || f.type === 'datetime' ? 'date' : 'text'"
                                        t-att-checked="f.type === 'boolean' ? !!state.record[f.name] : undefined"
                                        t-att-value="f.type !== 'boolean' ? formatValue(state.record[f.name]) : undefined"
                                        t-att-data-field="f.name"
@@ -499,6 +499,1206 @@ class FormView extends Component {
 }
 
 // ----------------------------------------------------------------
+// SaleOrderFormView — Odoo 14-style Sales Order form
+// ----------------------------------------------------------------
+class SaleOrderFormView extends Component {
+    static components = { DatePicker };
+    static template = xml`
+        <div class="so-shell"
+             t-on-change="onAnyChange"
+             t-on-input="onAnyInput"
+             t-on-click="onAnyClick">
+
+            <!-- Page header -->
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Quotations</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.name || 'New'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <t t-if="state.isNew">
+                            <button class="btn btn-primary" t-on-click.stop="onCreate">Create</button>
+                        </t>
+                        <t t-else="">
+                            <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                            <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
+                        </t>
+                        <button class="btn" t-on-click.stop="onBack">Discard</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status bar -->
+            <div class="so-statusbar">
+                <div class="so-sb-left">
+                    <t t-if="showConfirm">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onConfirm">Confirm</button>
+                    </t>
+                    <t t-if="showCreateInvoice">
+                        <button class="btn so-wf-btn" t-on-click.stop="onCreateInvoice">Create Invoice</button>
+                    </t>
+                    <t t-if="showCancelBtn">
+                        <button class="btn ghost so-wf-btn" t-on-click.stop="onCancel">Cancel</button>
+                    </t>
+                </div>
+                <div class="so-stepper">
+                    <div t-attf-class="so-step{{stepClass('draft')}}">Quotation</div>
+                    <div t-attf-class="so-step{{stepClass('sent')}}">Quotation Sent</div>
+                    <div t-attf-class="so-step{{stepClass('sale')}}">Sales Order</div>
+                </div>
+            </div>
+
+            <!-- Loading / error / content -->
+            <t t-if="state.loading">
+                <div class="loading">Loading…</div>
+            </t>
+            <t t-elif="state.error">
+                <div class="error" t-esc="state.error"/>
+            </t>
+            <t t-else="">
+                <div class="so-card">
+                    <!-- Card header -->
+                    <div class="so-card-head">
+                        <h1 class="so-doc-id" t-esc="state.record.name || 'New Quotation'"/>
+                        <div class="so-stat-btns">
+                            <div class="so-stat-btn">
+                                <span class="so-stat-num" t-esc="state.deliveryCount"/>
+                                <span class="so-stat-lbl">Delivery</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Two-column info grid -->
+                    <div class="so-info-grid">
+                        <div class="so-info-col">
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Customer</label>
+                                <select class="form-input" data-field="partner_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.partners" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.partner_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Invoice Address</label>
+                                <select class="form-input" data-field="partner_invoice_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.partners" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.partner_invoice_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Delivery Address</label>
+                                <select class="form-input" data-field="partner_shipping_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.partners" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.partner_shipping_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Payment Terms</label>
+                                <select class="form-input" data-field="payment_term_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.paymentTerms" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.payment_term_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="so-info-col">
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Order Date</label>
+                                <DatePicker value="formatDate(state.record.date_order)"
+                                            onSelect.bind="setDateOrder"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Expiration</label>
+                                <DatePicker value="formatDate(state.record.validity_date)"
+                                            onSelect.bind="setValidityDate"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Salesperson</label>
+                                <select class="form-input" data-field="user_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.users" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.user_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Customer Ref</label>
+                                <input class="form-input" data-field="client_order_ref"
+                                       t-att-value="formatVal(state.record.client_order_ref)"/>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tabs -->
+                    <div class="so-tabs">
+                        <span t-attf-class="so-tab{{state.activeTab === 'lines' ? ' active' : ''}}"
+                              t-on-click.stop="setTabLines">Order Lines</span>
+                        <span t-attf-class="so-tab{{state.activeTab === 'other' ? ' active' : ''}}"
+                              t-on-click.stop="setTabOther">Other Info</span>
+                    </div>
+
+                    <!-- Order lines tab -->
+                    <t t-if="state.activeTab === 'lines'">
+                        <table class="so-lines-table">
+                            <thead>
+                                <tr>
+                                    <th>Product</th>
+                                    <th>Description</th>
+                                    <th>Qty</th>
+                                    <th>UoM</th>
+                                    <th>Unit Price</th>
+                                    <th>Disc.%</th>
+                                    <th>Subtotal</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <t t-foreach="state.lines" t-as="line" t-key="line._key">
+                                    <tr>
+                                        <td class="so-col-product">
+                                            <select class="o2m-input"
+                                                    data-line-field="product_id"
+                                                    t-att-data-key="line._key">
+                                                <option value="0">—</option>
+                                                <t t-foreach="state.products" t-as="opt" t-key="opt.id">
+                                                    <option t-att-value="opt.id"
+                                                            t-att-selected="getM2oId(line.product_id) === opt.id ? true : undefined"
+                                                            t-esc="opt.display"/>
+                                                </t>
+                                            </select>
+                                        </td>
+                                        <td class="so-col-desc">
+                                            <input class="o2m-input"
+                                                   data-line-field="name"
+                                                   t-att-data-key="line._key"
+                                                   t-att-value="line.name || ''"/>
+                                        </td>
+                                        <td class="so-col-num">
+                                            <input class="o2m-input" type="number" step="0.01"
+                                                   data-line-field="product_uom_qty"
+                                                   t-att-data-key="line._key"
+                                                   t-att-value="line.product_uom_qty !== undefined ? line.product_uom_qty : 1"/>
+                                        </td>
+                                        <td>
+                                            <select class="o2m-input"
+                                                    data-line-field="product_uom_id"
+                                                    t-att-data-key="line._key">
+                                                <option value="0">—</option>
+                                                <t t-foreach="state.uoms" t-as="opt" t-key="opt.id">
+                                                    <option t-att-value="opt.id"
+                                                            t-att-selected="getM2oId(line.product_uom_id) === opt.id ? true : undefined"
+                                                            t-esc="opt.display"/>
+                                                </t>
+                                            </select>
+                                        </td>
+                                        <td class="so-col-num">
+                                            <input class="o2m-input" type="number" step="0.01"
+                                                   data-line-field="price_unit"
+                                                   t-att-data-key="line._key"
+                                                   t-att-value="line.price_unit !== undefined ? line.price_unit : 0"/>
+                                        </td>
+                                        <td class="so-col-num">
+                                            <input class="o2m-input" type="number" step="0.01"
+                                                   data-line-field="discount"
+                                                   t-att-data-key="line._key"
+                                                   t-att-value="line.discount !== undefined ? line.discount : 0"/>
+                                        </td>
+                                        <td class="so-col-num so-col-subtotal">
+                                            <span t-esc="formatMoney(line.price_subtotal)"/>
+                                        </td>
+                                        <td class="so-col-del">
+                                            <button class="btn btn-sm btn-danger"
+                                                    data-del-line="1"
+                                                    t-att-data-key="line._key">✕</button>
+                                        </td>
+                                    </tr>
+                                </t>
+                            </tbody>
+                        </table>
+                        <button class="btn so-add-line" data-add-line="1">+ Add a line</button>
+
+                        <div class="so-footer">
+                            <div class="so-notes-wrap">
+                                <label class="so-notes-lbl">Notes / Terms</label>
+                                <textarea class="so-notes-ta" data-field="note"><t t-esc="state.record.note || ''"/></textarea>
+                            </div>
+                            <div class="so-totals">
+                                <div class="so-total-row">
+                                    <span class="so-total-lbl">Untaxed Amount</span>
+                                    <span class="so-total-val" t-esc="formatMoney(state.record.amount_untaxed)"/>
+                                </div>
+                                <div class="so-total-row">
+                                    <span class="so-total-lbl">Taxes</span>
+                                    <span class="so-total-val" t-esc="formatMoney(state.record.amount_tax)"/>
+                                </div>
+                                <div class="so-total-row so-total-grand">
+                                    <span class="so-total-lbl">Total</span>
+                                    <span class="so-total-val" t-esc="formatMoney(state.record.amount_total)"/>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+
+                    <!-- Other info tab -->
+                    <t t-if="state.activeTab === 'other'">
+                        <div class="so-other-tab">
+                            <div class="so-field-row">
+                                <label>Currency</label>
+                                <select class="form-input" data-field="currency_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.currencies" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.currency_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label>Source</label>
+                                <input class="form-input" data-field="origin"
+                                       t-att-value="formatVal(state.record.origin)"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label>Invoice Status</label>
+                                <input class="form-input" readonly="readonly"
+                                       t-att-value="formatVal(state.record.invoice_status)"/>
+                            </div>
+                        </div>
+                    </t>
+                </div>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({
+            loading:        true,
+            error:          '',
+            isNew:          !this.props.recordId,
+            record:         {},
+            activeTab:      'lines',
+            lines:          [],
+            deletedLineIds: [],
+            partners:       [],
+            paymentTerms:   [],
+            users:          [],
+            currencies:     [],
+            products:       [],
+            uoms:           [],
+            deliveryCount:  0,
+        });
+        this._nextKey = 1;
+        onMounted(() => this.load());
+    }
+
+    // ---- Getters for workflow button visibility (avoid && in XML) ----
+
+    get showConfirm() {
+        const s = this.state.record.state;
+        return this.state.isNew || s === 'draft' || s === 'sent';
+    }
+
+    get showCreateInvoice() {
+        return this.state.record.state === 'sale';
+    }
+
+    get showCancelBtn() {
+        const s = this.state.record.state;
+        return !this.state.isNew && s !== 'cancel';
+    }
+
+    // ---- Data loading ----
+
+    async load() {
+        this.state.loading = true;
+        this.state.error   = '';
+        try {
+            const fields = [
+                'name', 'state', 'partner_id', 'partner_invoice_id', 'partner_shipping_id',
+                'payment_term_id', 'date_order', 'validity_date', 'user_id', 'client_order_ref',
+                'currency_id', 'origin', 'invoice_status', 'note',
+                'amount_untaxed', 'amount_tax', 'amount_total',
+            ];
+            const [recordData] = await Promise.all([
+                this.props.recordId
+                    ? RpcService.call('sale.order', 'read', [[this.props.recordId]], { fields })
+                          .then(r => (Array.isArray(r) ? r[0] : r) || {})
+                    : Promise.resolve({}),
+                this.loadOpts('res.partner',             'partners',     ['id', 'name']),
+                this.loadOpts('account.payment.term',    'paymentTerms', ['id', 'name']),
+                this.loadOpts('res.users',               'users',        ['id', 'name']),
+                this.loadOpts('res.currency',            'currencies',   ['id', 'name']),
+                this.loadOpts('product.product',         'products',     ['id', 'name']),
+                this.loadOpts('uom.uom',                 'uoms',         ['id', 'name']),
+            ]);
+            this.state.record = recordData;
+            if (this.props.recordId) {
+                await this.loadLines();
+                try {
+                    const picks = await RpcService.call('stock.picking', 'search_read',
+                        [[['sale_id', '=', this.props.recordId]]],
+                        { fields: ['id'], limit: 500 });
+                    this.state.deliveryCount = Array.isArray(picks) ? picks.length : 0;
+                } catch (_) {}
+            }
+        } catch (e) {
+            this.state.error = e.message;
+        } finally {
+            this.state.loading = false;
+        }
+    }
+
+    async loadOpts(model, key, fields) {
+        try {
+            const recs = await RpcService.call(model, 'search_read', [[]], { fields, limit: 500 });
+            this.state[key] = (Array.isArray(recs) ? recs : []).map(r => ({
+                id:      r.id,
+                display: r.name || String(r.id),
+            }));
+        } catch (_) {
+            this.state[key] = [];
+        }
+    }
+
+    async loadLines() {
+        try {
+            const lineFields = [
+                'id', 'product_id', 'name', 'product_uom_qty', 'product_uom_id',
+                'price_unit', 'discount', 'price_subtotal',
+            ];
+            const rows = await RpcService.call('sale.order.line', 'search_read',
+                [[['order_id', '=', this.props.recordId]]],
+                { fields: lineFields, limit: 500 });
+            this.state.lines = (Array.isArray(rows) ? rows : []).map(r => ({
+                _key: String(this._nextKey++),
+                ...r,
+            }));
+        } catch (_) {
+            this.state.lines = [];
+        }
+    }
+
+    // ---- Helpers ----
+
+    getM2oId(val) {
+        if (!val && val !== 0) return 0;
+        if (typeof val === 'number') return val;
+        if (Array.isArray(val) && val.length > 0) return typeof val[0] === 'number' ? val[0] : 0;
+        if (typeof val === 'string') return parseInt(val) || 0;
+        return 0;
+    }
+
+    formatVal(val) {
+        if (val === null || val === undefined || val === false) return '';
+        if (Array.isArray(val)) return val[1] ?? '';
+        return String(val);
+    }
+
+    formatDate(val) {
+        if (!val || val === false) return '';
+        return String(val).substring(0, 10);
+    }
+
+    formatMoney(val) {
+        const n = parseFloat(val) || 0;
+        return n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+
+    recalcLine(line) {
+        const qty   = parseFloat(line.product_uom_qty) || 0;
+        const price = parseFloat(line.price_unit)      || 0;
+        const disc  = parseFloat(line.discount)        || 0;
+        line.price_subtotal = Math.round(qty * price * (1 - disc / 100) * 100) / 100;
+    }
+
+    stepClass(step) {
+        const order = { draft: 0, sent: 1, sale: 2 };
+        const cur   = order[this.state.record.state] ?? -1;
+        const s     = order[step];
+        if (s === cur)  return ' active';
+        if (s < cur)    return ' done';
+        return '';
+    }
+
+    // ---- Tab switching (named methods — safe outside t-foreach) ----
+
+    setTabLines() { this.state.activeTab = 'lines'; }
+    setTabOther()  { this.state.activeTab = 'other'; }
+
+    // ---- Event delegation handlers ----
+
+    onAnyChange(e) {
+        const lineField = e.target.dataset.lineField;
+        if (lineField) {
+            const key = e.target.dataset.key;
+            const val = e.target.tagName === 'SELECT'
+                ? (parseInt(e.target.value) || 0)
+                : e.target.value;
+            this.updateLine(key, lineField, val);
+            return;
+        }
+        const field = e.target.dataset.field;
+        if (!field) return;
+        if (e.target.tagName === 'SELECT') {
+            this.state.record[field] = parseInt(e.target.value) || 0;
+        }
+    }
+
+    onAnyInput(e) {
+        if (e.target.tagName === 'SELECT') return;
+        const lineField = e.target.dataset.lineField;
+        if (lineField) {
+            this.updateLine(e.target.dataset.key, lineField, e.target.value);
+            return;
+        }
+        const field = e.target.dataset.field;
+        if (field) {
+            this.state.record[field] = e.target.value;
+        }
+    }
+
+    onAnyClick(e) {
+        if (e.target.dataset.addLine) {
+            e.preventDefault();
+            this.state.lines.push({
+                _key:            String(this._nextKey++),
+                id:              null,
+                product_id:      0,
+                name:            '',
+                product_uom_qty: 1,
+                product_uom_id:  0,
+                price_unit:      0,
+                discount:        0,
+                price_subtotal:  0,
+            });
+            return;
+        }
+        if (e.target.dataset.delLine) {
+            e.preventDefault();
+            const key  = e.target.dataset.key;
+            const line = this.state.lines.find(l => l._key === key);
+            if (line && line.id) this.state.deletedLineIds.push(line.id);
+            this.state.lines = this.state.lines.filter(l => l._key !== key);
+        }
+    }
+
+    // ---- Line update + product defaults ----
+
+    updateLine(key, field, val) {
+        const line = this.state.lines.find(l => l._key === key);
+        if (!line) return;
+        line[field] = val;
+        if (field === 'product_id' && val > 0) {
+            this.applyProductDefaults(key, val);
+        } else if (field === 'product_uom_qty' || field === 'price_unit' || field === 'discount') {
+            this.recalcLine(line);
+        }
+    }
+
+    async applyProductDefaults(key, productId) {
+        try {
+            const rows = await RpcService.call('product.product', 'search_read',
+                [[['id', '=', productId]]],
+                { fields: ['id', 'name', 'list_price', 'uom_id'], limit: 1 });
+            if (!rows || !rows.length) return;
+            const prod = rows[0];
+            const line = this.state.lines.find(l => l._key === key);
+            if (!line) return;
+            line.name           = prod.name || '';
+            line.price_unit     = prod.list_price || 0;
+            const uomRaw        = prod.uom_id;
+            line.product_uom_id = Array.isArray(uomRaw) ? uomRaw[0] : (uomRaw || 0);
+            if (!line.product_uom_qty) line.product_uom_qty = 1;
+            this.recalcLine(line);
+        } catch (_) {}
+    }
+
+    // ---- Collect + sync ----
+
+    collectRecord() {
+        const r = this.state.record;
+        return {
+            partner_id:          this.getM2oId(r.partner_id),
+            partner_invoice_id:  this.getM2oId(r.partner_invoice_id),
+            partner_shipping_id: this.getM2oId(r.partner_shipping_id),
+            payment_term_id:     this.getM2oId(r.payment_term_id),
+            user_id:             this.getM2oId(r.user_id),
+            currency_id:         this.getM2oId(r.currency_id),
+            date_order:          r.date_order          || false,
+            validity_date:       r.validity_date       || false,
+            client_order_ref:    r.client_order_ref    || false,
+            origin:              r.origin              || false,
+            note:                r.note                || false,
+        };
+    }
+
+    async syncLines(parentId) {
+        const deleted = this.state.deletedLineIds;
+        if (deleted.length) {
+            await RpcService.call('sale.order.line', 'unlink', [deleted], {});
+            this.state.deletedLineIds = [];
+        }
+        for (const line of this.state.lines) {
+            const vals = {
+                order_id:        parentId,
+                product_id:      this.getM2oId(line.product_id),
+                name:            line.name            || '',
+                product_uom_qty: parseFloat(line.product_uom_qty) || 1,
+                product_uom_id:  this.getM2oId(line.product_uom_id) || false,
+                price_unit:      parseFloat(line.price_unit)      || 0,
+                discount:        parseFloat(line.discount)         || 0,
+            };
+            if (!line.id) {
+                await RpcService.call('sale.order.line', 'create', [vals], {});
+            } else {
+                await RpcService.call('sale.order.line', 'write', [[line.id], vals], {});
+            }
+        }
+    }
+
+    // ---- Action handlers ----
+
+    async onSave() {
+        try {
+            await RpcService.call('sale.order', 'write',
+                [[this.state.record.id], this.collectRecord()], {});
+            await this.syncLines(this.state.record.id);
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    async onCreate() {
+        try {
+            const newId = await RpcService.call('sale.order', 'create',
+                [this.collectRecord()], {});
+            await this.syncLines(newId);
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    async onDelete() {
+        try {
+            await RpcService.call('sale.order', 'unlink',
+                [[this.state.record.id]], {});
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    async onConfirm() {
+        try {
+            let id = this.state.record.id;
+            if (!id) {
+                id = await RpcService.call('sale.order', 'create', [this.collectRecord()], {});
+                await this.syncLines(id);
+            } else {
+                await RpcService.call('sale.order', 'write', [[id], this.collectRecord()], {});
+                await this.syncLines(id);
+            }
+            await RpcService.call('sale.order', 'action_confirm', [[id]], {});
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    async onCancel() {
+        try {
+            await RpcService.call('sale.order', 'action_cancel',
+                [[this.state.record.id]], {});
+            this.state.record.state = 'cancel';
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    async onCreateInvoice() {
+        try {
+            await RpcService.call('sale.order', 'action_create_invoices',
+                [[this.state.record.id]], {});
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    onBack() { this.props.onBack(); }
+
+    setDateOrder(v)    { this.state.record.date_order    = v; }
+    setValidityDate(v) { this.state.record.validity_date = v; }
+}
+
+// ----------------------------------------------------------------
+// PurchaseOrderFormView — Odoo 14-style Purchase Order form
+// ----------------------------------------------------------------
+class PurchaseOrderFormView extends Component {
+    static components = { DatePicker };
+    static template = xml`
+        <div class="so-shell"
+             t-on-change="onAnyChange"
+             t-on-input="onAnyInput"
+             t-on-click="onAnyClick">
+
+            <!-- Page header -->
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Purchase Orders</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.name || 'New'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <t t-if="state.isNew">
+                            <button class="btn btn-primary" t-on-click.stop="onCreate">Create</button>
+                        </t>
+                        <t t-else="">
+                            <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                            <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
+                        </t>
+                        <button class="btn" t-on-click.stop="onBack">Discard</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status bar -->
+            <div class="so-statusbar">
+                <div class="so-sb-left">
+                    <t t-if="showConfirm">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onConfirm">Confirm Order</button>
+                    </t>
+                    <t t-if="showCancelBtn">
+                        <button class="btn ghost so-wf-btn" t-on-click.stop="onCancel">Cancel</button>
+                    </t>
+                </div>
+                <div class="so-stepper">
+                    <div t-attf-class="so-step{{stepClass('draft')}}">Request for Quotation</div>
+                    <div t-attf-class="so-step{{stepClass('purchase')}}">Purchase Order</div>
+                    <div t-attf-class="so-step{{stepClass('done')}}">Done</div>
+                </div>
+            </div>
+
+            <t t-if="state.loading">
+                <div class="loading">Loading…</div>
+            </t>
+            <t t-elif="state.error">
+                <div class="error" t-esc="state.error"/>
+            </t>
+            <t t-else="">
+                <div class="so-card">
+                    <!-- Card header -->
+                    <div class="so-card-head">
+                        <h1 class="so-doc-id" t-esc="state.record.name || 'New RFQ'"/>
+                        <div class="so-stat-btns">
+                            <div class="so-stat-btn">
+                                <span class="so-stat-num" t-esc="state.receiptCount"/>
+                                <span class="so-stat-lbl">Receipts</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Two-column info grid -->
+                    <div class="so-info-grid">
+                        <div class="so-info-col">
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Vendor</label>
+                                <select class="form-input" data-field="partner_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.partners" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.partner_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Payment Terms</label>
+                                <select class="form-input" data-field="payment_term_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.paymentTerms" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.payment_term_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Purchase Rep.</label>
+                                <select class="form-input" data-field="user_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.users" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.user_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="so-info-col">
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Order Date</label>
+                                <DatePicker value="formatDate(state.record.date_order)"
+                                            onSelect.bind="setDateOrder"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Expected Arrival</label>
+                                <DatePicker value="formatDate(state.record.date_planned)"
+                                            onSelect.bind="setDatePlanned"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Source</label>
+                                <input class="form-input" data-field="origin"
+                                       t-att-value="formatVal(state.record.origin)"/>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tabs -->
+                    <div class="so-tabs">
+                        <span t-attf-class="so-tab{{state.activeTab === 'lines' ? ' active' : ''}}"
+                              t-on-click.stop="setTabLines">Order Lines</span>
+                        <span t-attf-class="so-tab{{state.activeTab === 'other' ? ' active' : ''}}"
+                              t-on-click.stop="setTabOther">Other Info</span>
+                    </div>
+
+                    <!-- Order lines tab -->
+                    <t t-if="state.activeTab === 'lines'">
+                        <table class="so-lines-table">
+                            <thead>
+                                <tr>
+                                    <th>Product</th>
+                                    <th>Description</th>
+                                    <th>Qty</th>
+                                    <th>UoM</th>
+                                    <th>Unit Price</th>
+                                    <th>Disc.%</th>
+                                    <th>Subtotal</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <t t-foreach="state.lines" t-as="line" t-key="line._key">
+                                    <tr>
+                                        <td class="so-col-product">
+                                            <select class="o2m-input"
+                                                    data-line-field="product_id"
+                                                    t-att-data-key="line._key">
+                                                <option value="0">—</option>
+                                                <t t-foreach="state.products" t-as="opt" t-key="opt.id">
+                                                    <option t-att-value="opt.id"
+                                                            t-att-selected="getM2oId(line.product_id) === opt.id ? true : undefined"
+                                                            t-esc="opt.display"/>
+                                                </t>
+                                            </select>
+                                        </td>
+                                        <td class="so-col-desc">
+                                            <input class="o2m-input"
+                                                   data-line-field="name"
+                                                   t-att-data-key="line._key"
+                                                   t-att-value="line.name || ''"/>
+                                        </td>
+                                        <td class="so-col-num">
+                                            <input class="o2m-input" type="number" step="0.01"
+                                                   data-line-field="product_qty"
+                                                   t-att-data-key="line._key"
+                                                   t-att-value="line.product_qty !== undefined ? line.product_qty : 1"/>
+                                        </td>
+                                        <td>
+                                            <select class="o2m-input"
+                                                    data-line-field="product_uom_id"
+                                                    t-att-data-key="line._key">
+                                                <option value="0">—</option>
+                                                <t t-foreach="state.uoms" t-as="opt" t-key="opt.id">
+                                                    <option t-att-value="opt.id"
+                                                            t-att-selected="getM2oId(line.product_uom_id) === opt.id ? true : undefined"
+                                                            t-esc="opt.display"/>
+                                                </t>
+                                            </select>
+                                        </td>
+                                        <td class="so-col-num">
+                                            <input class="o2m-input" type="number" step="0.01"
+                                                   data-line-field="price_unit"
+                                                   t-att-data-key="line._key"
+                                                   t-att-value="line.price_unit !== undefined ? line.price_unit : 0"/>
+                                        </td>
+                                        <td class="so-col-num">
+                                            <input class="o2m-input" type="number" step="0.01"
+                                                   data-line-field="discount"
+                                                   t-att-data-key="line._key"
+                                                   t-att-value="line.discount !== undefined ? line.discount : 0"/>
+                                        </td>
+                                        <td class="so-col-num so-col-subtotal">
+                                            <span t-esc="formatMoney(line.price_subtotal)"/>
+                                        </td>
+                                        <td class="so-col-del">
+                                            <button class="btn btn-sm btn-danger"
+                                                    data-del-line="1"
+                                                    t-att-data-key="line._key">✕</button>
+                                        </td>
+                                    </tr>
+                                </t>
+                            </tbody>
+                        </table>
+                        <button class="btn so-add-line" data-add-line="1">+ Add a line</button>
+
+                        <div class="so-footer">
+                            <div class="so-notes-wrap">
+                                <label class="so-notes-lbl">Notes / Terms</label>
+                                <textarea class="so-notes-ta" data-field="note"><t t-esc="state.record.note || ''"/></textarea>
+                            </div>
+                            <div class="so-totals">
+                                <div class="so-total-row">
+                                    <span class="so-total-lbl">Untaxed Amount</span>
+                                    <span class="so-total-val" t-esc="formatMoney(state.record.amount_untaxed)"/>
+                                </div>
+                                <div class="so-total-row">
+                                    <span class="so-total-lbl">Taxes</span>
+                                    <span class="so-total-val" t-esc="formatMoney(state.record.amount_tax)"/>
+                                </div>
+                                <div class="so-total-row so-total-grand">
+                                    <span class="so-total-lbl">Total</span>
+                                    <span class="so-total-val" t-esc="formatMoney(state.record.amount_total)"/>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+
+                    <!-- Other info tab -->
+                    <t t-if="state.activeTab === 'other'">
+                        <div class="so-other-tab">
+                            <div class="so-field-row">
+                                <label>Currency</label>
+                                <select class="form-input" data-field="currency_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.currencies" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.currency_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label>Billing Status</label>
+                                <input class="form-input" readonly="readonly"
+                                       t-att-value="formatVal(state.record.invoice_status)"/>
+                            </div>
+                        </div>
+                    </t>
+                </div>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({
+            loading:        true,
+            error:          '',
+            isNew:          !this.props.recordId,
+            record:         {},
+            activeTab:      'lines',
+            lines:          [],
+            deletedLineIds: [],
+            partners:       [],
+            paymentTerms:   [],
+            users:          [],
+            currencies:     [],
+            products:       [],
+            uoms:           [],
+            receiptCount:   0,
+        });
+        this._nextKey = 1;
+        onMounted(() => this.load());
+    }
+
+    get showConfirm() {
+        const s = this.state.record.state;
+        return this.state.isNew || s === 'draft';
+    }
+
+    get showCancelBtn() {
+        return !this.state.isNew && this.state.record.state !== 'cancel';
+    }
+
+    async load() {
+        this.state.loading = true;
+        this.state.error   = '';
+        try {
+            const fields = [
+                'name', 'state', 'partner_id', 'date_order', 'date_planned',
+                'payment_term_id', 'currency_id', 'user_id', 'origin',
+                'invoice_status', 'note', 'amount_untaxed', 'amount_tax', 'amount_total',
+            ];
+            const [recordData] = await Promise.all([
+                this.props.recordId
+                    ? RpcService.call('purchase.order', 'read', [[this.props.recordId]], { fields })
+                          .then(r => (Array.isArray(r) ? r[0] : r) || {})
+                    : Promise.resolve({}),
+                this.loadOpts('res.partner',          'partners',     ['id', 'name']),
+                this.loadOpts('account.payment.term', 'paymentTerms', ['id', 'name']),
+                this.loadOpts('res.users',            'users',        ['id', 'name']),
+                this.loadOpts('res.currency',         'currencies',   ['id', 'name']),
+                this.loadOpts('product.product',      'products',     ['id', 'name']),
+                this.loadOpts('uom.uom',              'uoms',         ['id', 'name']),
+            ]);
+            this.state.record = recordData;
+            if (this.props.recordId) {
+                await this.loadLines();
+                try {
+                    const picks = await RpcService.call('stock.picking', 'search_read',
+                        [[['purchase_id', '=', this.props.recordId]]],
+                        { fields: ['id'], limit: 500 });
+                    this.state.receiptCount = Array.isArray(picks) ? picks.length : 0;
+                } catch (_) {}
+            }
+        } catch (e) {
+            this.state.error = e.message;
+        } finally {
+            this.state.loading = false;
+        }
+    }
+
+    async loadOpts(model, key, fields) {
+        try {
+            const recs = await RpcService.call(model, 'search_read', [[]], { fields, limit: 500 });
+            this.state[key] = (Array.isArray(recs) ? recs : []).map(r => ({
+                id:      r.id,
+                display: r.name || String(r.id),
+            }));
+        } catch (_) { this.state[key] = []; }
+    }
+
+    async loadLines() {
+        try {
+            const lineFields = [
+                'id', 'product_id', 'name', 'product_qty', 'product_uom_id',
+                'price_unit', 'discount', 'price_subtotal',
+            ];
+            const rows = await RpcService.call('purchase.order.line', 'search_read',
+                [[['order_id', '=', this.props.recordId]]],
+                { fields: lineFields, limit: 500 });
+            this.state.lines = (Array.isArray(rows) ? rows : []).map(r => ({
+                _key: String(this._nextKey++), ...r,
+            }));
+        } catch (_) { this.state.lines = []; }
+    }
+
+    getM2oId(val) {
+        if (!val && val !== 0) return 0;
+        if (typeof val === 'number') return val;
+        if (Array.isArray(val) && val.length > 0) return typeof val[0] === 'number' ? val[0] : 0;
+        if (typeof val === 'string') return parseInt(val) || 0;
+        return 0;
+    }
+
+    formatVal(val) {
+        if (val === null || val === undefined || val === false) return '';
+        if (Array.isArray(val)) return val[1] ?? '';
+        return String(val);
+    }
+
+    formatDate(val) {
+        if (!val || val === false) return '';
+        return String(val).substring(0, 10);
+    }
+
+    formatMoney(val) {
+        const n = parseFloat(val) || 0;
+        return n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+
+    recalcLine(line) {
+        const qty   = parseFloat(line.product_qty) || 0;
+        const price = parseFloat(line.price_unit)  || 0;
+        const disc  = parseFloat(line.discount)    || 0;
+        line.price_subtotal = Math.round(qty * price * (1 - disc / 100) * 100) / 100;
+    }
+
+    stepClass(step) {
+        const order = { draft: 0, purchase: 1, done: 2 };
+        const stateMap = { draft: 0, purchase: 1, done: 2, cancel: -1 };
+        const cur = stateMap[this.state.record.state] ?? -1;
+        const s   = order[step];
+        if (s === cur) return ' active';
+        if (cur > 0 && s < cur) return ' done';
+        return '';
+    }
+
+    setTabLines() { this.state.activeTab = 'lines'; }
+    setTabOther()  { this.state.activeTab = 'other'; }
+
+    onAnyChange(e) {
+        const lineField = e.target.dataset.lineField;
+        if (lineField) {
+            const val = e.target.tagName === 'SELECT'
+                ? (parseInt(e.target.value) || 0)
+                : e.target.value;
+            this.updateLine(e.target.dataset.key, lineField, val);
+            return;
+        }
+        const field = e.target.dataset.field;
+        if (field && e.target.tagName === 'SELECT') {
+            this.state.record[field] = parseInt(e.target.value) || 0;
+        }
+    }
+
+    onAnyInput(e) {
+        if (e.target.tagName === 'SELECT') return;
+        const lineField = e.target.dataset.lineField;
+        if (lineField) { this.updateLine(e.target.dataset.key, lineField, e.target.value); return; }
+        const field = e.target.dataset.field;
+        if (field) this.state.record[field] = e.target.value;
+    }
+
+    onAnyClick(e) {
+        if (e.target.dataset.addLine) {
+            e.preventDefault();
+            this.state.lines.push({
+                _key: String(this._nextKey++), id: null,
+                product_id: 0, name: '', product_qty: 1,
+                product_uom_id: 0, price_unit: 0, discount: 0, price_subtotal: 0,
+            });
+            return;
+        }
+        if (e.target.dataset.delLine) {
+            e.preventDefault();
+            const key  = e.target.dataset.key;
+            const line = this.state.lines.find(l => l._key === key);
+            if (line && line.id) this.state.deletedLineIds.push(line.id);
+            this.state.lines = this.state.lines.filter(l => l._key !== key);
+        }
+    }
+
+    updateLine(key, field, val) {
+        const line = this.state.lines.find(l => l._key === key);
+        if (!line) return;
+        line[field] = val;
+        if (field === 'product_id' && val > 0) {
+            this.applyProductDefaults(key, val);
+        } else if (field === 'product_qty' || field === 'price_unit' || field === 'discount') {
+            this.recalcLine(line);
+        }
+    }
+
+    async applyProductDefaults(key, productId) {
+        try {
+            const rows = await RpcService.call('product.product', 'search_read',
+                [[['id', '=', productId]]],
+                { fields: ['id', 'name', 'standard_price', 'uom_po_id', 'uom_id'], limit: 1 });
+            if (!rows || !rows.length) return;
+            const prod = rows[0];
+            const line = this.state.lines.find(l => l._key === key);
+            if (!line) return;
+            line.name           = prod.name || '';
+            line.price_unit     = prod.standard_price || 0;
+            const uomRaw        = prod.uom_po_id || prod.uom_id;
+            line.product_uom_id = Array.isArray(uomRaw) ? uomRaw[0] : (uomRaw || 0);
+            if (!line.product_qty) line.product_qty = 1;
+            this.recalcLine(line);
+        } catch (_) {}
+    }
+
+    collectRecord() {
+        const r = this.state.record;
+        return {
+            partner_id:      this.getM2oId(r.partner_id),
+            payment_term_id: this.getM2oId(r.payment_term_id),
+            user_id:         this.getM2oId(r.user_id),
+            currency_id:     this.getM2oId(r.currency_id),
+            date_order:      r.date_order   || false,
+            date_planned:    r.date_planned || false,
+            origin:          r.origin       || false,
+            note:            r.note         || false,
+        };
+    }
+
+    async syncLines(parentId) {
+        if (this.state.deletedLineIds.length) {
+            await RpcService.call('purchase.order.line', 'unlink', [this.state.deletedLineIds], {});
+            this.state.deletedLineIds = [];
+        }
+        for (const line of this.state.lines) {
+            const vals = {
+                order_id:       parentId,
+                product_id:     this.getM2oId(line.product_id),
+                name:           line.name           || '',
+                product_qty:    parseFloat(line.product_qty)    || 1,
+                product_uom_id: this.getM2oId(line.product_uom_id) || false,
+                price_unit:     parseFloat(line.price_unit)     || 0,
+                discount:       parseFloat(line.discount)        || 0,
+            };
+            if (!line.id) {
+                await RpcService.call('purchase.order.line', 'create', [vals], {});
+            } else {
+                await RpcService.call('purchase.order.line', 'write', [[line.id], vals], {});
+            }
+        }
+    }
+
+    async onSave() {
+        try {
+            await RpcService.call('purchase.order', 'write',
+                [[this.state.record.id], this.collectRecord()], {});
+            await this.syncLines(this.state.record.id);
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    async onCreate() {
+        try {
+            const newId = await RpcService.call('purchase.order', 'create',
+                [this.collectRecord()], {});
+            await this.syncLines(newId);
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    async onDelete() {
+        try {
+            await RpcService.call('purchase.order', 'unlink', [[this.state.record.id]], {});
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    async onConfirm() {
+        try {
+            let id = this.state.record.id;
+            if (!id) {
+                id = await RpcService.call('purchase.order', 'create', [this.collectRecord()], {});
+                await this.syncLines(id);
+            } else {
+                await RpcService.call('purchase.order', 'write', [[id], this.collectRecord()], {});
+                await this.syncLines(id);
+            }
+            await RpcService.call('purchase.order', 'action_confirm', [[id]], {});
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    async onCancel() {
+        try {
+            await RpcService.call('purchase.order', 'action_cancel', [[this.state.record.id]], {});
+            this.state.record.state = 'cancel';
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    onBack() { this.props.onBack(); }
+
+    setDateOrder(v)   { this.state.record.date_order   = v; }
+    setDatePlanned(v) { this.state.record.date_planned = v; }
+}
+
+// ----------------------------------------------------------------
 // ActionView — orchestrates list ↔ form switching
 // ----------------------------------------------------------------
 class ActionView extends Component {
@@ -513,15 +1713,30 @@ class ActionView extends Component {
                           onOpenForm.bind="openForm"/>
             </t>
             <t t-elif="state.mode === 'form'">
-                <FormView action="props.action"
-                          viewDef="state.formView"
-                          recordId="state.recordId"
-                          onBack.bind="backToList"/>
+                <t t-if="isSaleOrderModel">
+                    <SaleOrderFormView action="props.action"
+                                       recordId="state.recordId"
+                                       onBack.bind="backToList"/>
+                </t>
+                <t t-elif="isPurchaseOrderModel">
+                    <PurchaseOrderFormView action="props.action"
+                                           recordId="state.recordId"
+                                           onBack.bind="backToList"/>
+                </t>
+                <t t-else="">
+                    <FormView action="props.action"
+                              viewDef="state.formView"
+                              recordId="state.recordId"
+                              onBack.bind="backToList"/>
+                </t>
             </t>
         </div>
     `;
 
-    static components = { ListView, FormView };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView };
+
+    get isSaleOrderModel()    { return this.props.action.res_model === 'sale.order'; }
+    get isPurchaseOrderModel() { return this.props.action.res_model === 'purchase.order'; }
 
     setup() {
         this.state = useState({

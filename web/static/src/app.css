@@ -279,6 +279,38 @@ input, select { background: rgba(255,255,255,.06); border: 1px solid var(--borde
                 font-size: .875rem; outline: none; }
 input:focus, select:focus { border-color: var(--accent); }
 
+/* Date picker — dark popup + theme-matched icon and highlight */
+input[type="date"],
+input[type="datetime-local"] {
+    color-scheme: dark;           /* popup calendar renders dark */
+    background: var(--surface);
+    color: var(--text);
+    border-color: var(--border);
+    accent-color: var(--accent);  /* selected date / today ring = accent #e94560 */
+}
+input[type="date"]:focus,
+input[type="datetime-local"]:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+/* Calendar icon — convert black icon → accent #e94560 */
+/* filter chain: black → white → sepia base → rotate to ~349° (pink-red) */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+    filter: brightness(0) invert(1)
+            sepia(1) saturate(8)
+            hue-rotate(314deg) brightness(0.95);
+    opacity: 0.55;
+    cursor: pointer;
+    border-radius: 3px;
+    padding: 2px;
+    transition: opacity .15s;
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
+}
+
 /* ================================================================
    Badges
    ================================================================ */
@@ -552,3 +584,231 @@ input:focus, select:focus { border-color: var(--accent); }
     color: var(--text);
 }
 .btn-sm { padding: 2px 8px; font-size: .8rem; line-height: 1.4; }
+
+/* ================================================================
+   Sales Order form view
+   ================================================================ */
+
+/* Shell */
+.so-shell { display: flex; flex-direction: column; gap: 0; }
+
+/* Page header */
+.so-page-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.so-header-left { display: flex; flex-direction: column; gap: 4px; }
+.so-breadcrumbs { font-size: .8rem; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+.so-bc-link { cursor: pointer; color: var(--accent); }
+.so-bc-link:hover { text-decoration: underline; }
+.so-bc-sep { color: var(--muted); }
+.so-bc-cur { color: var(--text); }
+.so-action-btns { display: flex; gap: 6px; }
+
+/* Status bar */
+.so-statusbar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 24px; background: var(--bg); border-bottom: 1px solid var(--border);
+    min-height: 40px;
+}
+.so-sb-left { display: flex; gap: 8px; align-items: center; }
+.so-wf-btn { font-size: .8rem; padding: 4px 12px; }
+
+/* Stepper */
+.so-stepper { display: flex; align-items: stretch; }
+.so-step {
+    padding: 6px 20px 6px 28px; font-size: .8rem; font-weight: 500;
+    color: var(--muted); background: var(--surface); position: relative;
+    clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%, 10px 50%);
+    margin-right: 2px; min-width: 110px; text-align: center;
+    border: 1px solid var(--border);
+}
+.so-step:first-child {
+    clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%);
+    padding-left: 16px;
+}
+.so-step.done   { color: var(--ok); background: rgba(78,201,176,.08); }
+.so-step.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+
+/* Document card */
+.so-card {
+    margin: 16px 24px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px;
+}
+.so-card-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+.so-doc-id { font-size: 1.5rem; font-weight: 700; margin: 0; color: var(--text); }
+.so-stat-btns { display: flex; gap: 8px; }
+.so-stat-btn {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 8px 16px; border: 1px solid var(--border); border-radius: 6px;
+    cursor: pointer; min-width: 70px; background: var(--bg); transition: border-color .15s;
+}
+.so-stat-btn:hover { border-color: var(--accent); }
+.so-stat-num { font-size: 1.1rem; font-weight: 700; color: var(--accent); }
+.so-stat-lbl { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+
+/* Two-column info grid */
+.so-info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 32px; margin-bottom: 20px; }
+.so-info-col { display: flex; flex-direction: column; gap: 8px; }
+.so-field-row { display: grid; grid-template-columns: 140px 1fr; align-items: center; gap: 8px; }
+.so-field-lbl { font-size: .85rem; color: var(--muted); text-align: right; }
+
+/* Tabs */
+.so-tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 12px; gap: 0; }
+.so-tab {
+    padding: 8px 20px; font-size: .875rem; color: var(--muted); cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .15s, border-color .15s;
+}
+.so-tab:hover { color: var(--text); }
+.so-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+/* Order lines table */
+.so-lines-table {
+    width: 100%; border-collapse: collapse; font-size: .875rem;
+    table-layout: auto; margin-bottom: 8px;
+}
+.so-lines-table th {
+    text-align: left; padding: 7px 8px; background: var(--bg) !important;
+    border-bottom: 1px solid var(--border) !important; color: var(--muted) !important;
+    font-size: .75rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
+    white-space: nowrap;
+}
+.so-lines-table td {
+    padding: 3px 4px; border-bottom: 1px solid rgba(255,255,255,.04); min-width: 80px;
+}
+.so-lines-table tr:last-child td { border-bottom: none; }
+.so-col-product  { min-width: 160px; }
+.so-col-desc     { min-width: 180px; }
+.so-col-num      { min-width: 80px; }
+.so-col-subtotal { text-align: right; padding-right: 10px; color: var(--text); white-space: nowrap; }
+.so-col-del      { width: 36px; }
+.so-add-line { margin-top: 6px; background: transparent; border: 1px dashed var(--border); color: var(--muted); font-size: .8rem; }
+.so-add-line:hover { border-color: var(--accent); color: var(--accent); opacity: 1; }
+
+/* Footer: notes + totals */
+.so-footer { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 20px; gap: 24px; }
+.so-notes-wrap { flex: 1; }
+.so-notes-lbl { display: block; font-size: .75rem; color: var(--muted); text-transform: uppercase; margin-bottom: 4px; }
+.so-notes-ta {
+    width: 100%; min-height: 80px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--text); padding: 8px; font-size: .875rem; resize: vertical;
+}
+.so-notes-ta:focus { outline: none; border-color: var(--accent); }
+.so-totals { min-width: 240px; }
+.so-total-row {
+    display: flex; justify-content: space-between; padding: 5px 0;
+    border-bottom: 1px solid rgba(255,255,255,.04); font-size: .875rem;
+}
+.so-total-row:last-child { border-bottom: none; }
+.so-total-lbl { color: var(--muted); }
+.so-total-val { color: var(--text); font-weight: 500; }
+.so-total-grand { border-top: 2px solid var(--border); margin-top: 4px; padding-top: 8px; }
+.so-total-grand .so-total-lbl { color: var(--text); font-weight: 700; font-size: 1rem; }
+.so-total-grand .so-total-val { color: var(--accent); font-weight: 700; font-size: 1.1rem; }
+
+/* Other info tab */
+.so-other-tab {
+    display: grid; grid-template-columns: 140px 1fr;
+    gap: 8px 16px; max-width: 500px; padding-top: 8px;
+}
+.so-other-tab .so-field-row { display: contents; }
+.so-other-tab label { color: var(--muted); font-size: .875rem; padding-top: 6px; text-align: right; }
+
+/* ================================================================
+   Custom DatePicker component
+   ================================================================ */
+.dp-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+.dp-input {
+    flex: 1;
+    cursor: pointer;
+    padding-right: 32px;
+}
+.dp-icon {
+    position: absolute;
+    right: 8px;
+    font-size: .9rem;
+    cursor: pointer;
+    color: var(--muted);
+    pointer-events: auto;
+    line-height: 1;
+}
+.dp-popup {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 9999;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    min-width: 240px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5);
+}
+.dp-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+.dp-nav {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+    padding: 2px 8px;
+    transition: border-color .12s, color .12s;
+}
+.dp-nav:hover { border-color: var(--accent); color: var(--accent); }
+.dp-month-label {
+    font-size: .875rem;
+    font-weight: 600;
+    color: var(--text);
+}
+.dp-weekdays {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    margin-bottom: 4px;
+}
+.dp-weekdays span {
+    text-align: center;
+    font-size: .7rem;
+    color: var(--muted);
+    font-weight: 600;
+    padding: 2px 0;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+}
+.dp-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+}
+.dp-day {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: .8rem;
+    padding: 5px 2px;
+    text-align: center;
+    transition: background .1s, border-color .1s;
+    line-height: 1;
+}
+.dp-day:hover { background: var(--border); border-color: var(--border); }
+.dp-day.dp-out { color: var(--muted); opacity: .5; }
+.dp-day.dp-today { border-color: var(--accent); color: var(--accent); }
+.dp-day.dp-sel {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 700;
+}
+.dp-day.dp-sel.dp-today { background: var(--accent); }
