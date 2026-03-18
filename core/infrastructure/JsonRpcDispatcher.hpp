@@ -411,9 +411,22 @@ private:
                 for (auto& [k,v] : flds.items())
                     allFields[k] = v;
             } else {
-                // Minimal fallback arch
-                viewEntry["arch"]   = "<" + vtype + "/>";
-                viewEntry["fields"] = nlohmann::json::object();
+                // Fallback: populate fields from fields_get so generic list/form work
+                viewEntry["arch"] = "<" + vtype + "/>";
+                try {
+                    auto vm = vmFactory_->create(model, core::Lifetime::Transient);
+                    core::CallKwArgs fg;
+                    fg.model  = model;
+                    fg.method = "fields_get";
+                    fg.args   = nlohmann::json::array();
+                    fg.kwargs = nlohmann::json::object();
+                    auto flds = vm->callKw(fg);
+                    viewEntry["fields"] = flds.is_object() ? flds : nlohmann::json::object();
+                    for (auto& [k, v] : viewEntry["fields"].items())
+                        allFields[k] = v;
+                } catch (...) {
+                    viewEntry["fields"] = nlohmann::json::object();
+                }
             }
             views[vtype] = std::move(viewEntry);
         }

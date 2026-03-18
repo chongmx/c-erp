@@ -12,8 +12,9 @@ add_executable(c-erp ${SOURCES})
 # Third-party
 add_subdirectory(3rdparty/json)
 add_subdirectory(3rdparty/drogon)
-set(BUILD_TEST OFF CACHE BOOL "" FORCE)
-set(BUILD_DOC  OFF CACHE BOOL "" FORCE)
+set(BUILD_TEST     OFF CACHE BOOL "" FORCE)
+set(BUILD_DOC      OFF CACHE BOOL "" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(3rdparty/libpqxx)
 
 # Include directories
@@ -30,6 +31,7 @@ target_include_directories(c-erp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/sale
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/purchase
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/hr
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/stock
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/include
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/drogon/lib/inc
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/drogon

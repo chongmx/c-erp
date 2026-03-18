@@ -115,16 +115,29 @@ class FormView extends Component {
                 <div class="error" t-esc="state.error"/>
             </t>
             <t t-else="">
-                <div class="form-body">
+                <div class="form-body" t-on-change="onFormChange" t-on-input="onFormInput">
                     <t t-foreach="formFields" t-as="f" t-key="f.name">
                         <div class="form-row">
                             <label class="form-label" t-esc="f.label"/>
-                            <input class="form-input"
-                                   t-att-type="f.type === 'boolean' ? 'checkbox' : 'text'"
-                                   t-att-checked="f.type === 'boolean' ? !!state.record[f.name] : undefined"
-                                   t-att-value="f.type !== 'boolean' ? formatValue(state.record[f.name]) : undefined"
-                                   t-on-input="(e) => this.onFieldChange(f.name, e.target.value)"
-                                   t-on-change="(e) => f.type === 'boolean' ? this.onFieldChange(f.name, e.target.checked) : null"/>
+                            <t t-if="f.type === 'many2one'">
+                                <select class="form-input" t-att-data-field="f.name">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.relOptions[f.name] || []" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="this.getM2oId(state.record[f.name]) === opt.id ? true : undefined">
+                                            <t t-esc="opt.display"/>
+                                        </option>
+                                    </t>
+                                </select>
+                            </t>
+                            <t t-else="">
+                                <input class="form-input"
+                                       t-att-type="f.type === 'boolean' ? 'checkbox' : 'text'"
+                                       t-att-checked="f.type === 'boolean' ? !!state.record[f.name] : undefined"
+                                       t-att-value="f.type !== 'boolean' ? formatValue(state.record[f.name]) : undefined"
+                                       t-att-data-field="f.name"
+                                       t-att-data-type="f.type"/>
+                            </t>
                         </div>
                     </t>
                 </div>
@@ -133,7 +146,7 @@ class FormView extends Component {
     `;
 
     setup() {
-        this.state = useState({ loading: true, record: {}, isNew: !this.props.recordId, error: '' });
+        this.state = useState({ loading: true, record: {}, isNew: !this.props.recordId, error: '', relOptions: {} });
         onMounted(() => this.load());
     }
 
@@ -141,8 +154,9 @@ class FormView extends Component {
         const fields = (this.props.viewDef || {}).fields || {};
         return Object.entries(fields).map(([name, meta]) => ({
             name,
-            label: meta.string || name,
-            type:  meta.type   || 'char',
+            label:    meta.string   || name,
+            type:     meta.type     || 'char',
+            relation: meta.relation || null,
         }));
     }
 
@@ -157,13 +171,47 @@ class FormView extends Component {
                     [[this.props.recordId]], { fields: cols });
                 this.state.record = (Array.isArray(rows) ? rows[0] : rows) || {};
             } else {
-                this.state.record = {};
+                try {
+                    const fieldNames = this.formFields.map(f => f.name);
+                    const defaults = await RpcService.call(
+                        this.props.action.res_model, 'default_get',
+                        [fieldNames], {});
+                    this.state.record = (defaults && typeof defaults === 'object') ? defaults : {};
+                } catch (_) {
+                    this.state.record = {};
+                }
             }
+            await this.loadRelOptions();
         } catch (e) {
             this.state.error = e.message;
         } finally {
             this.state.loading = false;
         }
+    }
+
+    async loadRelOptions() {
+        const m2oFields = this.formFields.filter(f => f.type === 'many2one' && f.relation);
+        await Promise.all(m2oFields.map(async f => {
+            try {
+                const recs = await RpcService.call(f.relation, 'search_read', [[]],
+                    { fields: ['id', 'name', 'complete_name'], limit: 200 });
+                this.state.relOptions[f.name] = (Array.isArray(recs) ? recs : []).map(r => ({
+                    id:      r.id,
+                    display: r.complete_name || r.name || String(r.id),
+                }));
+            } catch (_) {
+                this.state.relOptions[f.name] = [];
+            }
+        }));
+    }
+
+    // Extracts the integer id from a Many2one value (int, [id,name] array, or string).
+    getM2oId(val) {
+        if (!val && val !== 0) return 0;
+        if (typeof val === 'number') return val;
+        if (Array.isArray(val) && val.length > 0) return typeof val[0] === 'number' ? val[0] : 0;
+        if (typeof val === 'string') return parseInt(val) || 0;
+        return 0;
     }
 
     formatValue(val) {
@@ -173,6 +221,24 @@ class FormView extends Component {
     }
 
     onFieldChange(name, value) { this.state.record[name] = value; }
+
+    // Delegated handlers — attached to form-body so they're outside the t-foreach loop,
+    // avoiding OWL 2's inability to resolve method names from within loop scope.
+    onFormChange(e) {
+        const field = e.target.dataset.field;
+        if (!field) return;
+        if (e.target.tagName === 'SELECT') {
+            this.onFieldChange(field, parseInt(e.target.value) || 0);
+        } else if (e.target.type === 'checkbox') {
+            this.onFieldChange(field, e.target.checked);
+        }
+    }
+    onFormInput(e) {
+        const field = e.target.dataset.field;
+        if (field && e.target.type !== 'checkbox') {
+            this.onFieldChange(field, e.target.value);
+        }
+    }
 
     async onSave() {
         try {

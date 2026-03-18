@@ -37,6 +37,7 @@ public:
         REGISTER_METHOD("fields_get",      handleFieldsGet)
         REGISTER_METHOD("search_count",    handleSearchCount)
         REGISTER_METHOD("search",          handleSearch)
+        REGISTER_METHOD("default_get",     handleDefaultGet)
     }
 
     std::string modelName() const override { return TModel::MODEL_NAME; }
@@ -77,6 +78,10 @@ protected:
     nlohmann::json handleSearchCount(const CallKwArgs& call) {
         TModel proto(db_);
         return proto.searchCount(call.domain());
+    }
+    // default_get — returns {} by default; override in derived class for pre-filled forms
+    nlohmann::json handleDefaultGet(const CallKwArgs& /*call*/) {
+        return nlohmann::json::object();
     }
     nlohmann::json handleSearch(const CallKwArgs& call) {
         TModel proto(db_);
