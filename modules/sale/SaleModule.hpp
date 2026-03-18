@@ -580,6 +580,45 @@ private:
                 "SET state = 'sale', name = $1, write_date = now() "
                 "WHERE id = $2",
                 pqxx::params{ss.str(), id});
+
+            // --------------------------------------------------
+            // Phase 16: auto-create delivery picking
+            // --------------------------------------------------
+            auto ptRow = txn.exec(
+                "SELECT id, default_location_src_id, default_location_dest_id "
+                "FROM stock_picking_type WHERE code='outgoing' LIMIT 1");
+            if (!ptRow.empty()) {
+                int ptId   = ptRow[0]["id"].as<int>();
+                int locSrc = ptRow[0]["default_location_src_id"].is_null()  ? 4 : ptRow[0]["default_location_src_id"].as<int>();
+                int locDst = ptRow[0]["default_location_dest_id"].is_null() ? 6 : ptRow[0]["default_location_dest_id"].as<int>();
+
+                auto soRow = txn.exec(
+                    "SELECT partner_id, company_id FROM sale_order WHERE id=$1",
+                    pqxx::params{id});
+                int partnerId = soRow[0]["partner_id"].is_null() ? 0 : soRow[0]["partner_id"].as<int>();
+                int companyId = soRow[0]["company_id"].is_null() ? 0 : soRow[0]["company_id"].as<int>();
+
+                auto seqRow  = txn.exec("SELECT nextval('stock_out_seq')");
+                long long ps = seqRow[0][0].as<long long>();
+                std::string pickName = "WH/OUT/" + year + "/" +
+                    std::string(4 - std::min(4, (int)std::to_string(ps).size()), '0') + std::to_string(ps);
+
+                auto pickRow = txn.exec(
+                    "INSERT INTO stock_picking "
+                    "(name,picking_type_id,state,partner_id,location_id,location_dest_id,origin,company_id,sale_id) "
+                    "VALUES($1,$2,'confirmed',NULLIF($3,0),$4,$5,$6,NULLIF($7,0),$8) RETURNING id",
+                    pqxx::params{pickName, ptId, partnerId, locSrc, locDst, ss.str(), companyId, id});
+                int pickId = pickRow[0]["id"].as<int>();
+
+                txn.exec(
+                    "INSERT INTO stock_move "
+                    "(picking_id,product_id,name,product_uom_qty,quantity,state,location_id,location_dest_id,company_id,origin) "
+                    "SELECT $1,sol.product_id,pp.name,sol.product_uom_qty,0,'confirmed',$2,$3,NULLIF($4,0),$5 "
+                    "FROM sale_order_line sol "
+                    "JOIN product_product pp ON pp.id=sol.product_id "
+                    "WHERE sol.order_id=$6",
+                    pqxx::params{pickId, locSrc, locDst, companyId, ss.str(), id});
+            }
         }
 
         txn.commit();
