@@ -499,15 +499,364 @@ class FormView extends Component {
 }
 
 // ----------------------------------------------------------------
+// InvoiceFormView — Odoo 14-style Invoice (account.move) form
+// ----------------------------------------------------------------
+class InvoiceFormView extends Component {
+    static components = { DatePicker };
+    static template = xml`
+        <div class="so-shell"
+             t-on-change="onAnyChange"
+             t-on-input="onAnyInput">
+
+            <!-- Page header -->
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack" t-esc="backLabel"/>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.name || 'Draft Invoice'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <t t-if="isDraft">
+                            <button class="btn btn-primary" t-on-click.stop="onPost">Confirm</button>
+                            <button class="btn"             t-on-click.stop="onSave">Save</button>
+                        </t>
+                        <t t-if="isPosted">
+                            <button class="btn btn-danger"  t-on-click.stop="onCancel">Cancel</button>
+                        </t>
+                        <t t-if="isCancelled">
+                            <button class="btn"             t-on-click.stop="onResetDraft">Reset to Draft</button>
+                        </t>
+                        <button class="btn" t-on-click.stop="onBack">Back</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status bar -->
+            <div class="so-statusbar">
+                <div class="so-sb-left">
+                    <span t-if="state.record.payment_state === 'paid'"
+                          style="font-size:.8rem;color:var(--ok);font-weight:600;">&#10003; Paid</span>
+                    <span t-if="state.record.payment_state === 'partial'"
+                          style="font-size:.8rem;color:var(--muted);font-weight:600;">Partial</span>
+                </div>
+                <div class="so-stepper">
+                    <div t-attf-class="so-step{{stepClass('draft')}}">Draft</div>
+                    <div t-attf-class="so-step{{stepClass('posted')}}">Posted</div>
+                    <div t-attf-class="so-step{{stepClass('cancel')}}">Cancelled</div>
+                </div>
+            </div>
+
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="so-card">
+                    <div class="so-card-head">
+                        <h1 class="so-doc-id" t-esc="state.record.name || 'Draft Invoice'"/>
+                    </div>
+
+                    <!-- Two-column info grid -->
+                    <div class="so-info-grid">
+                        <div class="so-info-col">
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Customer</label>
+                                <select class="form-input" data-field="partner_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.partners" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.partner_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Invoice Date</label>
+                                <DatePicker value="formatDate(state.record.invoice_date)"
+                                            onSelect.bind="setInvoiceDate"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Due Date</label>
+                                <DatePicker value="formatDate(state.record.due_date)"
+                                            onSelect.bind="setDueDate"/>
+                            </div>
+                        </div>
+                        <div class="so-info-col">
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Source</label>
+                                <input class="form-input" readonly="readonly"
+                                       t-att-value="state.record.invoice_origin || ''"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Journal</label>
+                                <select class="form-input" data-field="journal_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.journals" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.journal_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Payment Terms</label>
+                                <select class="form-input" data-field="payment_term_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.paymentTerms" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.payment_term_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Reference</label>
+                                <input class="form-input" data-field="ref"
+                                       t-att-value="formatVal(state.record.ref)"/>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Invoice lines (read-only) -->
+                    <table class="so-lines-table" style="margin-top:16px;">
+                        <thead>
+                            <tr>
+                                <th>Description</th>
+                                <th class="so-col-num">Qty</th>
+                                <th class="so-col-num">Unit Price</th>
+                                <th class="so-col-subtotal">Subtotal</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <t t-foreach="state.lines" t-as="ln" t-key="ln.id">
+                                <tr>
+                                    <td t-esc="ln.name || ''"/>
+                                    <td class="so-col-num" t-esc="ln.quantity"/>
+                                    <td class="so-col-num" t-esc="formatMoney(ln.price_unit)"/>
+                                    <td class="so-col-subtotal" t-esc="formatMoney(ln.credit)"/>
+                                </tr>
+                            </t>
+                            <t t-if="state.lines.length === 0">
+                                <tr><td colspan="4" class="empty-row">No invoice lines</td></tr>
+                            </t>
+                        </tbody>
+                    </table>
+
+                    <!-- Footer: notes + totals -->
+                    <div class="so-footer">
+                        <div class="so-notes-wrap">
+                            <label class="so-notes-lbl">Notes</label>
+                            <textarea class="so-notes-ta" data-field="narration"
+                                      t-att-value="state.record.narration || ''"/>
+                        </div>
+                        <div class="so-totals">
+                            <div class="so-total-row">
+                                <span class="so-total-lbl">Untaxed</span>
+                                <span class="so-total-val" t-esc="formatMoney(state.record.amount_untaxed)"/>
+                            </div>
+                            <div class="so-total-row">
+                                <span class="so-total-lbl">Taxes</span>
+                                <span class="so-total-val" t-esc="formatMoney(state.record.amount_tax)"/>
+                            </div>
+                            <div class="so-total-row so-total-grand">
+                                <span class="so-total-lbl">Total</span>
+                                <span class="so-total-val" t-esc="formatMoney(state.record.amount_total)"/>
+                            </div>
+                            <div class="so-total-row">
+                                <span class="so-total-lbl">Amount Due</span>
+                                <span class="so-total-val" t-esc="formatMoney(state.record.amount_residual)"/>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </t>
+        </div>
+    `;
+
+    get backLabel()  { return this.props.backLabel || 'Invoices'; }
+    get isDraft()    { return this.state.record.state === 'draft'; }
+    get isPosted()   { return this.state.record.state === 'posted'; }
+    get isCancelled(){ return this.state.record.state === 'cancel'; }
+
+    stepClass(step) {
+        const order = { draft: 0, posted: 1, cancel: 2 };
+        const cur   = order[this.state.record.state] ?? -1;
+        const s     = order[step];
+        if (s === cur) return ' active';
+        if (s < cur)   return ' done';
+        return '';
+    }
+
+    setup() {
+        this.state = useState({
+            loading:      true,
+            error:        '',
+            record:       {},
+            lines:        [],
+            partners:     [],
+            journals:     [],
+            paymentTerms: [],
+        });
+        onMounted(() => this.load());
+    }
+
+    async load() {
+        this.state.loading = true;
+        this.state.error   = '';
+        try {
+            const fields = [
+                'name', 'state', 'move_type', 'partner_id', 'journal_id',
+                'invoice_date', 'due_date', 'date', 'ref', 'narration',
+                'payment_term_id', 'invoice_origin', 'payment_state',
+                'amount_untaxed', 'amount_tax', 'amount_total', 'amount_residual',
+            ];
+            const [rec] = await Promise.all([
+                this.props.recordId
+                    ? RpcService.call('account.move', 'read', [[this.props.recordId]], { fields })
+                          .then(r => (Array.isArray(r) ? r[0] : r) || {})
+                    : Promise.resolve({}),
+                this.loadOpts('res.partner',          'partners',     ['id', 'name']),
+                this.loadOpts('account.journal',      'journals',     ['id', 'name']),
+                this.loadOpts('account.payment.term', 'paymentTerms', ['id', 'name']),
+            ]);
+            this.state.record = rec;
+            if (this.props.recordId) await this.loadLines();
+        } catch (e) {
+            this.state.error = e.message;
+        } finally {
+            this.state.loading = false;
+        }
+    }
+
+    async loadOpts(model, key, fields) {
+        try {
+            const recs = await RpcService.call(model, 'search_read', [[]], { fields, limit: 500 });
+            this.state[key] = (Array.isArray(recs) ? recs : []).map(r => ({
+                id: r.id, display: r.name || String(r.id),
+            }));
+        } catch (_) { this.state[key] = []; }
+    }
+
+    async loadLines() {
+        try {
+            const lines = await RpcService.call('account.move.line', 'search_read',
+                [[['move_id', '=', this.props.recordId], ['credit', '>', 0]]],
+                { fields: ['id', 'name', 'quantity', 'price_unit', 'credit'], limit: 200 });
+            this.state.lines = Array.isArray(lines) ? lines : [];
+        } catch (_) { this.state.lines = []; }
+    }
+
+    getM2oId(val) {
+        if (!val && val !== 0) return 0;
+        if (typeof val === 'number') return val;
+        if (Array.isArray(val) && val.length > 0) return typeof val[0] === 'number' ? val[0] : 0;
+        return 0;
+    }
+
+    formatVal(val) {
+        if (val === null || val === undefined || val === false) return '';
+        if (Array.isArray(val)) return val[1] ?? '';
+        return String(val);
+    }
+
+    formatDate(val) {
+        if (!val || val === false) return '';
+        return String(val).substring(0, 10);
+    }
+
+    formatMoney(val) {
+        const n = parseFloat(val) || 0;
+        return n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+
+    onAnyChange(e) {
+        const field = e.target.dataset.field;
+        if (!field) return;
+        if (e.target.tagName === 'SELECT') {
+            this.state.record[field] = parseInt(e.target.value) || 0;
+        }
+    }
+
+    onAnyInput(e) {
+        if (e.target.tagName === 'SELECT') return;
+        const field = e.target.dataset.field;
+        if (field) this.state.record[field] = e.target.value;
+    }
+
+    setInvoiceDate(v) { this.state.record.invoice_date = v; }
+    setDueDate(v)     { this.state.record.due_date      = v; }
+
+    collectRecord() {
+        const r = this.state.record;
+        return {
+            partner_id:      this.getM2oId(r.partner_id)      || null,
+            journal_id:      this.getM2oId(r.journal_id)      || null,
+            payment_term_id: this.getM2oId(r.payment_term_id) || null,
+            invoice_date:    r.invoice_date || null,
+            due_date:        r.due_date     || null,
+            ref:             r.ref          || null,
+            narration:       r.narration    || null,
+        };
+    }
+
+    async onSave() {
+        try {
+            if (this.state.record.id) {
+                await RpcService.call('account.move', 'write',
+                    [[this.state.record.id], this.collectRecord()], {});
+                await this.load();
+            }
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    async onPost() {
+        try {
+            if (this.state.record.id) {
+                await RpcService.call('account.move', 'write',
+                    [[this.state.record.id], this.collectRecord()], {});
+            }
+            await RpcService.call('account.move', 'action_post',
+                [[this.state.record.id]], {});
+            await this.load();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    async onCancel() {
+        try {
+            await RpcService.call('account.move', 'button_cancel',
+                [[this.state.record.id]], {});
+            await this.load();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    async onResetDraft() {
+        try {
+            await RpcService.call('account.move', 'button_draft',
+                [[this.state.record.id]], {});
+            await this.load();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    onBack() { this.props.onBack(); }
+}
+
+// ----------------------------------------------------------------
 // SaleOrderFormView — Odoo 14-style Sales Order form
 // ----------------------------------------------------------------
 class SaleOrderFormView extends Component {
-    static components = { DatePicker };
+    static components = { DatePicker, InvoiceFormView };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
              t-on-input="onAnyInput"
              t-on-click="onAnyClick">
+
+            <!-- Invoice sub-view overlay -->
+            <t t-if="state.invoiceMode">
+                <InvoiceFormView recordId="state.invoiceMode.invoiceId"
+                                 backLabel="'← Sales Order'"
+                                 onBack.bind="closeInvoiceView"/>
+            </t>
+            <t t-else="">
 
             <!-- Page header -->
             <div class="so-page-header">
@@ -563,9 +912,17 @@ class SaleOrderFormView extends Component {
                     <div class="so-card-head">
                         <h1 class="so-doc-id" t-esc="state.record.name || 'New Quotation'"/>
                         <div class="so-stat-btns">
-                            <div class="so-stat-btn">
+                            <div class="so-stat-btn so-stat-btn-disabled" title="PDF preview — coming soon">
+                                <span class="so-stat-num">&#128196;</span>
+                                <span class="so-stat-lbl">Preview</span>
+                            </div>
+                            <div class="so-stat-btn" t-on-click.stop="onViewDeliveries">
                                 <span class="so-stat-num" t-esc="state.deliveryCount"/>
                                 <span class="so-stat-lbl">Delivery</span>
+                            </div>
+                            <div class="so-stat-btn" t-on-click.stop="onViewInvoices">
+                                <span class="so-stat-num" t-esc="state.invoiceCount"/>
+                                <span class="so-stat-lbl">Invoices</span>
                             </div>
                         </div>
                     </div>
@@ -786,6 +1143,7 @@ class SaleOrderFormView extends Component {
                     </t>
                 </div>
             </t>
+            </t> <!-- end t-else: invoice mode off -->
         </div>
     `;
 
@@ -805,6 +1163,9 @@ class SaleOrderFormView extends Component {
             products:       [],
             uoms:           [],
             deliveryCount:  0,
+            invoiceCount:   0,
+            invoiceIds:     [],
+            invoiceMode:    null,   // null | { invoiceId: N }
         });
         this._nextKey = 1;
         onMounted(() => this.load());
@@ -858,6 +1219,15 @@ class SaleOrderFormView extends Component {
                         [[['sale_id', '=', this.props.recordId]]],
                         { fields: ['id'], limit: 500 });
                     this.state.deliveryCount = Array.isArray(picks) ? picks.length : 0;
+                } catch (_) {}
+                try {
+                    const moves = await RpcService.call('account.move', 'search_read',
+                        [[['invoice_origin', '=', this.state.record.name],
+                          ['move_type', '=', 'out_invoice']]],
+                        { fields: ['id'], limit: 500 });
+                    const ids = (Array.isArray(moves) ? moves : []).map(m => m.id);
+                    this.state.invoiceIds   = ids;
+                    this.state.invoiceCount = ids.length;
                 } catch (_) {}
             }
         } catch (e) {
@@ -947,6 +1317,7 @@ class SaleOrderFormView extends Component {
     // ---- Event delegation handlers ----
 
     onAnyChange(e) {
+        if (this.state.invoiceMode) return;
         const lineField = e.target.dataset.lineField;
         if (lineField) {
             const key = e.target.dataset.key;
@@ -964,6 +1335,7 @@ class SaleOrderFormView extends Component {
     }
 
     onAnyInput(e) {
+        if (this.state.invoiceMode) return;
         if (e.target.tagName === 'SELECT') return;
         const lineField = e.target.dataset.lineField;
         if (lineField) {
@@ -977,6 +1349,7 @@ class SaleOrderFormView extends Component {
     }
 
     onAnyClick(e) {
+        if (this.state.invoiceMode) return;
         if (e.target.dataset.addLine) {
             e.preventDefault();
             this.state.lines.push({
@@ -1130,7 +1503,7 @@ class SaleOrderFormView extends Component {
         try {
             await RpcService.call('sale.order', 'action_create_invoices',
                 [[this.state.record.id]], {});
-            this.props.onBack();
+            await this.load();   // reload to update invoice count
         } catch (e) { this.state.error = e.message; }
     }
 
@@ -1138,6 +1511,21 @@ class SaleOrderFormView extends Component {
 
     setDateOrder(v)    { this.state.record.date_order    = v; }
     setValidityDate(v) { this.state.record.validity_date = v; }
+
+    onViewDeliveries() {
+        // Full delivery view is in the Inventory app; navigate back to list for now
+        this.props.onBack();
+    }
+
+    onViewInvoices() {
+        if (this.state.invoiceIds.length === 0) return;
+        // Open the first (or only) invoice inline
+        this.state.invoiceMode = { invoiceId: this.state.invoiceIds[0] };
+    }
+
+    closeInvoiceView() {
+        this.state.invoiceMode = null;
+    }
 }
 
 // ----------------------------------------------------------------
@@ -1723,6 +2111,10 @@ class ActionView extends Component {
                                            recordId="state.recordId"
                                            onBack.bind="backToList"/>
                 </t>
+                <t t-elif="isInvoiceModel">
+                    <InvoiceFormView recordId="state.recordId"
+                                     onBack.bind="backToList"/>
+                </t>
                 <t t-else="">
                     <FormView action="props.action"
                               viewDef="state.formView"
@@ -1733,10 +2125,11 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView };
 
     get isSaleOrderModel()    { return this.props.action.res_model === 'sale.order'; }
-    get isPurchaseOrderModel() { return this.props.action.res_model === 'purchase.order'; }
+    get isPurchaseOrderModel(){ return this.props.action.res_model === 'purchase.order'; }
+    get isInvoiceModel()      { return this.props.action.res_model === 'account.move'; }
 
     setup() {
         this.state = useState({

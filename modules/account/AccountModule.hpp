@@ -266,6 +266,8 @@ public:
     double      amountTax     = 0.0;
     double      amountTotal   = 0.0;
     double      amountResidual= 0.0;
+    int         paymentTermId  = 0;
+    std::string invoiceOrigin;
 
     explicit AccountMove(std::shared_ptr<infrastructure::DbConnection> db)
         : core::BaseModel<AccountMove>(std::move(db)) {}
@@ -287,7 +289,9 @@ public:
         fieldRegistry_.add({"amount_untaxed",  core::FieldType::Monetary,  "Untaxed Amount",    false, true});
         fieldRegistry_.add({"amount_tax",      core::FieldType::Monetary,  "Tax",               false, true});
         fieldRegistry_.add({"amount_total",    core::FieldType::Monetary,  "Total",             false, true});
-        fieldRegistry_.add({"amount_residual", core::FieldType::Monetary,  "Amount Due",        false, true});
+        fieldRegistry_.add({"amount_residual",  core::FieldType::Monetary,  "Amount Due",        false, true});
+        fieldRegistry_.add({"payment_term_id",  core::FieldType::Many2one,  "Payment Terms",     false, false, true, false, "account.payment.term"});
+        fieldRegistry_.add({"invoice_origin",   core::FieldType::Char,      "Source Document"});
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -308,6 +312,8 @@ public:
         j["amount_tax"]      = amountTax;
         j["amount_total"]    = amountTotal;
         j["amount_residual"] = amountResidual;
+        j["payment_term_id"] = paymentTermId > 0 ? nlohmann::json(paymentTermId) : nlohmann::json(false);
+        j["invoice_origin"]  = invoiceOrigin.empty() ? nlohmann::json(nullptr) : nlohmann::json(invoiceOrigin);
     }
 
     void deserializeFields(const nlohmann::json& j) override {
@@ -328,6 +334,8 @@ public:
         if (j.contains("amount_tax")      && j["amount_tax"].is_number())      amountTax      = j["amount_tax"].get<double>();
         if (j.contains("amount_total")    && j["amount_total"].is_number())    amountTotal    = j["amount_total"].get<double>();
         if (j.contains("amount_residual") && j["amount_residual"].is_number()) amountResidual = j["amount_residual"].get<double>();
+        if (j.contains("payment_term_id"))                                      paymentTermId  = m2oToId_(j["payment_term_id"]);
+        if (j.contains("invoice_origin")  && j["invoice_origin"].is_string())  invoiceOrigin  = j["invoice_origin"].get<std::string>();
     }
 
     std::vector<std::string> validate() const override {
@@ -356,6 +364,7 @@ public:
     double      credit         = 0.0;
     double      amountCurrency = 0.0;
     double      quantity       = 1.0;
+    double      priceUnit      = 0.0;
     int         taxLineId      = 0;
     bool        reconciled     = false;
 
@@ -375,6 +384,7 @@ public:
         fieldRegistry_.add({"credit",          core::FieldType::Monetary, "Credit"});
         fieldRegistry_.add({"amount_currency", core::FieldType::Monetary, "Amount Currency"});
         fieldRegistry_.add({"quantity",        core::FieldType::Float,    "Quantity"});
+        fieldRegistry_.add({"price_unit",      core::FieldType::Float,    "Unit Price"});
         fieldRegistry_.add({"tax_line_id",     core::FieldType::Many2one, "Tax",            false, false, true, false, "account.tax"});
         fieldRegistry_.add({"reconciled",      core::FieldType::Boolean,  "Reconciled"});
     }
@@ -392,6 +402,7 @@ public:
         j["credit"]          = credit;
         j["amount_currency"] = amountCurrency;
         j["quantity"]        = quantity;
+        j["price_unit"]      = priceUnit;
         j["tax_line_id"]     = taxLineId > 0 ? nlohmann::json(taxLineId) : nlohmann::json(false);
         j["reconciled"]      = reconciled;
     }
@@ -409,6 +420,7 @@ public:
         if (j.contains("credit")        && j["credit"].is_number())        credit         = j["credit"].get<double>();
         if (j.contains("amount_currency") && j["amount_currency"].is_number()) amountCurrency = j["amount_currency"].get<double>();
         if (j.contains("quantity")      && j["quantity"].is_number())      quantity       = j["quantity"].get<double>();
+        if (j.contains("price_unit")    && j["price_unit"].is_number())   priceUnit      = j["price_unit"].get<double>();
         if (j.contains("tax_line_id"))      taxLineId      = m2oToId_(j["tax_line_id"]);
         if (j.contains("reconciled")    && j["reconciled"].is_boolean())   reconciled     = j["reconciled"].get<bool>();
     }
@@ -626,6 +638,7 @@ public:
         REGISTER_METHOD("action_post",    handleActionPost)
         REGISTER_METHOD("button_cancel",  handleButtonCancel)
         REGISTER_METHOD("action_reverse", handleButtonCancel)  // simplified
+        REGISTER_METHOD("button_draft",   handleButtonDraft)
     }
 
     std::string modelName() const override { return "account.move"; }
@@ -704,6 +717,20 @@ private:
         txn.exec(
             "UPDATE account_move SET state = 'cancel', write_date = now() "
             "WHERE id = ANY($1::int[]) AND state = 'posted'",
+            pqxx::params{idsArray_(ids)});
+        txn.commit();
+        return true;
+    }
+
+    nlohmann::json handleButtonDraft(const core::CallKwArgs& call) {
+        const auto ids = call.ids();
+        if (ids.empty()) return true;
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        txn.exec(
+            "UPDATE account_move SET state = 'draft', name = '/', write_date = now() "
+            "WHERE id = ANY($1::int[]) AND state = 'cancel'",
             pqxx::params{idsArray_(ids)});
         txn.commit();
         return true;
@@ -1061,6 +1088,8 @@ private:
                 partner_id      INTEGER REFERENCES res_partner(id),
                 company_id      INTEGER NOT NULL REFERENCES res_company(id) DEFAULT 1,
                 currency_id     INTEGER REFERENCES res_currency(id),
+                payment_term_id INTEGER REFERENCES account_payment_term(id),
+                invoice_origin  VARCHAR,
                 payment_state   VARCHAR NOT NULL DEFAULT 'not_paid',
                 amount_untaxed  NUMERIC(16,2) NOT NULL DEFAULT 0,
                 amount_tax      NUMERIC(16,2) NOT NULL DEFAULT 0,
@@ -1069,6 +1098,15 @@ private:
                 create_date     TIMESTAMP DEFAULT now(),
                 write_date      TIMESTAMP DEFAULT now()
             )
+        )");
+        // migrations: add columns added after initial schema creation
+        txn.exec(R"(
+            ALTER TABLE account_move
+                ADD COLUMN IF NOT EXISTS payment_term_id INTEGER REFERENCES account_payment_term(id)
+        )");
+        txn.exec(R"(
+            ALTER TABLE account_move
+                ADD COLUMN IF NOT EXISTS invoice_origin VARCHAR
         )");
 
         // account_move_line
@@ -1088,11 +1126,16 @@ private:
                 balance          NUMERIC(16,2) GENERATED ALWAYS AS (debit - credit) STORED,
                 amount_currency  NUMERIC(16,2) NOT NULL DEFAULT 0,
                 quantity         NUMERIC(16,4) NOT NULL DEFAULT 1,
+                price_unit       NUMERIC(16,4) NOT NULL DEFAULT 0,
                 tax_line_id      INTEGER REFERENCES account_tax(id),
                 reconciled       BOOLEAN NOT NULL DEFAULT FALSE,
                 create_date      TIMESTAMP DEFAULT now(),
                 write_date       TIMESTAMP DEFAULT now()
             )
+        )");
+        txn.exec(R"(
+            ALTER TABLE account_move_line
+                ADD COLUMN IF NOT EXISTS price_unit NUMERIC(16,4) NOT NULL DEFAULT 0
         )");
 
         // account_payment

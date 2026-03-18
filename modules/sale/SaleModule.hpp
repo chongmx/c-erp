@@ -721,14 +721,15 @@ private:
             mp.append(amtTotal);
             mp.append(amtTotal);  // amount_residual
             mp.append(orderName); // ref
+            mp.append(orderName); // invoice_origin
 
             auto mvRow = txn.exec(
                 "INSERT INTO account_move "
                 "(move_type, state, date, journal_id, partner_id, "
                 " payment_term_id, company_id, currency_id, invoice_date, "
-                " amount_untaxed, amount_tax, amount_total, amount_residual, ref) "
+                " amount_untaxed, amount_tax, amount_total, amount_residual, ref, invoice_origin) "
                 "VALUES ('out_invoice','draft',$6,$1,$2,$3,$4,$5,$6,"
-                "        $7,$8,$9,$10,$11) "
+                "        $7,$8,$9,$10,$11,$12) "
                 "RETURNING id",
                 mp);
             int moveId = mvRow[0][0].as<int>();
@@ -758,13 +759,14 @@ private:
                 il.append(lname);
                 if (partnerId > 0) il.append(partnerId); else il.append(nullptr);
                 il.append(qty);
+                il.append(unit);  // price_unit
                 il.append(0.0);   // debit
                 il.append(sub);   // credit
                 txn.exec(
                     "INSERT INTO account_move_line "
                     "(move_id, account_id, journal_id, company_id, date, "
-                    " name, partner_id, quantity, debit, credit) "
-                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                    " name, partner_id, quantity, price_unit, debit, credit) "
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
                     il);
 
                 // Tax line if any

@@ -100,3 +100,44 @@ method names from within `t-foreach` loop scope.
 - Phase 17b: Workflow buttons on Transfers form
   (Confirm, Check Availability, Validate, Cancel)
 - Phase 18: CRM module (`crm.lead`, `crm.stage`)
+
+---
+
+## Phase 17c — Sale Order stat buttons (Delivery / Invoices / Preview)
+
+### Implemented
+| Button | Behaviour |
+|--------|-----------|
+| **Delivery** | Shows `stock.picking` count for this sale order. Clicking navigates back to list (Inventory app has full delivery view). |
+| **Invoices** | Shows `account.move` (`out_invoice`) count linked via `invoice_origin = order.name`. Count refreshes after "Create Invoice". Clicking navigates back to list (Accounting app has full invoice view). |
+| **Preview** | Disabled / greyed out — see deferred section below. |
+
+### Backend changes
+- `account_move.invoice_origin VARCHAR` added to `AccountModule` DDL + `ALTER TABLE … ADD COLUMN IF NOT EXISTS` migration.
+- `action_create_invoices` in `SaleModule` now writes `invoice_origin = order.name` on each created `account.move`.
+
+---
+
+## Deferred — Customer Preview (PDF)
+
+**Feature:** A "Customer Preview" stat button on the Sales Order form that renders
+a PDF version of the quotation/order for the customer to review.
+
+**Why deferred:** PDF generation requires a server-side rendering pipeline.
+Options:
+1. **wkhtmltopdf** (Odoo's approach) — render an HTML template server-side then
+   convert to PDF via wkhtmltopdf binary.
+2. **Headless Chromium / puppeteer** — more modern, better CSS support.
+3. **Client-side jsPDF** — limited fidelity, no page breaks.
+
+**Current state:** The button is visible in the UI but disabled (greyed out,
+`pointer-events: none`). It shows a 📄 icon and "Preview" label to communicate
+the planned feature to users.
+
+**Implementation plan (future):**
+1. Add a C++ `/report/sale_order/<id>` HTTP endpoint that:
+   - Builds an HTML string from the order + lines data
+   - Pipes it through `wkhtmltopdf --quiet - -` (stdin → stdout)
+   - Returns `Content-Type: application/pdf`
+2. Frontend "Preview" button opens `window.open('/report/sale_order/' + id, '_blank')`
+3. Enable the button (remove `so-stat-btn-disabled`) once the endpoint exists.

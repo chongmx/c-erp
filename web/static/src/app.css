@@ -644,6 +644,7 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
     cursor: pointer; min-width: 70px; background: var(--bg); transition: border-color .15s;
 }
 .so-stat-btn:hover { border-color: var(--accent); }
+.so-stat-btn-disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
 .so-stat-num { font-size: 1.1rem; font-weight: 700; color: var(--accent); }
 .so-stat-lbl { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 
