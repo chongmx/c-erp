@@ -506,7 +506,8 @@ class InvoiceFormView extends Component {
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
-             t-on-input="onAnyInput">
+             t-on-input="onAnyInput"
+             t-on-click="onAnyClick">
 
             <!-- Page header -->
             <div class="so-page-header">
@@ -522,6 +523,7 @@ class InvoiceFormView extends Component {
                             <button class="btn"             t-on-click.stop="onSave">Save</button>
                         </t>
                         <t t-if="isPosted">
+                            <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
                             <button class="btn btn-danger"  t-on-click.stop="onCancel">Cancel</button>
                         </t>
                         <t t-if="isCancelled">
@@ -616,29 +618,85 @@ class InvoiceFormView extends Component {
                         </div>
                     </div>
 
-                    <!-- Invoice lines (read-only) -->
-                    <table class="so-lines-table" style="margin-top:16px;">
+                    <!-- Invoice lines table -->
+                    <table class="so-lines-table inv-lines-table">
                         <thead>
                             <tr>
-                                <th>Description</th>
+                                <th class="so-col-desc">Description</th>
                                 <th class="so-col-num">Qty</th>
                                 <th class="so-col-num">Unit Price</th>
                                 <th class="so-col-subtotal">Subtotal</th>
+                                <th class="so-col-del"/>
                             </tr>
                         </thead>
                         <tbody>
-                            <t t-foreach="state.lines" t-as="ln" t-key="ln.id">
-                                <tr>
-                                    <td t-esc="ln.name || ''"/>
-                                    <td class="so-col-num" t-esc="ln.quantity"/>
-                                    <td class="so-col-num" t-esc="formatMoney(ln.price_unit)"/>
-                                    <td class="so-col-subtotal" t-esc="formatMoney(ln.credit)"/>
-                                </tr>
-                            </t>
-                            <t t-if="state.lines.length === 0">
-                                <tr><td colspan="4" class="empty-row">No invoice lines</td></tr>
+                            <t t-foreach="state.lines" t-as="ln" t-key="ln._key">
+                                <t t-if="ln.display_type === 'line_section'">
+                                    <tr class="inv-row-section">
+                                        <td colspan="4">
+                                            <input class="inv-sect-input"
+                                                   t-att-data-key="ln._key"
+                                                   data-line-field="name"
+                                                   t-att-value="ln.name || ''"
+                                                   placeholder="Section title…"/>
+                                        </td>
+                                        <td class="so-col-del">
+                                            <button class="btn btn-sm" t-att-data-key="ln._key" data-del-line="1">&#x2715;</button>
+                                        </td>
+                                    </tr>
+                                </t>
+                                <t t-elif="ln.display_type === 'line_note'">
+                                    <tr class="inv-row-note">
+                                        <td colspan="4">
+                                            <input class="inv-note-input"
+                                                   t-att-data-key="ln._key"
+                                                   data-line-field="name"
+                                                   t-att-value="ln.name || ''"
+                                                   placeholder="Note…"/>
+                                        </td>
+                                        <td class="so-col-del">
+                                            <button class="btn btn-sm" t-att-data-key="ln._key" data-del-line="1">&#x2715;</button>
+                                        </td>
+                                    </tr>
+                                </t>
+                                <t t-else="">
+                                    <tr>
+                                        <td class="so-col-desc">
+                                            <input class="inv-line-input"
+                                                   t-att-data-key="ln._key"
+                                                   data-line-field="name"
+                                                   t-att-value="ln.name || ''"
+                                                   placeholder="Description"/>
+                                        </td>
+                                        <td class="so-col-num">
+                                            <input class="inv-line-input" type="number" min="0"
+                                                   t-att-data-key="ln._key"
+                                                   data-line-field="quantity"
+                                                   t-att-value="ln.quantity"/>
+                                        </td>
+                                        <td class="so-col-num">
+                                            <input class="inv-line-input" type="number" min="0" step="0.01"
+                                                   t-att-data-key="ln._key"
+                                                   data-line-field="price_unit"
+                                                   t-att-value="ln.price_unit"/>
+                                        </td>
+                                        <td class="so-col-subtotal" t-esc="formatMoney(ln.credit)"/>
+                                        <td class="so-col-del">
+                                            <button class="btn btn-sm" t-att-data-key="ln._key" data-del-line="1">&#x2715;</button>
+                                        </td>
+                                    </tr>
+                                </t>
                             </t>
                         </tbody>
+                        <tfoot>
+                            <tr class="inv-add-row">
+                                <td colspan="5">
+                                    <button class="btn so-add-line" data-add-line="normal">+ Add a line</button>
+                                    <button class="btn so-add-line" data-add-line="section">+ Add a section</button>
+                                    <button class="btn so-add-line" data-add-line="note">+ Add a note</button>
+                                </td>
+                            </tr>
+                        </tfoot>
                     </table>
 
                     <!-- Footer: notes + totals -->
@@ -688,14 +746,17 @@ class InvoiceFormView extends Component {
 
     setup() {
         this.state = useState({
-            loading:      true,
-            error:        '',
-            record:       {},
-            lines:        [],
-            partners:     [],
-            journals:     [],
-            paymentTerms: [],
+            loading:        true,
+            error:          '',
+            record:         {},
+            lines:          [],
+            deletedLineIds: [],
+            partners:       [],
+            journals:       [],
+            paymentTerms:   [],
         });
+        this._nextKey   = 1;
+        this._lineDefaults = {};   // account_id, journal_id, company_id, date, partner_id
         onMounted(() => this.load());
     }
 
@@ -719,6 +780,7 @@ class InvoiceFormView extends Component {
                 this.loadOpts('account.payment.term', 'paymentTerms', ['id', 'name']),
             ]);
             this.state.record = rec;
+            this.state.deletedLineIds = [];
             if (this.props.recordId) await this.loadLines();
         } catch (e) {
             this.state.error = e.message;
@@ -738,12 +800,63 @@ class InvoiceFormView extends Component {
 
     async loadLines() {
         try {
-            const lines = await RpcService.call('account.move.line', 'search_read',
-                [[['move_id', '=', this.props.recordId], ['credit', '>', 0]]],
-                { fields: ['id', 'name', 'quantity', 'price_unit', 'credit'], limit: 200 });
-            this.state.lines = Array.isArray(lines) ? lines : [];
+            // Load income lines + section/note lines (exclude AR/AP debit-only lines)
+            const raw = await RpcService.call('account.move.line', 'search_read',
+                [[['move_id', '=', this.props.recordId],
+                  ['debit', '=', 0]]],
+                { fields: ['id', 'name', 'quantity', 'price_unit', 'credit',
+                            'display_type', 'account_id', 'journal_id',
+                            'company_id', 'date', 'partner_id'], limit: 200 });
+
+            const lines = (Array.isArray(raw) ? raw : []).map(ln => {
+                // Fix missing price_unit for old invoices created before the column was added
+                let pu = parseFloat(ln.price_unit) || 0;
+                const qty = parseFloat(ln.quantity) || 0;
+                const credit = parseFloat(ln.credit) || 0;
+                if (pu === 0 && qty > 0 && credit > 0) pu = Math.round(credit / qty * 100) / 100;
+                return {
+                    _key:         'db_' + ln.id,
+                    _isNew:       false,
+                    id:           ln.id,
+                    name:         ln.name || '',
+                    quantity:     qty,
+                    price_unit:   pu,
+                    credit:       credit,
+                    display_type: ln.display_type || '',
+                    account_id:   ln.account_id,
+                    journal_id:   ln.journal_id,
+                    company_id:   ln.company_id,
+                    date:         ln.date,
+                    partner_id:   ln.partner_id,
+                };
+            });
+
+            // Store defaults from the first income line for use when creating new lines
+            const firstIncome = lines.find(l => !l.display_type);
+            if (firstIncome) {
+                this._lineDefaults = {
+                    account_id: this.getM2oId(firstIncome.account_id),
+                    journal_id: this.getM2oId(firstIncome.journal_id),
+                    company_id: this.getM2oId(firstIncome.company_id),
+                    date:       firstIncome.date || this.formatDate(this.state.record.date),
+                    partner_id: this.getM2oId(firstIncome.partner_id),
+                };
+            } else {
+                // Fallback: derive from move header
+                this._lineDefaults = {
+                    account_id: 0,
+                    journal_id: this.getM2oId(this.state.record.journal_id),
+                    company_id: 1,
+                    date:       this.formatDate(this.state.record.date) || this.formatDate(this.state.record.invoice_date),
+                    partner_id: this.getM2oId(this.state.record.partner_id),
+                };
+            }
+
+            this.state.lines = lines;
         } catch (_) { this.state.lines = []; }
     }
+
+    // ---- helpers ----
 
     getM2oId(val) {
         if (!val && val !== 0) return 0;
@@ -768,18 +881,83 @@ class InvoiceFormView extends Component {
         return n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     }
 
+    recalcLine(line) {
+        if (line.display_type) { line.credit = 0; return; }
+        const qty   = parseFloat(line.quantity)   || 0;
+        const price = parseFloat(line.price_unit) || 0;
+        line.credit = Math.round(qty * price * 100) / 100;
+    }
+
+    recalcTotals() {
+        const untaxed = this.state.lines
+            .filter(l => !l.display_type)
+            .reduce((s, l) => s + (parseFloat(l.credit) || 0), 0);
+        const tax   = parseFloat(this.state.record.amount_tax) || 0;
+        const total = Math.round((untaxed + tax) * 100) / 100;
+        this.state.record.amount_untaxed  = Math.round(untaxed * 100) / 100;
+        this.state.record.amount_total    = total;
+        this.state.record.amount_residual = total;
+    }
+
+    // ---- event handlers ----
+
     onAnyChange(e) {
+        const lineField = e.target.dataset.lineField;
+        if (lineField) {
+            const key = e.target.dataset.key;
+            const val = e.target.tagName === 'SELECT' ? (parseInt(e.target.value) || 0) : e.target.value;
+            this.updateLine(key, lineField, val);
+            return;
+        }
         const field = e.target.dataset.field;
-        if (!field) return;
-        if (e.target.tagName === 'SELECT') {
+        if (field && e.target.tagName === 'SELECT') {
             this.state.record[field] = parseInt(e.target.value) || 0;
         }
     }
 
     onAnyInput(e) {
         if (e.target.tagName === 'SELECT') return;
+        const lineField = e.target.dataset.lineField;
+        if (lineField) {
+            this.updateLine(e.target.dataset.key, lineField, e.target.value);
+            return;
+        }
         const field = e.target.dataset.field;
         if (field) this.state.record[field] = e.target.value;
+    }
+
+    onAnyClick(e) {
+        const addType = e.target.dataset.addLine;
+        if (addType) {
+            e.preventDefault();
+            const key = String(this._nextKey++);
+            const dt  = addType === 'section' ? 'line_section'
+                      : addType === 'note'    ? 'line_note' : '';
+            this.state.lines.push({
+                _key: key, _isNew: true, id: null,
+                name: '', quantity: 1, price_unit: 0, credit: 0,
+                display_type: dt,
+            });
+            return;
+        }
+        const delKey = e.target.dataset.delLine ? e.target.dataset.key : null;
+        if (delKey) {
+            e.preventDefault();
+            const line = this.state.lines.find(l => l._key === delKey);
+            if (line && line.id) this.state.deletedLineIds.push(line.id);
+            this.state.lines = this.state.lines.filter(l => l._key !== delKey);
+            this.recalcTotals();
+        }
+    }
+
+    updateLine(key, field, val) {
+        const line = this.state.lines.find(l => l._key === key);
+        if (!line) return;
+        line[field] = val;
+        if (field === 'quantity' || field === 'price_unit') {
+            this.recalcLine(line);
+            this.recalcTotals();
+        }
     }
 
     setInvoiceDate(v) { this.state.record.invoice_date = v; }
@@ -798,11 +976,47 @@ class InvoiceFormView extends Component {
         };
     }
 
+    async syncLines(moveId) {
+        // Delete removed lines
+        if (this.state.deletedLineIds.length > 0) {
+            await RpcService.call('account.move.line', 'unlink',
+                [this.state.deletedLineIds], {});
+            this.state.deletedLineIds = [];
+        }
+        const d = this._lineDefaults;
+        for (const ln of this.state.lines) {
+            const isSection = ln.display_type === 'line_section';
+            const isNote    = ln.display_type === 'line_note';
+            const vals = {
+                move_id:      moveId,
+                name:         ln.name || '',
+                quantity:     isSection || isNote ? 0 : (parseFloat(ln.quantity) || 0),
+                price_unit:   isSection || isNote ? 0 : (parseFloat(ln.price_unit) || 0),
+                debit:        0,
+                credit:       isSection || isNote ? 0 : (parseFloat(ln.credit) || 0),
+                display_type: ln.display_type || '',
+                account_id:   d.account_id || null,
+                journal_id:   d.journal_id || null,
+                company_id:   d.company_id || 1,
+                date:         d.date       || null,
+                partner_id:   d.partner_id || null,
+            };
+            if (ln._isNew) {
+                await RpcService.call('account.move.line', 'create', [vals], {});
+            } else if (ln.id) {
+                await RpcService.call('account.move.line', 'write', [[ln.id], vals], {});
+            }
+        }
+        // Recalculate AR line + move totals on server
+        await RpcService.call('account.move', 'recompute_totals', [[moveId]], {});
+    }
+
     async onSave() {
         try {
-            if (this.state.record.id) {
-                await RpcService.call('account.move', 'write',
-                    [[this.state.record.id], this.collectRecord()], {});
+            const id = this.state.record.id;
+            if (id) {
+                await RpcService.call('account.move', 'write', [[id], this.collectRecord()], {});
+                await this.syncLines(id);
                 await this.load();
             }
         } catch (e) { this.state.error = e.message; }
@@ -810,28 +1024,26 @@ class InvoiceFormView extends Component {
 
     async onPost() {
         try {
-            if (this.state.record.id) {
-                await RpcService.call('account.move', 'write',
-                    [[this.state.record.id], this.collectRecord()], {});
+            const id = this.state.record.id;
+            if (id) {
+                await RpcService.call('account.move', 'write', [[id], this.collectRecord()], {});
+                await this.syncLines(id);
             }
-            await RpcService.call('account.move', 'action_post',
-                [[this.state.record.id]], {});
+            await RpcService.call('account.move', 'action_post', [[this.state.record.id]], {});
             await this.load();
         } catch (e) { this.state.error = e.message; }
     }
 
     async onCancel() {
         try {
-            await RpcService.call('account.move', 'button_cancel',
-                [[this.state.record.id]], {});
+            await RpcService.call('account.move', 'button_cancel', [[this.state.record.id]], {});
             await this.load();
         } catch (e) { this.state.error = e.message; }
     }
 
     async onResetDraft() {
         try {
-            await RpcService.call('account.move', 'button_draft',
-                [[this.state.record.id]], {});
+            await RpcService.call('account.move', 'button_draft', [[this.state.record.id]], {});
             await this.load();
         } catch (e) { this.state.error = e.message; }
     }

@@ -365,6 +365,7 @@ public:
     double      amountCurrency = 0.0;
     double      quantity       = 1.0;
     double      priceUnit      = 0.0;
+    std::string displayType;   // '' | 'line_section' | 'line_note'
     int         taxLineId      = 0;
     bool        reconciled     = false;
 
@@ -385,6 +386,7 @@ public:
         fieldRegistry_.add({"amount_currency", core::FieldType::Monetary, "Amount Currency"});
         fieldRegistry_.add({"quantity",        core::FieldType::Float,    "Quantity"});
         fieldRegistry_.add({"price_unit",      core::FieldType::Float,    "Unit Price"});
+        fieldRegistry_.add({"display_type",    core::FieldType::Char,     "Display Type"});
         fieldRegistry_.add({"tax_line_id",     core::FieldType::Many2one, "Tax",            false, false, true, false, "account.tax"});
         fieldRegistry_.add({"reconciled",      core::FieldType::Boolean,  "Reconciled"});
     }
@@ -403,6 +405,7 @@ public:
         j["amount_currency"] = amountCurrency;
         j["quantity"]        = quantity;
         j["price_unit"]      = priceUnit;
+        j["display_type"]    = displayType.empty() ? nlohmann::json("") : nlohmann::json(displayType);
         j["tax_line_id"]     = taxLineId > 0 ? nlohmann::json(taxLineId) : nlohmann::json(false);
         j["reconciled"]      = reconciled;
     }
@@ -421,6 +424,7 @@ public:
         if (j.contains("amount_currency") && j["amount_currency"].is_number()) amountCurrency = j["amount_currency"].get<double>();
         if (j.contains("quantity")      && j["quantity"].is_number())      quantity       = j["quantity"].get<double>();
         if (j.contains("price_unit")    && j["price_unit"].is_number())   priceUnit      = j["price_unit"].get<double>();
+        if (j.contains("display_type")  && j["display_type"].is_string()) displayType    = j["display_type"].get<std::string>();
         if (j.contains("tax_line_id"))      taxLineId      = m2oToId_(j["tax_line_id"]);
         if (j.contains("reconciled")    && j["reconciled"].is_boolean())   reconciled     = j["reconciled"].get<bool>();
     }
@@ -638,7 +642,8 @@ public:
         REGISTER_METHOD("action_post",    handleActionPost)
         REGISTER_METHOD("button_cancel",  handleButtonCancel)
         REGISTER_METHOD("action_reverse", handleButtonCancel)  // simplified
-        REGISTER_METHOD("button_draft",   handleButtonDraft)
+        REGISTER_METHOD("button_draft",      handleButtonDraft)
+        REGISTER_METHOD("recompute_totals",  handleRecomputeTotals)
     }
 
     std::string modelName() const override { return "account.move"; }
@@ -718,6 +723,47 @@ private:
             "UPDATE account_move SET state = 'cancel', write_date = now() "
             "WHERE id = ANY($1::int[]) AND state = 'posted'",
             pqxx::params{idsArray_(ids)});
+        txn.commit();
+        return true;
+    }
+
+    nlohmann::json handleRecomputeTotals(const core::CallKwArgs& call) {
+        const auto ids = call.ids();
+        if (ids.empty()) return true;
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        for (int id : ids) {
+            auto incRow = txn.exec(
+                "SELECT COALESCE(SUM(credit),0) FROM account_move_line "
+                "WHERE move_id=$1 AND credit>0 AND display_type=''",
+                pqxx::params{id});
+            double untaxed = incRow[0][0].as<double>();
+
+            auto mvRow = txn.exec(
+                "SELECT amount_tax, payment_state FROM account_move WHERE id=$1",
+                pqxx::params{id});
+            if (mvRow.empty()) continue;
+
+            double tax      = mvRow[0][0].as<double>();
+            std::string ps  = mvRow[0][1].c_str();
+            double total    = untaxed + tax;
+            double residual = (ps == "not_paid" || ps == "partial") ? total : 0.0;
+
+            txn.exec(
+                "UPDATE account_move "
+                "SET amount_untaxed=$1, amount_total=$2, amount_residual=$3, write_date=now() "
+                "WHERE id=$4",
+                pqxx::params{untaxed, total, residual, id});
+
+            // Update the AR/AP line (debit > 0) to match new total
+            txn.exec(
+                "UPDATE account_move_line SET debit=$1, write_date=now() "
+                "WHERE move_id=$2 AND debit>0",
+                pqxx::params{total, id});
+        }
+
         txn.commit();
         return true;
     }
@@ -1127,6 +1173,7 @@ private:
                 amount_currency  NUMERIC(16,2) NOT NULL DEFAULT 0,
                 quantity         NUMERIC(16,4) NOT NULL DEFAULT 1,
                 price_unit       NUMERIC(16,4) NOT NULL DEFAULT 0,
+                display_type     VARCHAR NOT NULL DEFAULT '',
                 tax_line_id      INTEGER REFERENCES account_tax(id),
                 reconciled       BOOLEAN NOT NULL DEFAULT FALSE,
                 create_date      TIMESTAMP DEFAULT now(),
@@ -1136,6 +1183,10 @@ private:
         txn.exec(R"(
             ALTER TABLE account_move_line
                 ADD COLUMN IF NOT EXISTS price_unit NUMERIC(16,4) NOT NULL DEFAULT 0
+        )");
+        txn.exec(R"(
+            ALTER TABLE account_move_line
+                ADD COLUMN IF NOT EXISTS display_type VARCHAR NOT NULL DEFAULT ''
         )");
 
         // account_payment
