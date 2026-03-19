@@ -330,11 +330,13 @@ public:
         REGISTER_METHOD("fields_get",      handleFieldsGet)
         REGISTER_METHOD("search_count",    handleSearchCount)
         REGISTER_METHOD("search",          handleSearch)
-        REGISTER_METHOD("action_confirm",  handleActionConfirm)
-        REGISTER_METHOD("action_assign",   handleActionAssign)
-        REGISTER_METHOD("button_validate", handleButtonValidate)
-        REGISTER_METHOD("action_cancel",   handleActionCancel)
-        REGISTER_METHOD("default_get",     handleDefaultGet)
+        REGISTER_METHOD("action_confirm",       handleActionConfirm)
+        REGISTER_METHOD("action_assign",        handleActionAssign)
+        REGISTER_METHOD("button_validate",      handleButtonValidate)
+        REGISTER_METHOD("action_cancel",        handleActionCancel)
+        REGISTER_METHOD("button_unreserve",     handleButtonUnreserve)
+        REGISTER_METHOD("button_reset_to_draft",handleButtonResetToDraft)
+        REGISTER_METHOD("default_get",          handleDefaultGet)
     }
 
     std::string modelName() const override { return "stock.picking"; }
@@ -599,6 +601,46 @@ private:
             txn.exec(
                 "UPDATE stock_move SET state='cancel' "
                 "WHERE picking_id=$1 AND state != 'done'",
+                pqxx::params{id});
+            txn.commit();
+        }
+        return true;
+    }
+
+    // ----------------------------------------------------------
+    // button_unreserve — assigned → confirmed (release reservation)
+    // ----------------------------------------------------------
+    nlohmann::json handleButtonUnreserve(const CallKwArgs& call) {
+        for (int id : call.ids()) {
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            txn.exec(
+                "UPDATE stock_picking SET state='confirmed', write_date=now() "
+                "WHERE id=$1 AND state='assigned'",
+                pqxx::params{id});
+            txn.exec(
+                "UPDATE stock_move SET state='confirmed' "
+                "WHERE picking_id=$1 AND state='assigned'",
+                pqxx::params{id});
+            txn.commit();
+        }
+        return true;
+    }
+
+    // ----------------------------------------------------------
+    // button_reset_to_draft — cancel → draft
+    // ----------------------------------------------------------
+    nlohmann::json handleButtonResetToDraft(const CallKwArgs& call) {
+        for (int id : call.ids()) {
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            txn.exec(
+                "UPDATE stock_picking SET state='draft', name='New', write_date=now() "
+                "WHERE id=$1 AND state='cancel'",
+                pqxx::params{id});
+            txn.exec(
+                "UPDATE stock_move SET state='draft' "
+                "WHERE picking_id=$1 AND state='cancel'",
                 pqxx::params{id});
             txn.commit();
         }

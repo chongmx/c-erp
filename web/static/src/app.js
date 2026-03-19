@@ -2299,6 +2299,430 @@ class PurchaseOrderFormView extends Component {
 }
 
 // ----------------------------------------------------------------
+// TransferFormView — stock.picking detail (Odoo 14-style)
+// ----------------------------------------------------------------
+class TransferFormView extends Component {
+    static components = { DatePicker };
+    static template = xml`
+        <div class="so-shell"
+             t-on-change="onAnyChange"
+             t-on-input="onAnyInput">
+
+            <!-- Page header -->
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Transfers</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.name || 'New Transfer'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <t t-if="canEdit">
+                            <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                        </t>
+                        <button class="btn" t-on-click.stop="onBack">Back</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status bar with workflow buttons -->
+            <div class="so-statusbar">
+                <div class="so-sb-left">
+                    <t t-if="isDraft">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onConfirm">Confirm</button>
+                    </t>
+                    <t t-if="isConfirmed">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onCheckAvailability">Check Availability</button>
+                        <button class="btn ghost so-wf-btn"       t-on-click.stop="onCancel">Cancel</button>
+                    </t>
+                    <t t-if="isAssigned">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onValidate">Validate</button>
+                        <button class="btn ghost so-wf-btn"       t-on-click.stop="onUnreserve">Unreserve</button>
+                        <button class="btn ghost so-wf-btn"       t-on-click.stop="onCancel">Cancel</button>
+                    </t>
+                    <t t-if="isCancelled">
+                        <button class="btn ghost so-wf-btn" t-on-click.stop="onResetDraft">Reset to Draft</button>
+                    </t>
+                </div>
+                <div class="so-stepper">
+                    <div t-attf-class="so-step{{stepClass('draft')}}">Draft</div>
+                    <div t-attf-class="so-step{{stepClass('confirmed')}}">Waiting</div>
+                    <div t-attf-class="so-step{{stepClass('assigned')}}">Ready</div>
+                    <div t-attf-class="so-step{{stepClass('done')}}">Done</div>
+                </div>
+            </div>
+
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="so-card">
+                    <!-- Card title + source badge -->
+                    <div class="so-card-head">
+                        <h1 class="so-doc-id" t-esc="state.record.name || 'New Transfer'"/>
+                        <div class="so-stat-btns">
+                            <t t-if="state.record.origin">
+                                <div class="so-stat-btn">
+                                    <span class="so-stat-num" t-esc="state.record.origin"/>
+                                    <span class="so-stat-lbl">Source</span>
+                                </div>
+                            </t>
+                        </div>
+                    </div>
+
+                    <!-- Two-column info grid -->
+                    <div class="so-info-grid">
+                        <div class="so-info-col">
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Delivery Address</label>
+                                <select class="form-input" data-field="partner_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.partners" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.partner_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Source Location</label>
+                                <span class="so-field-val" t-esc="locName(state.record.location_id)"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Destination</label>
+                                <span class="so-field-val" t-esc="locName(state.record.location_dest_id)"/>
+                            </div>
+                        </div>
+                        <div class="so-info-col">
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Scheduled Date</label>
+                                <DatePicker value="formatDate(state.record.scheduled_date)"
+                                            onSelect.bind="setScheduledDate"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Source Document</label>
+                                <input class="form-input" type="text" readonly="1"
+                                       t-att-value="state.record.origin || ''"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Operation Type</label>
+                                <span class="so-field-val" t-esc="pickingTypeName"/>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tabs -->
+                    <div class="so-tabs">
+                        <div t-attf-class="so-tab{{state.activeTab === 'operations' ? ' active' : ''}}"
+                             t-on-click.stop="setTabOperations">Operations</div>
+                        <div t-attf-class="so-tab{{state.activeTab === 'info' ? ' active' : ''}}"
+                             t-on-click.stop="setTabInfo">Additional Info</div>
+                    </div>
+
+                    <!-- Operations tab: stock.move table -->
+                    <t t-if="state.activeTab === 'operations'">
+                        <table class="so-lines-table">
+                            <thead>
+                                <tr>
+                                    <th>Product</th>
+                                    <th>From</th>
+                                    <th>To</th>
+                                    <th class="text-right">Demand</th>
+                                    <th class="text-right">Done</th>
+                                    <th>UoM</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <t t-if="state.moves.length === 0">
+                                    <tr><td colspan="6" class="trn-empty-row">No operations.</td></tr>
+                                </t>
+                                <t t-foreach="state.moves" t-as="mv" t-key="mv._key">
+                                    <tr>
+                                        <td t-esc="prodName(mv.product_id)"/>
+                                        <td t-esc="locName(mv.location_id)"/>
+                                        <td t-esc="locName(mv.location_dest_id)"/>
+                                        <td class="text-right" t-esc="fmtQty(mv.product_uom_qty)"/>
+                                        <td class="text-right">
+                                            <t t-if="isAssigned">
+                                                <input class="inv-line-input text-right"
+                                                       type="number" step="0.01" min="0"
+                                                       t-att-data-move-key="mv._key"
+                                                       data-move-field="quantity"
+                                                       t-att-value="mv.quantity"/>
+                                            </t>
+                                            <t t-else="">
+                                                <span t-esc="fmtQty(mv.quantity)"/>
+                                            </t>
+                                        </td>
+                                        <td t-esc="uomName(mv.product_uom_id)"/>
+                                    </tr>
+                                </t>
+                            </tbody>
+                        </table>
+                        <!-- Put in Pack — not yet implemented -->
+                        <div class="trn-put-in-pack-row">
+                            <button class="btn so-wf-btn so-stat-btn-disabled" title="Put in Pack — coming soon">Put in Pack</button>
+                        </div>
+                    </t>
+
+                    <!-- Additional Info tab (partial) -->
+                    <t t-if="state.activeTab === 'info'">
+                        <div class="so-info-grid" style="margin-top:12px;">
+                            <div class="so-info-col">
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Responsible</label>
+                                    <span class="so-field-val trn-muted">— (not implemented)</span>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Company</label>
+                                    <span class="so-field-val">My Company</span>
+                                </div>
+                            </div>
+                            <div class="so-info-col">
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Lot/Serial tracking</label>
+                                    <span class="so-field-val trn-muted">— (not implemented)</span>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Package tracking</label>
+                                    <span class="so-field-val trn-muted">— (not implemented)</span>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+                </div>
+
+                <!-- Chatter / audit log -->
+                <div class="trn-chatter">
+                    <div class="trn-chatter-head">
+                        <span>Log</span>
+                    </div>
+                    <div class="trn-chatter-feed">
+                        <div class="trn-log-entry">
+                            <div class="trn-log-avatar">T</div>
+                            <div class="trn-log-body">
+                                <span class="trn-log-author">System</span>
+                                <span class="trn-log-msg">Transfer created</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({
+            loading:    true,
+            error:      null,
+            record:     {},
+            moves:      [],
+            partners:   [],
+            activeTab:  'operations',
+        });
+        this._locMap  = {};
+        this._prodMap = {};
+        this._uomMap  = {};
+        this._pickingTypeName = '';
+        this._nextMoveKey = 1;
+        onMounted(() => this.load());
+    }
+
+    async load() {
+        this.state.loading = true;
+        this.state.error   = null;
+        try {
+            const recs = await RpcService.call('stock.picking', 'read',
+                [[this.props.recordId]],
+                { fields: ['name','state','partner_id','location_id','location_dest_id',
+                           'scheduled_date','origin','picking_type_id','sale_id','purchase_id'] });
+            if (!recs || recs.length === 0) throw new Error('Transfer not found');
+            this.state.record = recs[0];
+
+            // Partners
+            const parts = await RpcService.call('res.partner', 'search_read',
+                [[['active','=',true]]], { fields: ['id','name'], limit: 200 });
+            this.state.partners = (Array.isArray(parts) ? parts : []).map(p => ({ id: p.id, display: p.name }));
+
+            // Picking type name
+            const ptId = this.getM2oId(this.state.record.picking_type_id);
+            if (ptId) {
+                try {
+                    const pt = await RpcService.call('stock.picking.type', 'read', [[ptId]], { fields: ['id','name'] });
+                    this._pickingTypeName = pt && pt.length > 0 ? pt[0].name : '';
+                } catch (_) {}
+            }
+
+            // Location name map
+            const locs = await RpcService.call('stock.location', 'search_read',
+                [[]], { fields: ['id','name','complete_name'], limit: 500 });
+            this._locMap = {};
+            for (const l of (Array.isArray(locs) ? locs : [])) {
+                this._locMap[l.id] = l.complete_name || l.name;
+            }
+
+            await this.loadMoves();
+        } catch (e) {
+            this.state.error = e.message || 'Failed to load transfer';
+        } finally {
+            this.state.loading = false;
+        }
+    }
+
+    async loadMoves() {
+        try {
+            const moves = await RpcService.call('stock.move', 'search_read',
+                [[['picking_id','=',this.props.recordId]]],
+                { fields: ['id','product_id','location_id','location_dest_id','product_uom_id',
+                           'name','product_uom_qty','quantity','state'], limit: 200 });
+            const arr = Array.isArray(moves) ? moves : [];
+
+            const prodIds = [...new Set(arr.map(m => this.getM2oId(m.product_id)).filter(Boolean))];
+            const uomIds  = [...new Set(arr.map(m => this.getM2oId(m.product_uom_id)).filter(Boolean))];
+
+            if (prodIds.length > 0) {
+                const prods = await RpcService.call('product.product', 'read',
+                    [prodIds], { fields: ['id','name'] });
+                for (const p of (Array.isArray(prods) ? prods : [])) this._prodMap[p.id] = p.name;
+            }
+            if (uomIds.length > 0) {
+                const uoms = await RpcService.call('uom.uom', 'read',
+                    [uomIds], { fields: ['id','name'] });
+                for (const u of (Array.isArray(uoms) ? uoms : [])) this._uomMap[u.id] = u.name;
+            }
+
+            this.state.moves = arr.map(m => ({
+                _key: String(this._nextMoveKey++), ...m,
+            }));
+        } catch (_) {
+            this.state.moves = [];
+        }
+    }
+
+    // ---- Getters ----
+    get isDraft()     { return this.state.record.state === 'draft'; }
+    get isConfirmed() { return this.state.record.state === 'confirmed'; }
+    get isAssigned()  { return this.state.record.state === 'assigned'; }
+    get isDone()      { return this.state.record.state === 'done'; }
+    get isCancelled() { return this.state.record.state === 'cancel'; }
+    get canEdit()     { return !this.isDone && !this.state.loading; }
+
+    get pickingTypeName() { return this._pickingTypeName || '—'; }
+
+    stepClass(step) {
+        const order = { draft: 0, confirmed: 1, assigned: 2, done: 3 };
+        const cur = this.state.record.state === 'cancel'
+            ? -1 : (order[this.state.record.state] ?? 0);
+        const s = order[step] ?? 0;
+        if (s === cur) return ' active';
+        if (cur >= 0 && s < cur) return ' done';
+        return '';
+    }
+
+    getM2oId(val) {
+        if (!val && val !== 0) return 0;
+        if (typeof val === 'number') return val;
+        if (Array.isArray(val) && val.length > 0) return typeof val[0] === 'number' ? val[0] : 0;
+        if (typeof val === 'string') return parseInt(val) || 0;
+        return 0;
+    }
+    locName(val)  { const id = this.getM2oId(val); return id ? (this._locMap[id]  || String(id)) : '—'; }
+    prodName(val) { const id = this.getM2oId(val); return id ? (this._prodMap[id] || String(id)) : '—'; }
+    uomName(val)  { const id = this.getM2oId(val); return id ? (this._uomMap[id]  || '')         : ''; }
+    fmtQty(val)   { const n = parseFloat(val) || 0; return n % 1 === 0 ? String(n) : n.toFixed(2); }
+    formatDate(val) { if (!val || val === false) return ''; return String(val).substring(0, 10); }
+
+    // ---- Event handlers ----
+    onAnyChange(e) {
+        const field = e.target.dataset.field;
+        if (field && e.target.tagName === 'SELECT') {
+            this.state.record[field] = parseInt(e.target.value) || 0;
+        }
+    }
+
+    onAnyInput(e) {
+        if (e.target.tagName === 'SELECT') return;
+        const moveKey   = e.target.dataset.moveKey;
+        const moveField = e.target.dataset.moveField;
+        if (moveKey && moveField) {
+            const mv = this.state.moves.find(m => m._key === moveKey);
+            if (mv) mv[moveField] = parseFloat(e.target.value) || 0;
+            return;
+        }
+        const field = e.target.dataset.field;
+        if (field) this.state.record[field] = e.target.value;
+    }
+
+    setTabOperations() { this.state.activeTab = 'operations'; }
+    setTabInfo()       { this.state.activeTab = 'info'; }
+    setScheduledDate(v){ this.state.record.scheduled_date = v; }
+
+    // ---- Actions ----
+    async onSave() {
+        try {
+            await RpcService.call('stock.picking', 'write', [
+                [this.props.recordId],
+                {
+                    partner_id:     this.getM2oId(this.state.record.partner_id) || false,
+                    scheduled_date: this.state.record.scheduled_date || false,
+                }
+            ]);
+        } catch (e) { alert('Save failed: ' + (e.message || e)); }
+    }
+
+    async onConfirm() {
+        await this.onSave();
+        try {
+            await RpcService.call('stock.picking', 'action_confirm', [[this.props.recordId]]);
+            await this.load();
+        } catch (e) { alert('Confirm failed: ' + (e.message || e)); }
+    }
+
+    async onCheckAvailability() {
+        try {
+            await RpcService.call('stock.picking', 'action_assign', [[this.props.recordId]]);
+            await this.load();
+        } catch (e) { alert('Check availability failed: ' + (e.message || e)); }
+    }
+
+    async onValidate() {
+        try {
+            for (const mv of this.state.moves) {
+                if (mv.id) {
+                    await RpcService.call('stock.move', 'write',
+                        [[mv.id], { quantity: parseFloat(mv.quantity) || 0 }]);
+                }
+            }
+            await RpcService.call('stock.picking', 'button_validate', [[this.props.recordId]]);
+            await this.load();
+        } catch (e) { alert('Validate failed: ' + (e.message || e)); }
+    }
+
+    async onUnreserve() {
+        try {
+            await RpcService.call('stock.picking', 'button_unreserve', [[this.props.recordId]]);
+            await this.load();
+        } catch (e) { alert('Unreserve failed: ' + (e.message || e)); }
+    }
+
+    async onCancel() {
+        if (!confirm('Cancel this transfer?')) return;
+        try {
+            await RpcService.call('stock.picking', 'action_cancel', [[this.props.recordId]]);
+            await this.load();
+        } catch (e) { alert('Cancel failed: ' + (e.message || e)); }
+    }
+
+    async onResetDraft() {
+        try {
+            await RpcService.call('stock.picking', 'button_reset_to_draft', [[this.props.recordId]]);
+            await this.load();
+        } catch (e) { alert('Reset to draft failed: ' + (e.message || e)); }
+    }
+
+    onBack() { this.props.onBack(); }
+}
+
+// ----------------------------------------------------------------
 // ActionView — orchestrates list ↔ form switching
 // ----------------------------------------------------------------
 class ActionView extends Component {
@@ -2327,6 +2751,10 @@ class ActionView extends Component {
                     <InvoiceFormView recordId="state.recordId"
                                      onBack.bind="backToList"/>
                 </t>
+                <t t-elif="isStockPickingModel">
+                    <TransferFormView recordId="state.recordId"
+                                      onBack.bind="backToList"/>
+                </t>
                 <t t-else="">
                     <FormView action="props.action"
                               viewDef="state.formView"
@@ -2337,11 +2765,12 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView };
 
     get isSaleOrderModel()    { return this.props.action.res_model === 'sale.order'; }
     get isPurchaseOrderModel(){ return this.props.action.res_model === 'purchase.order'; }
     get isInvoiceModel()      { return this.props.action.res_model === 'account.move'; }
+    get isStockPickingModel() { return this.props.action.res_model === 'stock.picking'; }
 
     setup() {
         this.state = useState({
