@@ -2552,15 +2552,13 @@ class TransferFormView extends Component {
                 } catch (_) {}
             }
 
-            // Location name map
-            const locs = await RpcService.call('stock.location', 'search_read',
-                [[]], { fields: ['id','name','complete_name'], limit: 500 });
-            this._locMap = {};
-            for (const l of (Array.isArray(locs) ? locs : [])) {
-                this._locMap[l.id] = l.complete_name || l.name;
-            }
-
             await this.loadMoves();
+
+            // Load location names for the picking header fields
+            await this.loadLocNames([
+                this.getM2oId(this.state.record.location_id),
+                this.getM2oId(this.state.record.location_dest_id),
+            ]);
         } catch (e) {
             this.state.error = e.message || 'Failed to load transfer';
         } finally {
@@ -2578,6 +2576,9 @@ class TransferFormView extends Component {
 
             const prodIds = [...new Set(arr.map(m => this.getM2oId(m.product_id)).filter(Boolean))];
             const uomIds  = [...new Set(arr.map(m => this.getM2oId(m.product_uom_id)).filter(Boolean))];
+            const locIds  = [...new Set(arr.flatMap(m => [
+                this.getM2oId(m.location_id), this.getM2oId(m.location_dest_id)
+            ]).filter(Boolean))];
 
             if (prodIds.length > 0) {
                 const prods = await RpcService.call('product.product', 'read',
@@ -2589,6 +2590,9 @@ class TransferFormView extends Component {
                     [uomIds], { fields: ['id','name'] });
                 for (const u of (Array.isArray(uoms) ? uoms : [])) this._uomMap[u.id] = u.name;
             }
+            if (locIds.length > 0) {
+                await this.loadLocNames(locIds);
+            }
 
             this.state.moves = arr.map(m => ({
                 _key: String(this._nextMoveKey++), ...m,
@@ -2596,6 +2600,17 @@ class TransferFormView extends Component {
         } catch (_) {
             this.state.moves = [];
         }
+    }
+
+    async loadLocNames(ids) {
+        const validIds = ids.filter(Boolean);
+        if (validIds.length === 0) return;
+        try {
+            const locs = await RpcService.call('stock.location', 'read',
+                [validIds], { fields: ['id', 'name', 'complete_name'] });
+            for (const l of (Array.isArray(locs) ? locs : []))
+                this._locMap[l.id] = l.complete_name || l.name;
+        } catch (_) {}
     }
 
     // ---- Getters ----
@@ -2723,6 +2738,386 @@ class TransferFormView extends Component {
 }
 
 // ----------------------------------------------------------------
+// ProductFormView — product.product detail (Odoo 17-style)
+// ----------------------------------------------------------------
+class ProductFormView extends Component {
+    static template = xml`
+        <div class="so-shell"
+             t-on-change="onFormChange"
+             t-on-input="onFormInput">
+
+            <!-- Page header: breadcrumb + Save/Discard + secondary btns -->
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Products</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.name || 'New'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                        <button class="btn"             t-on-click.stop="onDiscard">Discard</button>
+                    </div>
+                </div>
+                <!-- Secondary action buttons (inventory operations) -->
+                <div class="prd-secondary-btns">
+                    <button class="btn so-stat-btn-disabled"
+                            title="Update stock quantity — requires stock.quant (coming soon)">
+                        Update Quantity
+                    </button>
+                    <button class="btn so-stat-btn-disabled"
+                            title="Replenish stock — requires reordering rules (coming soon)">
+                        Replenish
+                    </button>
+                </div>
+            </div>
+
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+
+                <div class="so-card">
+
+                    <!-- ── Stat widget row ─────────────────────────── -->
+                    <div class="prd-stat-row">
+                        <div class="prd-stat-widget prd-stat-disabled"
+                             title="Go to Website — requires website module (not planned)">
+                            <span class="prd-stat-icon">🌐</span>
+                            <span class="prd-stat-lbl">Go to Website</span>
+                        </div>
+                        <div class="prd-stat-widget prd-stat-disabled"
+                             title="Units On Hand — requires stock.quant (coming soon)">
+                            <span class="prd-stat-icon">📦</span>
+                            <span class="prd-stat-num">0.00</span>
+                            <span class="prd-stat-lbl">On Hand</span>
+                        </div>
+                        <div class="prd-stat-widget prd-stat-disabled"
+                             title="Forecasted Quantity — requires virtual stock computation (coming soon)">
+                            <span class="prd-stat-icon">📊</span>
+                            <span class="prd-stat-num">0.00</span>
+                            <span class="prd-stat-lbl">Forecasted</span>
+                        </div>
+                        <div class="prd-stat-widget" t-on-click.stop="onViewMoves"
+                             t-att-title="'Stock moves for this product'">
+                            <span class="prd-stat-icon">↔</span>
+                            <span class="prd-stat-num" t-esc="state.moveCount"/>
+                            <span class="prd-stat-lbl">Product Moves</span>
+                        </div>
+                        <div class="prd-stat-widget prd-stat-disabled"
+                             title="Reordering Rules — requires stock.warehouse.orderpoint (coming soon)">
+                            <span class="prd-stat-icon">🔄</span>
+                            <span class="prd-stat-lbl">Reordering Rules</span>
+                        </div>
+                        <div class="prd-stat-widget prd-stat-disabled"
+                             title="Bill of Materials — requires MRP module (Phase 26)">
+                            <span class="prd-stat-icon">⚗</span>
+                            <span class="prd-stat-lbl">Bill of Materials</span>
+                        </div>
+                        <div class="prd-stat-widget prd-stat-disabled"
+                             title="Putaway Rules — requires stock.putaway.rule (coming soon)">
+                            <span class="prd-stat-icon">📋</span>
+                            <span class="prd-stat-lbl">Putaway Rules</span>
+                        </div>
+                    </div>
+
+                    <!-- ── Identity: name + checkboxes + image ───────── -->
+                    <div class="prd-identity">
+                        <div class="prd-identity-main">
+                            <input class="prd-name-input form-input" type="text"
+                                   data-field="name" placeholder="Product Name"
+                                   t-att-value="state.record.name || ''"/>
+                            <div class="prd-checkboxes">
+                                <label class="prd-check-lbl">
+                                    <input type="checkbox" data-field="sale_ok"
+                                           t-att-checked="state.record.sale_ok ? true : undefined"/>
+                                    Can be Sold
+                                </label>
+                                <label class="prd-check-lbl">
+                                    <input type="checkbox" data-field="purchase_ok"
+                                           t-att-checked="state.record.purchase_ok ? true : undefined"/>
+                                    Can be Purchased
+                                </label>
+                                <label class="prd-check-lbl prd-check-disabled"
+                                       title="Can be Expensed — requires hr.expense module (Phase 20+)">
+                                    <input type="checkbox" disabled="1"/>
+                                    Can be Expensed
+                                </label>
+                            </div>
+                        </div>
+                        <!-- Image placeholder — upload not yet supported -->
+                        <div class="prd-image-box" title="Product image upload — coming soon">
+                            <span class="prd-img-icon">📷</span>
+                            <span class="prd-img-lbl">Add Photo</span>
+                        </div>
+                    </div>
+
+                    <!-- ── Tabs ──────────────────────────────────────── -->
+                    <div class="so-tabs">
+                        <div t-attf-class="so-tab{{state.activeTab==='general'?' active':''}}"
+                             t-on-click.stop="setTabGeneral">General Information</div>
+                        <div class="so-tab prd-tab-disabled" title="Sales tab — coming soon">Sales</div>
+                        <div class="so-tab prd-tab-disabled" title="Purchase tab — coming soon">Purchase</div>
+                        <div class="so-tab prd-tab-disabled" title="Inventory tab — coming soon">Inventory</div>
+                        <div class="so-tab prd-tab-disabled" title="Accounting tab — coming soon">Accounting</div>
+                    </div>
+
+                    <!-- ── General Information tab ───────────────────── -->
+                    <t t-if="state.activeTab === 'general'">
+                        <div class="so-info-grid" style="margin-top:12px;">
+                            <!-- Left column -->
+                            <div class="so-info-col">
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Product Type</label>
+                                    <select class="form-input" data-field="type">
+                                        <option value="consu"
+                                                t-att-selected="isType('consu')">Consumable</option>
+                                        <option value="service"
+                                                t-att-selected="isType('service')">Service</option>
+                                        <option value="storable"
+                                                t-att-selected="isType('storable')">Storable Product</option>
+                                    </select>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Product Category</label>
+                                    <select class="form-input" data-field="categ_id">
+                                        <option value="0">—</option>
+                                        <t t-foreach="state.categories" t-as="cat" t-key="cat.id">
+                                            <option t-att-value="cat.id"
+                                                    t-att-selected="m2oId(state.record.categ_id)===cat.id?true:undefined"
+                                                    t-esc="cat.name"/>
+                                        </t>
+                                    </select>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Internal Reference</label>
+                                    <input class="form-input" type="text" data-field="default_code"
+                                           t-att-value="state.record.default_code || ''"/>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Barcode</label>
+                                    <input class="form-input" type="text" data-field="barcode"
+                                           t-att-value="strVal(state.record.barcode)"/>
+                                </div>
+                            </div>
+                            <!-- Right column -->
+                            <div class="so-info-col">
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Sales Price</label>
+                                    <div class="prd-price-row">
+                                        <input class="form-input prd-price-input" type="number"
+                                               step="0.01" min="0" data-field="list_price"
+                                               t-att-value="state.record.list_price ?? 0"/>
+                                        <span class="prd-currency-lbl" t-esc="state.currencySymbol"/>
+                                    </div>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Customer Taxes</label>
+                                    <span class="so-field-val prd-stub-note"
+                                          title="Tax field on product requires account_tax_ids — coming soon">
+                                        — (not linked)
+                                    </span>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Cost</label>
+                                    <input class="form-input prd-price-input" type="number"
+                                           step="0.01" min="0" data-field="standard_price"
+                                           t-att-value="state.record.standard_price ?? 0"/>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Unit of Measure</label>
+                                    <select class="form-input" data-field="uom_id">
+                                        <t t-foreach="state.uoms" t-as="uom" t-key="uom.id">
+                                            <option t-att-value="uom.id"
+                                                    t-att-selected="m2oId(state.record.uom_id)===uom.id?true:undefined"
+                                                    t-esc="uom.name"/>
+                                        </t>
+                                    </select>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Purchase UoM</label>
+                                    <select class="form-input" data-field="uom_po_id">
+                                        <t t-foreach="state.uoms" t-as="uom" t-key="uom.id">
+                                            <option t-att-value="uom.id"
+                                                    t-att-selected="m2oId(state.record.uom_po_id)===uom.id?true:undefined"
+                                                    t-esc="uom.name"/>
+                                        </t>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+
+                    <!-- ── Internal Notes ────────────────────────────── -->
+                    <div class="prd-notes-section">
+                        <div class="prd-notes-header">
+                            <span class="prd-notes-lbl">Internal Notes</span>
+                            <span class="prd-notes-sub">This note is only for internal purposes.</span>
+                        </div>
+                        <textarea class="form-input prd-notes-area"
+                                  data-field="description"
+                                  t-att-value="strVal(state.record.description)"
+                                  placeholder="Add internal notes…"/>
+                    </div>
+
+                </div><!-- /.so-card -->
+
+                <!-- ── Chatter (stub) ─────────────────────────────── -->
+                <div class="trn-chatter">
+                    <div class="trn-chatter-head"><span>Log</span></div>
+                    <div class="trn-chatter-feed">
+                        <div class="trn-log-entry">
+                            <div class="trn-log-avatar">P</div>
+                            <div class="trn-log-body">
+                                <span class="trn-log-author">System</span>
+                                <span class="trn-log-msg" t-esc="isNew ? 'Creating new product…' : 'Product record loaded.'"/>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({
+            loading:        true,
+            error:          null,
+            record:         {},
+            categories:     [],
+            uoms:           [],
+            currencySymbol: 'RM',
+            moveCount:      0,
+            activeTab:      'general',
+        });
+        this._orig = {};
+        onMounted(() => this.load());
+    }
+
+    get isNew() { return !this.props.recordId; }
+
+    async load() {
+        this.state.loading = true;
+        this.state.error   = null;
+        try {
+            const [cats, uoms] = await Promise.all([
+                RpcService.call('product.category', 'search_read',
+                    [[]], { fields: ['id','name'], limit: 200 }),
+                RpcService.call('uom.uom', 'search_read',
+                    [[]], { fields: ['id','name'], limit: 100 }),
+            ]);
+            this.state.categories = Array.isArray(cats) ? cats : [];
+            this.state.uoms       = Array.isArray(uoms) ? uoms : [];
+
+            if (this.props.recordId) {
+                const recs = await RpcService.call('product.product', 'read',
+                    [[this.props.recordId]],
+                    { fields: ['id','name','default_code','barcode','description','type',
+                               'categ_id','uom_id','uom_po_id','list_price',
+                               'standard_price','sale_ok','purchase_ok','active'] });
+                if (!recs || recs.length === 0) throw new Error('Product not found');
+                this.state.record = { ...recs[0] };
+                this._orig        = { ...recs[0] };
+
+                const mc = await RpcService.call('stock.move', 'search_count',
+                    [[['product_id','=',this.props.recordId]]]);
+                this.state.moveCount = typeof mc === 'number' ? mc : 0;
+            } else {
+                this.state.record = {
+                    name: '', default_code: '', barcode: false,
+                    description: false, type: 'consu',
+                    categ_id: false, uom_id: 1, uom_po_id: 1,
+                    list_price: 0, standard_price: 0,
+                    sale_ok: true, purchase_ok: true, active: true,
+                };
+                this._orig = { ...this.state.record };
+            }
+        } catch (e) {
+            this.state.error = e.message || 'Failed to load product';
+        } finally {
+            this.state.loading = false;
+        }
+    }
+
+    // ---- Helpers ----
+    m2oId(val) {
+        if (!val && val !== 0) return 0;
+        if (typeof val === 'number') return val;
+        if (Array.isArray(val) && val.length > 0) return typeof val[0] === 'number' ? val[0] : 0;
+        if (typeof val === 'string') return parseInt(val) || 0;
+        return 0;
+    }
+    strVal(val) { return (!val || val === false) ? '' : String(val); }
+    isType(t)   { return (this.state.record.type || 'consu') === t ? true : undefined; }
+
+    setTabGeneral() { this.state.activeTab = 'general'; }
+
+    // ---- Event handlers ----
+    onFormChange(e) {
+        const field = e.target.dataset.field;
+        if (!field) return;
+        if (e.target.type === 'checkbox') {
+            this.state.record[field] = e.target.checked;
+        } else if (e.target.tagName === 'SELECT') {
+            const raw = e.target.value;
+            this.state.record[field] = isNaN(raw) || raw === '' ? raw : (parseInt(raw) || 0);
+        }
+    }
+
+    onFormInput(e) {
+        const field = e.target.dataset.field;
+        if (!field || e.target.tagName === 'SELECT') return;
+        if (e.target.type === 'number') {
+            this.state.record[field] = parseFloat(e.target.value) || 0;
+        } else {
+            this.state.record[field] = e.target.value;
+        }
+    }
+
+    // ---- Actions ----
+    async onSave() {
+        const r = this.state.record;
+        if (!r.name || !r.name.trim()) { alert('Product Name is required.'); return; }
+        const vals = {
+            name:           r.name.trim(),
+            default_code:   r.default_code  || false,
+            barcode:        r.barcode        || false,
+            description:    r.description   || false,
+            type:           r.type          || 'consu',
+            categ_id:       this.m2oId(r.categ_id)  || false,
+            uom_id:         this.m2oId(r.uom_id)    || 1,
+            uom_po_id:      this.m2oId(r.uom_po_id) || 1,
+            list_price:     r.list_price     ?? 0,
+            standard_price: r.standard_price ?? 0,
+            sale_ok:        !!r.sale_ok,
+            purchase_ok:    !!r.purchase_ok,
+        };
+        try {
+            if (this.props.recordId) {
+                await RpcService.call('product.product', 'write',
+                    [[this.props.recordId], vals]);
+                await this.load();
+            } else {
+                await RpcService.call('product.product', 'create', [vals]);
+                this.props.onBack();
+            }
+        } catch (e) { alert('Save failed: ' + (e.message || e)); }
+    }
+
+    onDiscard() {
+        if (this.isNew) { this.props.onBack(); return; }
+        this.state.record = { ...this._orig };
+    }
+
+    onViewMoves() {
+        // Stub: would navigate to stock.move filtered by product_id
+        alert('Navigate to Product Moves — not yet wired (coming soon).');
+    }
+
+    onBack() { this.props.onBack(); }
+}
+
+// ----------------------------------------------------------------
 // ActionView — orchestrates list ↔ form switching
 // ----------------------------------------------------------------
 class ActionView extends Component {
@@ -2755,6 +3150,10 @@ class ActionView extends Component {
                     <TransferFormView recordId="state.recordId"
                                       onBack.bind="backToList"/>
                 </t>
+                <t t-elif="isProductModel">
+                    <ProductFormView recordId="state.recordId"
+                                     onBack.bind="backToList"/>
+                </t>
                 <t t-else="">
                     <FormView action="props.action"
                               viewDef="state.formView"
@@ -2765,12 +3164,13 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, ProductFormView };
 
     get isSaleOrderModel()    { return this.props.action.res_model === 'sale.order'; }
     get isPurchaseOrderModel(){ return this.props.action.res_model === 'purchase.order'; }
     get isInvoiceModel()      { return this.props.action.res_model === 'account.move'; }
     get isStockPickingModel() { return this.props.action.res_model === 'stock.picking'; }
+    get isProductModel()      { return this.props.action.res_model === 'product.product'; }
 
     setup() {
         this.state = useState({

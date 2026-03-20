@@ -26,6 +26,7 @@
 #include "IModule.hpp"
 #include "Factories.hpp"
 #include "BaseModel.hpp"
+#include "BaseView.hpp"
 #include "BaseViewModel.hpp"
 #include "GenericViewModel.hpp"
 #include "DbConnection.hpp"
@@ -344,11 +345,61 @@ public:
 private:
     std::shared_ptr<DbConnection> db_;
 
+    // Custom search_read: JOINs location and partner names so the list view
+    // can display them as [id, "Name"] arrays (formatCell handles those).
     nlohmann::json handleSearchRead(const CallKwArgs& call) {
-        StockPicking proto(db_);
-        return proto.searchRead(call.domain(), call.fields(),
-                                call.limit() > 0 ? call.limit() : 80,
-                                call.offset(), "id DESC");
+        int lim = call.limit() > 0 ? call.limit() : 80;
+        int off = call.offset();
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        std::string sql = R"(
+            SELECT sp.id,
+                   sp.name,
+                   sp.state,
+                   sp.origin,
+                   sp.scheduled_date,
+                   sp.location_id,
+                   COALESCE(sl_src.complete_name, sl_src.name) AS location_name,
+                   sp.location_dest_id,
+                   COALESCE(sl_dst.complete_name, sl_dst.name) AS location_dest_name,
+                   sp.partner_id,
+                   rp.name AS partner_name
+            FROM stock_picking sp
+            LEFT JOIN stock_location sl_src ON sl_src.id = sp.location_id
+            LEFT JOIN stock_location sl_dst ON sl_dst.id = sp.location_dest_id
+            LEFT JOIN res_partner    rp     ON rp.id     = sp.partner_id
+            ORDER BY sp.id DESC
+        )";
+        sql += " LIMIT " + std::to_string(lim);
+        if (off > 0) sql += " OFFSET " + std::to_string(off);
+
+        auto res = txn.exec(sql);
+
+        auto m2o = [](const pqxx::row& row,
+                      const char* idCol, const char* nameCol) -> nlohmann::json {
+            if (row[idCol].is_null()) return false;
+            nlohmann::json pair = nlohmann::json::array();
+            pair.push_back(row[idCol].as<int>());
+            pair.push_back(row[nameCol].is_null() ? "" : std::string(row[nameCol].c_str()));
+            return pair;
+        };
+
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& row : res) {
+            nlohmann::json obj;
+            obj["id"]             = row["id"].as<int>();
+            obj["name"]           = row["name"].is_null()           ? nlohmann::json(false) : nlohmann::json(row["name"].c_str());
+            obj["state"]          = row["state"].is_null()          ? nlohmann::json(false) : nlohmann::json(row["state"].c_str());
+            obj["origin"]         = row["origin"].is_null()         ? nlohmann::json(false) : nlohmann::json(row["origin"].c_str());
+            obj["scheduled_date"] = row["scheduled_date"].is_null() ? nlohmann::json(false) : nlohmann::json(row["scheduled_date"].c_str());
+            obj["location_id"]      = m2o(row, "location_id",      "location_name");
+            obj["location_dest_id"] = m2o(row, "location_dest_id", "location_dest_name");
+            obj["partner_id"]       = m2o(row, "partner_id",       "partner_name");
+            arr.push_back(std::move(obj));
+        }
+        return arr;
     }
     nlohmann::json handleRead(const CallKwArgs& call) {
         StockPicking proto(db_);
@@ -652,6 +703,68 @@ private:
 // ================================================================
 // 3. MODULE
 // ================================================================
+// VIEWS
+// ================================================================
+
+// ----------------------------------------------------------------
+// stock.picking list — only char/date/selection columns so the
+// generic ListView never tries to display raw integer FK values.
+// Columns: Reference, Source Document, Status, Scheduled Date.
+// ----------------------------------------------------------------
+class StockPickingListView : public core::BaseView {
+public:
+    std::string viewName()  const override { return "stock.picking.list"; }
+    std::string modelName() const override { return "stock.picking"; }
+    std::string viewType()  const override { return "list"; }
+    std::string arch() const override {
+        return "<list string=\"Transfers\">"
+               "<field name=\"name\"/>"
+               "<field name=\"location_id\"/>"
+               "<field name=\"location_dest_id\"/>"
+               "<field name=\"partner_id\"/>"
+               "<field name=\"scheduled_date\"/>"
+               "<field name=\"origin\"/>"
+               "<field name=\"state\"/>"
+               "</list>";
+    }
+    nlohmann::json fields() const override {
+        return {
+            {"name",             {{"type","char"},      {"string","Reference"}}},
+            {"location_id",      {{"type","many2one"},  {"string","From"},           {"relation","stock.location"}}},
+            {"location_dest_id", {{"type","many2one"},  {"string","To"},             {"relation","stock.location"}}},
+            {"partner_id",       {{"type","many2one"},  {"string","Contact"},        {"relation","res.partner"}}},
+            {"scheduled_date",   {{"type","datetime"},  {"string","Scheduled Date"}}},
+            {"origin",           {{"type","char"},      {"string","Source Document"}}},
+            {"state",            {{"type","selection"}, {"string","Status"}}},
+        };
+    }
+    nlohmann::json render(const nlohmann::json&) const override { return {}; }
+};
+
+class StockPickingFormView : public core::BaseView {
+public:
+    std::string viewName()  const override { return "stock.picking.form"; }
+    std::string modelName() const override { return "stock.picking"; }
+    std::string viewType()  const override { return "form"; }
+    std::string arch() const override {
+        return "<form string=\"Transfer\"/>";
+    }
+    nlohmann::json fields() const override {
+        return {
+            {"name",             {{"type","char"},      {"string","Reference"}}},
+            {"state",            {{"type","selection"}, {"string","Status"}}},
+            {"origin",           {{"type","char"},      {"string","Source Document"}}},
+            {"partner_id",       {{"type","many2one"},  {"string","Contact"},        {"relation","res.partner"}}},
+            {"location_id",      {{"type","many2one"},  {"string","From"},           {"relation","stock.location"}}},
+            {"location_dest_id", {{"type","many2one"},  {"string","To"},             {"relation","stock.location"}}},
+            {"scheduled_date",   {{"type","datetime"},  {"string","Scheduled Date"}}},
+            {"picking_type_id",  {{"type","many2one"},  {"string","Operation Type"}, {"relation","stock.picking.type"}}},
+        };
+    }
+    nlohmann::json render(const nlohmann::json&) const override { return {}; }
+};
+
+// ================================================================
 
 class StockModule : public core::IModule {
 public:
@@ -660,10 +773,11 @@ public:
     explicit StockModule(core::ModelFactory&     modelFactory,
                          core::ServiceFactory&   serviceFactory,
                          core::ViewModelFactory& viewModelFactory,
-                         core::ViewFactory&      /*viewFactory*/)
+                         core::ViewFactory&      viewFactory)
         : models_    (modelFactory)
         , services_  (serviceFactory)
         , viewModels_(viewModelFactory)
+        , views_     (viewFactory)
     {}
 
     std::string              moduleName()   const override { return "stock"; }
@@ -678,8 +792,11 @@ public:
         models_.registerCreator("stock.move",         [db]{ return std::make_shared<StockMove>(db); });
     }
 
-    void registerServices()   override {}
-    void registerViews()      override {}
+    void registerServices() override {}
+    void registerViews()    override {
+        views_.registerView<StockPickingListView>("stock.picking.list");
+        views_.registerView<StockPickingFormView>("stock.picking.form");
+    }
 
     void registerViewModels() override {
         auto db = services_.db();
@@ -708,6 +825,7 @@ private:
     core::ModelFactory&     models_;
     core::ServiceFactory&   services_;
     core::ViewModelFactory& viewModels_;
+    core::ViewFactory&      views_;
 
     // ----------------------------------------------------------
     // Schema
@@ -839,36 +957,70 @@ private:
         auto conn = services_.db()->acquire();
         pqxx::work txn{conn.get()};
 
-        // Window actions
+        // ── Window actions ──────────────────────────────────────────
         txn.exec(R"(
             INSERT INTO ir_act_window (id, name, res_model, view_mode, context) VALUES
-                (17, 'Transfers',   'stock.picking',  'list,form', '{}'),
-                (18, 'Locations',   'stock.location', 'list,form', '{}'),
-                (19, 'Operation Types', 'stock.picking.type', 'list,form', '{}')
+                (17, 'Transfers',      'stock.picking',      'list,form', '{}'),
+                (18, 'Locations',      'stock.location',     'list,form', '{}'),
+                (19, 'Operation Types','stock.picking.type', 'list,form', '{}'),
+                (20, 'Products',       'product.product',    'list,form', '{}'),
+                (21, 'Moves History',  'stock.move',         'list,form', '{}')
             ON CONFLICT (id) DO NOTHING
         )");
         txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
 
-        // Inventory app tile (id=90) + leaves
+        // ── Inventory app tile ──────────────────────────────────────
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id, web_icon) VALUES
-                (90, 'Inventory',    NULL, 50, NULL, 'inventory')
+                (90, 'Inventory', NULL, 50, NULL, 'inventory')
             ON CONFLICT (id) DO NOTHING
         )");
+
+        // ── Top-level sections (Operations, Products, Reporting, Configuration)
+        // id=91 existed as "Transfers" — update it to become "Operations" parent
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-                (91, 'Transfers',    90, 10, 17),
-                (92, 'Configuration',90, 90, NULL)
+                (91, 'Operations',    90, 10, NULL),
+                (96, 'Products',      90, 20, NULL),
+                (97, 'Reporting',     90, 30, NULL),
+                (92, 'Configuration', 90, 90, NULL)
+            ON CONFLICT (id) DO UPDATE
+                SET name      = EXCLUDED.name,
+                    parent_id = EXCLUDED.parent_id,
+                    sequence  = EXCLUDED.sequence,
+                    action_id = EXCLUDED.action_id
+        )");
+
+        // ── Operations sub-menu ──────────────────────────────────────
+        txn.exec(R"(
+            INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
+                (95, 'Transfers', 91, 10, 17)
             ON CONFLICT (id) DO NOTHING
         )");
+
+        // ── Products sub-menu ────────────────────────────────────────
+        txn.exec(R"(
+            INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
+                (98, 'Products', 96, 10, 20)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // ── Reporting sub-menu ───────────────────────────────────────
+        txn.exec(R"(
+            INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
+                (99, 'Moves History', 97, 10, 21)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // ── Configuration sub-menu (Locations, Operation Types) ─────
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
                 (93, 'Locations',       92, 10, 18),
                 (94, 'Operation Types', 92, 20, 19)
             ON CONFLICT (id) DO NOTHING
         )");
-        txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");
 
+        txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");
         txn.commit();
     }
 };
