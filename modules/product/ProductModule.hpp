@@ -118,7 +118,9 @@ public:
     double      weight        = 0.0;
     bool        saleOk     = true;
     bool        purchaseOk = true;
+    bool        expenseOk  = false;
     bool        active     = true;
+    std::string image1920;
 
     void registerFields() {
         fieldRegistry_.add({"name",           FieldType::Char,    "Product Name", true});
@@ -140,6 +142,8 @@ public:
         fieldRegistry_.add({"purchase_ok",    FieldType::Boolean, "Can be Purchased"});
         fieldRegistry_.add({"company_id",     FieldType::Many2one,"Company",
                             false, false, true, true, "res.company"});
+        fieldRegistry_.add({"expense_ok",     FieldType::Boolean, "Can be Expensed"});
+        fieldRegistry_.add({"image_1920",     FieldType::Text,    "Image"});
         fieldRegistry_.add({"active",         FieldType::Boolean, "Active"});
     }
 
@@ -159,6 +163,8 @@ public:
         j["weight"]         = weight;
         j["sale_ok"]        = saleOk;
         j["purchase_ok"]    = purchaseOk;
+        j["expense_ok"]     = expenseOk;
+        j["image_1920"]     = image1920.empty() ? nlohmann::json(false) : nlohmann::json(image1920);
         j["active"]         = active;
     }
 
@@ -183,6 +189,8 @@ public:
         if (j.contains("weight")         && j["weight"].is_number())         weight        = j["weight"].get<double>();
         if (j.contains("sale_ok")     && j["sale_ok"].is_boolean())     saleOk     = j["sale_ok"].get<bool>();
         if (j.contains("purchase_ok") && j["purchase_ok"].is_boolean()) purchaseOk = j["purchase_ok"].get<bool>();
+        if (j.contains("expense_ok")  && j["expense_ok"].is_boolean())  expenseOk  = j["expense_ok"].get<bool>();
+        if (j.contains("image_1920")  && j["image_1920"].is_string())   image1920  = j["image_1920"].get<std::string>();
         if (j.contains("active")      && j["active"].is_boolean())      active     = j["active"].get<bool>();
     }
 
@@ -318,6 +326,8 @@ public:
             {"weight",         {{"type","float"},   {"string","Weight"}}},
             {"sale_ok",        {{"type","boolean"}, {"string","Can be Sold"}}},
             {"purchase_ok",    {{"type","boolean"}, {"string","Can be Purchased"}}},
+            {"expense_ok",     {{"type","boolean"}, {"string","Can be Expensed"}}},
+            {"image_1920",     {{"type","char"},    {"string","Image"}}},
             {"active",         {{"type","boolean"}, {"string","Active"}}},
         };
     }
@@ -422,6 +432,10 @@ private:
                 write_date       TIMESTAMP DEFAULT now()
             )
         )");
+
+        // Migrations for new columns
+        txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS expense_ok BOOLEAN NOT NULL DEFAULT FALSE");
+        txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS image_1920 TEXT");
 
         txn.commit();
     }

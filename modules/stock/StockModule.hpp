@@ -180,6 +180,7 @@ public:
     int         companyId  = 0;
     int         saleId     = 0;
     int         purchaseId = 0;
+    int         userId     = 0;
 
     explicit StockPicking(std::shared_ptr<DbConnection> db)
         : BaseModel<StockPicking>(std::move(db)) {}
@@ -196,6 +197,7 @@ public:
         fieldRegistry_.add({"company_id",       FieldType::Many2one,"Company",        false, false, true, false, "res.company"});
         fieldRegistry_.add({"sale_id",          FieldType::Many2one,"Sale Order",     false, false, true, false, "sale.order"});
         fieldRegistry_.add({"purchase_id",      FieldType::Many2one,"Purchase Order", false, false, true, false, "purchase.order"});
+        fieldRegistry_.add({"user_id",          FieldType::Many2one,"Responsible",    false, false, true, false, "res.users"});
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -210,6 +212,7 @@ public:
         j["company_id"]       = companyId  > 0 ? nlohmann::json(companyId)  : nlohmann::json(false);
         j["sale_id"]          = saleId     > 0 ? nlohmann::json(saleId)     : nlohmann::json(false);
         j["purchase_id"]      = purchaseId > 0 ? nlohmann::json(purchaseId) : nlohmann::json(false);
+        j["user_id"]          = userId     > 0 ? nlohmann::json(userId)     : nlohmann::json(false);
     }
 
     void deserializeFields(const nlohmann::json& j) override {
@@ -224,6 +227,7 @@ public:
         if (const int v = parseM2o(j, "company_id"))       companyId      = v;
         if (const int v = parseM2o(j, "sale_id"))          saleId         = v;
         if (const int v = parseM2o(j, "purchase_id"))      purchaseId     = v;
+        if (const int v = parseM2o(j, "user_id"))          userId         = v;
     }
 
     std::vector<std::string> validate() const override {
@@ -759,6 +763,8 @@ public:
             {"location_dest_id", {{"type","many2one"},  {"string","To"},             {"relation","stock.location"}}},
             {"scheduled_date",   {{"type","datetime"},  {"string","Scheduled Date"}}},
             {"picking_type_id",  {{"type","many2one"},  {"string","Operation Type"}, {"relation","stock.picking.type"}}},
+            {"user_id",          {{"type","many2one"},  {"string","Responsible"},    {"relation","res.users"}}},
+            {"company_id",       {{"type","many2one"},  {"string","Company"},        {"relation","res.company"}}},
         };
     }
     nlohmann::json render(const nlohmann::json&) const override { return {}; }
@@ -900,6 +906,9 @@ private:
                 write_date       TIMESTAMP DEFAULT now()
             )
         )");
+
+        // Migrations for new columns
+        txn.exec("ALTER TABLE stock_picking ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES res_users(id)");
 
         // Sequences
         txn.exec("CREATE SEQUENCE IF NOT EXISTS stock_in_seq  START 1 INCREMENT 1");

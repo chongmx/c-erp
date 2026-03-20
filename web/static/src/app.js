@@ -2385,11 +2385,33 @@ class TransferFormView extends Component {
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Source Location</label>
-                                <span class="so-field-val" t-esc="locName(state.record.location_id)"/>
+                                <t t-if="isDraft">
+                                    <select class="form-input" data-field="location_id">
+                                        <t t-foreach="state.locations" t-as="loc" t-key="loc.id">
+                                            <option t-att-value="loc.id"
+                                                    t-att-selected="getM2oId(state.record.location_id) === loc.id ? true : undefined"
+                                                    t-esc="loc.display"/>
+                                        </t>
+                                    </select>
+                                </t>
+                                <t t-else="">
+                                    <span class="so-field-val" t-esc="locName(state.record.location_id)"/>
+                                </t>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Destination</label>
-                                <span class="so-field-val" t-esc="locName(state.record.location_dest_id)"/>
+                                <t t-if="isDraft">
+                                    <select class="form-input" data-field="location_dest_id">
+                                        <t t-foreach="state.locations" t-as="loc" t-key="loc.id">
+                                            <option t-att-value="loc.id"
+                                                    t-att-selected="getM2oId(state.record.location_dest_id) === loc.id ? true : undefined"
+                                                    t-esc="loc.display"/>
+                                        </t>
+                                    </select>
+                                </t>
+                                <t t-else="">
+                                    <span class="so-field-val" t-esc="locName(state.record.location_dest_id)"/>
+                                </t>
                             </div>
                         </div>
                         <div class="so-info-col">
@@ -2464,17 +2486,24 @@ class TransferFormView extends Component {
                         </div>
                     </t>
 
-                    <!-- Additional Info tab (partial) -->
+                    <!-- Additional Info tab -->
                     <t t-if="state.activeTab === 'info'">
                         <div class="so-info-grid" style="margin-top:12px;">
                             <div class="so-info-col">
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Responsible</label>
-                                    <span class="so-field-val trn-muted">— (not implemented)</span>
+                                    <select class="form-input" data-field="user_id">
+                                        <option value="0">—</option>
+                                        <t t-foreach="state.users" t-as="usr" t-key="usr.id">
+                                            <option t-att-value="usr.id"
+                                                    t-att-selected="getM2oId(state.record.user_id) === usr.id ? true : undefined"
+                                                    t-esc="usr.display"/>
+                                        </t>
+                                    </select>
                                 </div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Company</label>
-                                    <span class="so-field-val">My Company</span>
+                                    <span class="so-field-val" t-esc="state.companyName || '—'"/>
                                 </div>
                             </div>
                             <div class="so-info-col">
@@ -2512,12 +2541,15 @@ class TransferFormView extends Component {
 
     setup() {
         this.state = useState({
-            loading:    true,
-            error:      null,
-            record:     {},
-            moves:      [],
-            partners:   [],
-            activeTab:  'operations',
+            loading:     true,
+            error:       null,
+            record:      {},
+            moves:       [],
+            partners:    [],
+            users:       [],
+            locations:   [],
+            companyName: '',
+            activeTab:   'operations',
         });
         this._locMap  = {};
         this._prodMap = {};
@@ -2534,14 +2566,32 @@ class TransferFormView extends Component {
             const recs = await RpcService.call('stock.picking', 'read',
                 [[this.props.recordId]],
                 { fields: ['name','state','partner_id','location_id','location_dest_id',
-                           'scheduled_date','origin','picking_type_id','sale_id','purchase_id'] });
+                           'scheduled_date','origin','picking_type_id','sale_id','purchase_id',
+                           'company_id','user_id'] });
             if (!recs || recs.length === 0) throw new Error('Transfer not found');
             this.state.record = recs[0];
 
-            // Partners
-            const parts = await RpcService.call('res.partner', 'search_read',
-                [[['active','=',true]]], { fields: ['id','name'], limit: 200 });
-            this.state.partners = (Array.isArray(parts) ? parts : []).map(p => ({ id: p.id, display: p.name }));
+            // Partners, users, and locations in parallel
+            const [parts, users, locs] = await Promise.all([
+                RpcService.call('res.partner', 'search_read',
+                    [[['active','=',true]]], { fields: ['id','name'], limit: 200 }),
+                RpcService.call('res.users', 'search_read',
+                    [[['active','=',true]]], { fields: ['id','name'], limit: 200 }),
+                RpcService.call('stock.location', 'search_read',
+                    [[['active','=',true]]], { fields: ['id','name','complete_name'], limit: 500 }),
+            ]);
+            this.state.partners  = (Array.isArray(parts) ? parts : []).map(p => ({ id: p.id, display: p.name }));
+            this.state.users     = (Array.isArray(users) ? users : []).map(u => ({ id: u.id, display: u.name }));
+            this.state.locations = (Array.isArray(locs)  ? locs  : []).map(l => ({ id: l.id, display: l.complete_name || l.name }));
+
+            // Company name
+            const companyId = this.getM2oId(this.state.record.company_id);
+            if (companyId) {
+                try {
+                    const co = await RpcService.call('res.company', 'read', [[companyId]], { fields: ['id','name'] });
+                    this.state.companyName = (co && co.length > 0) ? co[0].name : '';
+                } catch (_) {}
+            }
 
             // Picking type name
             const ptId = this.getM2oId(this.state.record.picking_type_id);
@@ -2554,7 +2604,7 @@ class TransferFormView extends Component {
 
             await this.loadMoves();
 
-            // Load location names for the picking header fields
+            // Load location names for display in non-draft mode
             await this.loadLocNames([
                 this.getM2oId(this.state.record.location_id),
                 this.getM2oId(this.state.record.location_dest_id),
@@ -2674,13 +2724,16 @@ class TransferFormView extends Component {
     // ---- Actions ----
     async onSave() {
         try {
-            await RpcService.call('stock.picking', 'write', [
-                [this.props.recordId],
-                {
-                    partner_id:     this.getM2oId(this.state.record.partner_id) || false,
-                    scheduled_date: this.state.record.scheduled_date || false,
-                }
-            ]);
+            const vals = {
+                partner_id:     this.getM2oId(this.state.record.partner_id) || false,
+                scheduled_date: this.state.record.scheduled_date || false,
+                user_id:        this.getM2oId(this.state.record.user_id)    || false,
+            };
+            if (this.isDraft) {
+                vals.location_id      = this.getM2oId(this.state.record.location_id)      || false;
+                vals.location_dest_id = this.getM2oId(this.state.record.location_dest_id) || false;
+            }
+            await RpcService.call('stock.picking', 'write', [[this.props.recordId], vals]);
         } catch (e) { alert('Save failed: ' + (e.message || e)); }
     }
 
@@ -2837,18 +2890,27 @@ class ProductFormView extends Component {
                                            t-att-checked="state.record.purchase_ok ? true : undefined"/>
                                     Can be Purchased
                                 </label>
-                                <label class="prd-check-lbl prd-check-disabled"
-                                       title="Can be Expensed — requires hr.expense module (Phase 20+)">
-                                    <input type="checkbox" disabled="1"/>
+                                <label class="prd-check-lbl">
+                                    <input type="checkbox" data-field="expense_ok"
+                                           t-att-checked="state.record.expense_ok ? true : undefined"/>
                                     Can be Expensed
                                 </label>
                             </div>
                         </div>
-                        <!-- Image placeholder — upload not yet supported -->
-                        <div class="prd-image-box" title="Product image upload — coming soon">
-                            <span class="prd-img-icon">📷</span>
-                            <span class="prd-img-lbl">Add Photo</span>
+                        <!-- Product image — click to upload -->
+                        <div class="prd-image-box" t-on-click.stop="triggerImageUpload">
+                            <t t-if="state.record.image_1920">
+                                <img class="prd-img-preview"
+                                     t-att-src="'data:image/*;base64,' + state.record.image_1920"
+                                     alt="Product image"/>
+                            </t>
+                            <t t-else="">
+                                <span class="prd-img-icon">📷</span>
+                                <span class="prd-img-lbl">Add Photo</span>
+                            </t>
                         </div>
+                        <input type="file" accept="image/*" style="display:none"
+                               t-on-change.stop="onImageChange"/>
                     </div>
 
                     <!-- ── Tabs ──────────────────────────────────────── -->
@@ -3014,7 +3076,8 @@ class ProductFormView extends Component {
                     [[this.props.recordId]],
                     { fields: ['id','name','default_code','barcode','description','type',
                                'categ_id','uom_id','uom_po_id','list_price',
-                               'standard_price','sale_ok','purchase_ok','active'] });
+                               'standard_price','sale_ok','purchase_ok','expense_ok',
+                               'image_1920','active'] });
                 if (!recs || recs.length === 0) throw new Error('Product not found');
                 this.state.record = { ...recs[0] };
                 this._orig        = { ...recs[0] };
@@ -3028,7 +3091,8 @@ class ProductFormView extends Component {
                     description: false, type: 'consu',
                     categ_id: false, uom_id: 1, uom_po_id: 1,
                     list_price: 0, standard_price: 0,
-                    sale_ok: true, purchase_ok: true, active: true,
+                    sale_ok: true, purchase_ok: true, expense_ok: false,
+                    image_1920: false, active: true,
                 };
                 this._orig = { ...this.state.record };
             }
@@ -3091,6 +3155,8 @@ class ProductFormView extends Component {
             standard_price: r.standard_price ?? 0,
             sale_ok:        !!r.sale_ok,
             purchase_ok:    !!r.purchase_ok,
+            expense_ok:     !!r.expense_ok,
+            image_1920:     r.image_1920    || false,
         };
         try {
             if (this.props.recordId) {
@@ -3109,9 +3175,26 @@ class ProductFormView extends Component {
         this.state.record = { ...this._orig };
     }
 
+    triggerImageUpload() {
+        const input = this.el.querySelector('input[type="file"]');
+        if (input) input.click();
+    }
+
+    onImageChange(e) {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const b64 = ev.target.result.replace(/^data:[^;]+;base64,/, '');
+            this.state.record.image_1920 = b64;
+        };
+        reader.readAsDataURL(file);
+    }
+
     onViewMoves() {
-        // Stub: would navigate to stock.move filtered by product_id
-        alert('Navigate to Product Moves — not yet wired (coming soon).');
+        if (this.props.onNavigate) {
+            this.props.onNavigate('stock.move', [['product_id','=',this.props.recordId]]);
+        }
     }
 
     onBack() { this.props.onBack(); }
@@ -3152,7 +3235,8 @@ class ActionView extends Component {
                 </t>
                 <t t-elif="isProductModel">
                     <ProductFormView recordId="state.recordId"
-                                     onBack.bind="backToList"/>
+                                     onBack.bind="backToList"
+                                     onNavigate.bind="navigateTo"/>
                 </t>
                 <t t-else="">
                     <FormView action="props.action"
@@ -3206,6 +3290,11 @@ class ActionView extends Component {
     backToList() {
         this.state.recordId = null;
         this.state.mode     = 'list';
+    }
+
+    navigateTo(model, domain) {
+        // Stub: navigate to a filtered list (full cross-model navigation is Phase 27+)
+        alert(`Navigate to ${model} — use Inventory → Reporting → Moves History for now.`);
     }
 }
 
