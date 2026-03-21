@@ -1,0 +1,1149 @@
+#pragma once
+// =============================================================
+// modules/report/ReportModule.hpp
+//
+// Phase 30 — Document Report & Settings
+//
+// Provides:
+//   ir.report.template  (table: ir_report_template)
+//     - name, model, template_html, paper_format, orientation, active
+//
+//   ReportTemplateViewModel — search_read, read, write, fields_get
+//   TemplateRenderer        — static render helpers
+//
+// Routes:
+//   GET /report/html/{model}/{id}  → rendered HTML document
+// =============================================================
+#include "IModule.hpp"
+#include "Factories.hpp"
+#include "BaseModel.hpp"
+#include "BaseView.hpp"
+#include "BaseViewModel.hpp"
+#include "DbConnection.hpp"
+#include <nlohmann/json.hpp>
+#include <pqxx/pqxx>
+#include <drogon/drogon.h>
+#include <memory>
+#include <string>
+#include <vector>
+#include <map>
+#include <sstream>
+#include <iomanip>
+#include <cmath>
+
+namespace odoo::modules::report {
+
+using namespace odoo::infrastructure;
+using namespace odoo::core;
+
+// ================================================================
+// TemplateRenderer — static mustache-like template renderer
+// ================================================================
+class TemplateRenderer {
+public:
+    static std::string replaceAll(std::string str,
+                                  const std::string& from,
+                                  const std::string& to)
+    {
+        if (from.empty()) return str;
+        size_t pos = 0;
+        while ((pos = str.find(from, pos)) != std::string::npos) {
+            str.replace(pos, from.size(), to);
+            pos += to.size();
+        }
+        return str;
+    }
+
+    static std::string render(
+        std::string tmpl,
+        const std::map<std::string, std::string>& vars,
+        const std::vector<std::map<std::string, std::string>>& lines = {})
+    {
+        // Handle {{#each lines}}...{{/each}} loops
+        const std::string eachStart = "{{#each lines}}";
+        const std::string eachEnd   = "{{/each}}";
+        size_t sPos = tmpl.find(eachStart);
+        size_t ePos = tmpl.find(eachEnd);
+
+        if (sPos != std::string::npos && ePos != std::string::npos) {
+            std::string before  = tmpl.substr(0, sPos);
+            std::string loopTpl = tmpl.substr(sPos + eachStart.size(),
+                                              ePos - sPos - eachStart.size());
+            std::string after   = tmpl.substr(ePos + eachEnd.size());
+
+            std::string expanded;
+            for (const auto& line : lines) {
+                std::string row = loopTpl;
+                for (const auto& [k, v] : line)
+                    row = replaceAll(row, "{{" + k + "}}", v);
+                expanded += row;
+            }
+            tmpl = before + expanded + after;
+        }
+
+        // Replace scalar vars
+        for (const auto& [k, v] : vars)
+            tmpl = replaceAll(tmpl, "{{" + k + "}}", v);
+
+        return tmpl;
+    }
+};
+
+// ================================================================
+// Number formatter helpers
+// ================================================================
+
+// Legacy — kept for backward compat (no comma separator)
+static std::string fmtNum(const pqxx::field& f) {
+    if (f.is_null()) return "0.00";
+    try {
+        double v = f.as<double>();
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(2) << v;
+        return oss.str();
+    } catch (...) { return f.c_str(); }
+}
+
+static std::string safeStr(const pqxx::field& f) {
+    return f.is_null() ? "" : f.c_str();
+}
+
+// Format a double as "13,600.00" with comma thousands separator
+static std::string fmtMoney(double v) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2) << std::abs(v);
+    std::string s = oss.str();
+    // Insert commas
+    size_t dot = s.find('.');
+    size_t start = dot == std::string::npos ? s.size() : dot;
+    int ins = (int)start - 3;
+    while (ins > 0) { s.insert(ins, ","); ins -= 3; }
+    if (v < 0) s = "-" + s;
+    return s;
+}
+
+static std::string fmtMoneyField(const pqxx::field& f) {
+    if (f.is_null()) return "0.00";
+    try { return fmtMoney(f.as<double>()); } catch (...) { return f.c_str(); }
+}
+
+// Convert YYYY-MM-DD to DD/MM/YYYY
+static std::string ymdToDisplay(const std::string& ymd) {
+    if (ymd.size() >= 10 && ymd[4] == '-' && ymd[7] == '-')
+        return ymd.substr(8, 2) + "/" + ymd.substr(5, 2) + "/" + ymd.substr(0, 4);
+    return ymd;
+}
+
+// ================================================================
+// HTML error page helper
+// ================================================================
+static drogon::HttpResponsePtr htmlError(int status, const std::string& msg) {
+    auto resp = drogon::HttpResponse::newHttpResponse();
+    resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status));
+    resp->setContentTypeCode(drogon::CT_TEXT_HTML);
+    resp->setBody("<html><body><h2>Error: " + msg + "</h2></body></html>");
+    return resp;
+}
+
+// ================================================================
+// Shared CSS block (wkhtmltopdf-compatible, float-based)
+// ================================================================
+static const std::string SHARED_CSS = R"CSS(
+<style>
+@page { size: A4; margin: 0; }
+* { box-sizing: border-box; }
+body { font-family: Arial, Helvetica, sans-serif; font-size: 10pt; color: #333333; line-height: 1.5; margin: 0; padding: 15mm 18mm 20mm 18mm; position: relative; min-height: 257mm; }
+.clearfix { overflow: hidden; }
+.hdr-left { float: left; width: 40%; }
+.hdr-right { float: right; width: 58%; }
+.company-name { font-weight: bold; font-size: 11pt; }
+.company-detail { font-size: 10pt; }
+.info-row { overflow: hidden; margin-top: 10mm; margin-bottom: 6mm; }
+.buyer-col { float: left; width: 55%; }
+.meta-col { float: right; width: 42%; }
+.buyer-name { font-weight: bold; font-size: 11pt; }
+.doc-title { font-weight: bold; font-size: 14pt; margin-bottom: 2mm; }
+.meta-line { font-size: 10pt; }
+.meta-lbl { font-weight: bold; }
+.attn { margin-bottom: 3mm; font-size: 10pt; }
+.currency-note { margin-bottom: 3mm; font-size: 10pt; }
+.lines-table { width: 100%; border-collapse: collapse; margin-bottom: 4mm; border: 0.5pt solid #cccccc; }
+.lines-table thead th { background-color: #4a4a4a; color: #ffffff; font-weight: bold; text-transform: uppercase; padding: 6px 8px; font-size: 10pt; text-align: left; }
+.lines-table thead th.r { text-align: right; }
+.lines-table thead th.c { text-align: center; }
+.lines-table tbody td { padding: 6px 8px; border-bottom: 0.5pt solid #cccccc; font-size: 10pt; vertical-align: top; }
+.lines-table tbody td.r { text-align: right; }
+.lines-table tbody td.c { text-align: center; }
+.col-desc { width: 55%; }
+.col-qty { width: 12%; }
+.col-uom { width: 10%; }
+.col-price { width: 16%; }
+.col-amount { width: 17%; }
+.row-line_section td { font-weight: bold; background-color: #f5f5f5; }
+.row-line_note td { font-style: italic; color: #666666; }
+.totals-wrap { overflow: hidden; margin-bottom: 8mm; }
+.totals-table { float: right; width: 45%; border-collapse: collapse; }
+.totals-table td { padding: 5px 8px; font-size: 10pt; }
+.totals-table .t-lbl { text-align: right; font-weight: bold; padding-right: 12px; }
+.totals-table .t-val { text-align: right; white-space: nowrap; }
+.totals-table .row-total td { background-color: #4a4a4a; color: #ffffff; font-weight: bold; }
+.payment-terms { margin-bottom: 5mm; font-size: 11pt; }
+.bank-details { font-size: 9.5pt; line-height: 1.7; }
+.page-footer { position: fixed; bottom: 0; left: 0; right: 0; background-color: #4a4a4a; color: #ffffff; text-align: center; padding: 6px 0; font-size: 9pt; }
+.print-btn { display: inline-block; margin-top: 10mm; padding: 8px 20px; background: #4a4a4a; color: #fff; border: none; font-size: 10pt; cursor: pointer; }
+@media print { .print-btn { display: none; } }
+</style>
+)CSS";
+
+// ================================================================
+// Default HTML Templates
+// ================================================================
+
+static const std::string INVOICE_TEMPLATE = R"HTML(<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>{{document_title}} - {{doc_number}}</title>
+)HTML" + SHARED_CSS + R"HTML(
+</head><body>
+
+<div class="clearfix">
+  <div class="hdr-left">
+    <div class="company-name">{{company_name}} ({{company_reg}})</div>
+    <div class="company-detail">{{company_addr1}}</div>
+    <div class="company-detail">{{company_addr2}}</div>
+    <div class="company-detail">{{company_addr3}}</div>
+    <div class="company-detail">{{company_city_country}}</div>
+  </div>
+  <div class="hdr-right"></div>
+</div>
+
+<div class="info-row">
+  <div class="buyer-col">
+    <div class="buyer-name">{{partner_name}}</div>
+    <div>{{partner_street}}</div>
+    <div>{{partner_city}}</div>
+    <div>{{partner_phone}}</div>
+  </div>
+  <div class="meta-col">
+    <div class="doc-title">{{document_title}}</div>
+    <div class="meta-line"><span class="meta-lbl">Invoice No. :</span> {{doc_number}}</div>
+    <div class="meta-line"><span class="meta-lbl">Invoice Date :</span> {{doc_date}}</div>
+    <div class="meta-line"><span class="meta-lbl">Due Date :</span> {{doc_date_due}}</div>
+  </div>
+</div>
+
+<div class="currency-note">All Amount Stated in - {{currency_code}}</div>
+
+<table class="lines-table">
+  <thead><tr>
+    <th class="col-desc">DESCRIPTION</th>
+    <th class="col-qty c">QUANTITY</th>
+    <th class="col-price r">UNIT PRICE</th>
+    <th class="col-amount r">AMOUNT</th>
+  </tr></thead>
+  <tbody>
+    {{#each lines}}
+    <tr class="row-{{line_type}}">
+      <td>{{product_name}}</td>
+      <td class="c">{{qty}}</td>
+      <td class="r">{{price_unit}}</td>
+      <td class="r">{{subtotal}}</td>
+    </tr>
+    {{/each}}
+  </tbody>
+</table>
+
+<div class="totals-wrap">
+  <table class="totals-table">
+    <tr><td class="t-lbl">Subtotal</td><td class="t-val">{{currency_code}} {{amount_untaxed}}</td></tr>
+    <tr><td class="t-lbl">Tax</td><td class="t-val">{{currency_code}} {{amount_tax}}</td></tr>
+    <tr class="row-total"><td class="t-lbl">Total</td><td class="t-val">{{currency_code}} {{amount_total}}</td></tr>
+  </table>
+</div>
+
+<div class="payment-terms"><strong>Payment terms:</strong> {{payment_term_days}} Days</div>
+
+<div class="bank-details">
+  <div>TT Transfer Payable to</div>
+  <div>Account Name : {{bank_account_name}}</div>
+  <div>Account No. : {{bank_account_no}}</div>
+  <div>Bank Name : {{bank_name}}</div>
+  <div>Bank Address : {{bank_address}}</div>
+  <div>Bank SWIFT Code : {{bank_swift}}</div>
+</div>
+
+<div class="page-footer">{{company_website}}</div>
+<button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+</body></html>)HTML";
+
+static const std::string SALE_ORDER_TEMPLATE = R"HTML(<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>{{document_title}} - {{doc_number}}</title>
+)HTML" + SHARED_CSS + R"HTML(
+</head><body>
+
+<div class="clearfix">
+  <div class="hdr-left">
+    <div class="company-name">{{company_name}} ({{company_reg}})</div>
+    <div class="company-detail">{{company_addr1}}</div>
+    <div class="company-detail">{{company_addr2}}</div>
+    <div class="company-detail">{{company_addr3}}</div>
+    <div class="company-detail">{{company_city_country}}</div>
+  </div>
+  <div class="hdr-right"></div>
+</div>
+
+<div class="info-row">
+  <div class="buyer-col">
+    <div class="buyer-name">{{partner_name}}</div>
+    <div>{{partner_street}}</div>
+    <div>{{partner_city}}</div>
+    <div>{{partner_phone}}</div>
+  </div>
+  <div class="meta-col">
+    <div class="doc-title">{{document_title}}</div>
+    <div class="meta-line"><span class="meta-lbl">Order No. :</span> {{doc_number}}</div>
+    <div class="meta-line"><span class="meta-lbl">Order Date :</span> {{doc_date}}</div>
+    <div class="meta-line"><span class="meta-lbl">Valid Until :</span> {{validity_date}}</div>
+  </div>
+</div>
+
+<div class="currency-note">All Amount Stated in - {{currency_code}}</div>
+
+<table class="lines-table">
+  <thead><tr>
+    <th class="col-desc">DESCRIPTION</th>
+    <th class="col-qty c">QUANTITY</th>
+    <th class="col-uom">UOM</th>
+    <th class="col-price r">UNIT PRICE</th>
+    <th class="col-amount r">AMOUNT</th>
+  </tr></thead>
+  <tbody>
+    {{#each lines}}
+    <tr>
+      <td>{{product_name}}</td>
+      <td class="c">{{qty}}</td>
+      <td>{{uom}}</td>
+      <td class="r">{{price_unit}}</td>
+      <td class="r">{{subtotal}}</td>
+    </tr>
+    {{/each}}
+  </tbody>
+</table>
+
+<div class="totals-wrap">
+  <table class="totals-table">
+    <tr><td class="t-lbl">Subtotal</td><td class="t-val">{{currency_code}} {{amount_untaxed}}</td></tr>
+    <tr><td class="t-lbl">Tax</td><td class="t-val">{{currency_code}} {{amount_tax}}</td></tr>
+    <tr class="row-total"><td class="t-lbl">Total</td><td class="t-val">{{currency_code}} {{amount_total}}</td></tr>
+  </table>
+</div>
+
+<div class="payment-terms"><strong>Payment terms:</strong> {{payment_term_days}} Days</div>
+
+<div class="bank-details">
+  <div>TT Transfer Payable to</div>
+  <div>Account Name : {{bank_account_name}}</div>
+  <div>Account No. : {{bank_account_no}}</div>
+  <div>Bank Name : {{bank_name}}</div>
+  <div>Bank Address : {{bank_address}}</div>
+  <div>Bank SWIFT Code : {{bank_swift}}</div>
+</div>
+
+<div class="page-footer">{{company_website}}</div>
+<button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+</body></html>)HTML";
+
+static const std::string PURCHASE_ORDER_TEMPLATE = R"HTML(<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>{{document_title}} - {{doc_number}}</title>
+)HTML" + SHARED_CSS + R"HTML(
+</head><body>
+
+<div class="clearfix">
+  <div class="hdr-left">
+    <div class="company-name">{{company_name}} ({{company_reg}})</div>
+    <div class="company-detail">{{company_addr1}}</div>
+    <div class="company-detail">{{company_addr2}}</div>
+    <div class="company-detail">{{company_addr3}}</div>
+    <div class="company-detail">{{company_city_country}}</div>
+  </div>
+  <div class="hdr-right"></div>
+</div>
+
+<div class="info-row">
+  <div class="buyer-col">
+    <div class="buyer-name">{{partner_name}}</div>
+    <div>{{partner_street}}</div>
+    <div>{{partner_city}}</div>
+    <div>{{partner_phone}}</div>
+  </div>
+  <div class="meta-col">
+    <div class="doc-title">{{document_title}}</div>
+    <div class="meta-line"><span class="meta-lbl">PO No. :</span> {{doc_number}}</div>
+    <div class="meta-line"><span class="meta-lbl">Order Date :</span> {{doc_date}}</div>
+    <div class="meta-line"><span class="meta-lbl">Expected :</span> {{date_planned}}</div>
+  </div>
+</div>
+
+<div class="currency-note">All Amount Stated in - {{currency_code}}</div>
+
+<table class="lines-table">
+  <thead><tr>
+    <th class="col-desc">DESCRIPTION</th>
+    <th class="col-qty c">QUANTITY</th>
+    <th class="col-uom">UOM</th>
+    <th class="col-price r">UNIT PRICE</th>
+    <th class="col-amount r">AMOUNT</th>
+  </tr></thead>
+  <tbody>
+    {{#each lines}}
+    <tr>
+      <td>{{product_name}}</td>
+      <td class="c">{{qty}}</td>
+      <td>{{uom}}</td>
+      <td class="r">{{price_unit}}</td>
+      <td class="r">{{subtotal}}</td>
+    </tr>
+    {{/each}}
+  </tbody>
+</table>
+
+<div class="totals-wrap">
+  <table class="totals-table">
+    <tr><td class="t-lbl">Subtotal</td><td class="t-val">{{currency_code}} {{amount_untaxed}}</td></tr>
+    <tr><td class="t-lbl">Tax</td><td class="t-val">{{currency_code}} {{amount_tax}}</td></tr>
+    <tr class="row-total"><td class="t-lbl">Total</td><td class="t-val">{{currency_code}} {{amount_total}}</td></tr>
+  </table>
+</div>
+
+<div class="payment-terms"><strong>Payment terms:</strong> {{payment_term_days}} Days</div>
+
+<div class="bank-details">
+  <div>TT Transfer Payable to</div>
+  <div>Account Name : {{bank_account_name}}</div>
+  <div>Account No. : {{bank_account_no}}</div>
+  <div>Bank Name : {{bank_name}}</div>
+  <div>Bank Address : {{bank_address}}</div>
+  <div>Bank SWIFT Code : {{bank_swift}}</div>
+</div>
+
+<div class="page-footer">{{company_website}}</div>
+<button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+</body></html>)HTML";
+
+static const std::string STOCK_PICKING_TEMPLATE = R"HTML(<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>{{document_title}} - {{doc_number}}</title>
+)HTML" + SHARED_CSS + R"HTML(
+</head><body>
+
+<div class="clearfix">
+  <div class="hdr-left">
+    <div class="company-name">{{company_name}} ({{company_reg}})</div>
+    <div class="company-detail">{{company_addr1}}</div>
+    <div class="company-detail">{{company_addr2}}</div>
+    <div class="company-detail">{{company_addr3}}</div>
+    <div class="company-detail">{{company_city_country}}</div>
+  </div>
+  <div class="hdr-right"></div>
+</div>
+
+<div class="info-row">
+  <div class="buyer-col">
+    <div class="buyer-name">{{partner_name}}</div>
+    <div>{{partner_street}}</div>
+    <div>{{partner_city}}</div>
+    <div>{{partner_phone}}</div>
+  </div>
+  <div class="meta-col">
+    <div class="doc-title">{{document_title}}</div>
+    <div class="meta-line"><span class="meta-lbl">Ref No. :</span> {{doc_number}}</div>
+    <div class="meta-line"><span class="meta-lbl">Date :</span> {{doc_date}}</div>
+    <div class="meta-line"><span class="meta-lbl">Origin :</span> {{origin}}</div>
+  </div>
+</div>
+
+<div class="info-row">
+  <div class="buyer-col">
+    <div class="meta-line"><span class="meta-lbl">From :</span> {{source_location}}</div>
+    <div class="meta-line"><span class="meta-lbl">To :</span> {{dest_location}}</div>
+  </div>
+</div>
+
+<table class="lines-table">
+  <thead><tr>
+    <th class="col-desc">PRODUCT</th>
+    <th class="col-qty c">DEMAND</th>
+    <th class="col-qty c">DONE</th>
+    <th class="col-uom">UOM</th>
+  </tr></thead>
+  <tbody>
+    {{#each lines}}
+    <tr>
+      <td>{{product_name}}</td>
+      <td class="c">{{demand}}</td>
+      <td class="c">{{done}}</td>
+      <td>{{uom}}</td>
+    </tr>
+    {{/each}}
+  </tbody>
+</table>
+
+<div class="page-footer">{{company_website}}</div>
+<button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+</body></html>)HTML";
+
+// Escape single quotes for SQL
+static std::string sqlEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '\'') out += "''";
+        else out += c;
+    }
+    return out;
+}
+
+// ================================================================
+// ReportTemplateViewModel — ir.report.template
+// ================================================================
+class ReportTemplateViewModel : public BaseViewModel {
+public:
+    explicit ReportTemplateViewModel(std::shared_ptr<DbConnection> db)
+        : db_(std::move(db))
+    {
+        REGISTER_METHOD("search_read",     handleSearchRead)
+        REGISTER_METHOD("web_search_read", handleSearchRead)
+        REGISTER_METHOD("read",            handleRead)
+        REGISTER_METHOD("write",           handleWrite)
+        REGISTER_METHOD("fields_get",      handleFieldsGet)
+    }
+
+    std::string modelName() const override { return "ir.report.template"; }
+
+private:
+    std::shared_ptr<DbConnection> db_;
+
+    nlohmann::json handleSearchRead(const CallKwArgs&) {
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        auto rows = txn.exec(
+            "SELECT id, name, model, paper_format, orientation, active "
+            "FROM ir_report_template WHERE active=true ORDER BY id");
+        nlohmann::json result = nlohmann::json::array();
+        for (const auto& row : rows) {
+            nlohmann::json rec;
+            rec["id"]          = row["id"].as<int>();
+            rec["name"]        = safeStr(row["name"]);
+            rec["model"]       = safeStr(row["model"]);
+            rec["paper_format"]= safeStr(row["paper_format"]);
+            rec["orientation"] = safeStr(row["orientation"]);
+            rec["active"]      = row["active"].is_null() ? true : row["active"].as<bool>();
+            result.push_back(rec);
+        }
+        return result;
+    }
+
+    nlohmann::json handleRead(const CallKwArgs& call) {
+        const auto& idArg = call.arg(0);
+        std::vector<int> ids;
+        if (idArg.is_array()) {
+            for (const auto& v : idArg) {
+                if (v.is_number_integer())
+                    ids.push_back(v.get<int>());
+                else if (v.is_array() && !v.empty() && v[0].is_number_integer())
+                    ids.push_back(v[0].get<int>());
+            }
+        } else if (idArg.is_number_integer()) {
+            ids.push_back(idArg.get<int>());
+        }
+        if (ids.empty()) return nlohmann::json::array();
+
+        // Build IN clause
+        std::string inClause;
+        for (size_t i = 0; i < ids.size(); ++i) {
+            if (i > 0) inClause += ",";
+            inClause += std::to_string(ids[i]);
+        }
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        auto rows = txn.exec(
+            "SELECT id, name, model, template_html, paper_format, orientation, active "
+            "FROM ir_report_template WHERE id IN (" + inClause + ") ORDER BY id");
+
+        nlohmann::json result = nlohmann::json::array();
+        for (const auto& row : rows) {
+            nlohmann::json rec;
+            rec["id"]            = row["id"].as<int>();
+            rec["name"]          = safeStr(row["name"]);
+            rec["model"]         = safeStr(row["model"]);
+            rec["template_html"] = safeStr(row["template_html"]);
+            rec["paper_format"]  = safeStr(row["paper_format"]);
+            rec["orientation"]   = safeStr(row["orientation"]);
+            rec["active"]        = row["active"].is_null() ? true : row["active"].as<bool>();
+            result.push_back(rec);
+        }
+        return result;
+    }
+
+    nlohmann::json handleWrite(const CallKwArgs& call) {
+        // args: [[id1,...], {vals}]  or  [[id], {vals}]
+        const auto& idArg  = call.arg(0);
+        const auto& vals   = call.arg(1);
+
+        std::vector<int> ids;
+        if (idArg.is_array()) {
+            for (const auto& v : idArg)
+                if (v.is_number_integer()) ids.push_back(v.get<int>());
+        } else if (idArg.is_number_integer()) {
+            ids.push_back(idArg.get<int>());
+        }
+        if (ids.empty() || !vals.is_object()) return false;
+
+        std::string templateHtml = vals.value("template_html", "");
+        std::string paperFormat  = vals.value("paper_format",  "A4");
+        std::string orientation  = vals.value("orientation",   "portrait");
+        std::string name         = vals.value("name",          "");
+
+        std::string inClause;
+        for (size_t i = 0; i < ids.size(); ++i) {
+            if (i > 0) inClause += ",";
+            inClause += std::to_string(ids[i]);
+        }
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        if (!name.empty()) {
+            txn.exec(
+                "UPDATE ir_report_template SET "
+                "template_html=$1, paper_format=$2, orientation=$3, name=$4 "
+                "WHERE id IN (" + inClause + ")",
+                pqxx::params{templateHtml, paperFormat, orientation, name});
+        } else {
+            txn.exec(
+                "UPDATE ir_report_template SET "
+                "template_html=$1, paper_format=$2, orientation=$3 "
+                "WHERE id IN (" + inClause + ")",
+                pqxx::params{templateHtml, paperFormat, orientation});
+        }
+        txn.commit();
+        return true;
+    }
+
+    nlohmann::json handleFieldsGet(const CallKwArgs&) {
+        return {
+            {"id",            {{"type","integer"}, {"string","ID"}}},
+            {"name",          {{"type","char"},    {"string","Template Name"}}},
+            {"model",         {{"type","char"},    {"string","Model"}}},
+            {"template_html", {{"type","text"},    {"string","Template HTML"}}},
+            {"paper_format",  {{"type","char"},    {"string","Paper Format"}}},
+            {"orientation",   {{"type","char"},    {"string","Orientation"}}},
+            {"active",        {{"type","boolean"}, {"string","Active"}}},
+        };
+    }
+};
+
+// ================================================================
+// ReportModule — IModule implementation
+// ================================================================
+class ReportModule : public core::IModule {
+public:
+    static constexpr const char* staticModuleName() { return "report"; }
+
+    explicit ReportModule(core::ModelFactory&     modelFactory,
+                          core::ServiceFactory&   serviceFactory,
+                          core::ViewModelFactory& viewModelFactory,
+                          core::ViewFactory&      viewFactory)
+        : models_    (modelFactory)
+        , services_  (serviceFactory)
+        , viewModels_(viewModelFactory)
+        , views_     (viewFactory)
+    {
+        db_ = serviceFactory.db();
+    }
+
+    std::string              moduleName()   const override { return "report"; }
+    std::string              version()      const override { return "17.0.1.0.0"; }
+    std::vector<std::string> dependencies() const override { return {"base", "sale", "purchase", "stock", "account"}; }
+
+    void registerModels()   override {}
+    void registerServices() override {}
+    void registerViews()    override {}
+
+    void registerViewModels() override {
+        auto db = db_;
+        viewModels_.registerCreator("ir.report.template", [db]{
+            return std::make_shared<ReportTemplateViewModel>(db);
+        });
+    }
+
+    void registerRoutes() override {
+        auto db = db_;
+
+        // Report route — handles all 4 model types
+        drogon::app().registerHandler(
+            "/report/html/{1}/{2}",
+            [db](const drogon::HttpRequestPtr& req,
+                 std::function<void(const drogon::HttpResponsePtr&)>&& cb,
+                 const std::string& model,
+                 const std::string& idStr)
+            {
+                int recordId = 0;
+                try { recordId = std::stoi(idStr); } catch (...) {
+                    cb(htmlError(400, "Invalid record id"));
+                    return;
+                }
+
+                try {
+                    auto conn = db->acquire();
+                    pqxx::work txn{conn.get()};
+
+                    // ---- Load template ----
+                    auto tplRows = txn.exec(
+                        "SELECT template_html, paper_format, orientation "
+                        "FROM ir_report_template "
+                        "WHERE model=$1 AND active=true ORDER BY id LIMIT 1",
+                        pqxx::params{model});
+
+                    if (tplRows.empty()) {
+                        cb(htmlError(404, "No template found for model: " + model));
+                        return;
+                    }
+
+                    std::string tplHtml     = safeStr(tplRows[0]["template_html"]);
+                    std::string paperFormat = safeStr(tplRows[0]["paper_format"]);
+                    std::string orientation = safeStr(tplRows[0]["orientation"]);
+                    if (paperFormat.empty()) paperFormat = "A4";
+                    if (orientation.empty()) orientation = "portrait";
+
+                    std::map<std::string, std::string> vars;
+                    std::vector<std::map<std::string, std::string>> lines;
+
+                    vars["paper_format"] = paperFormat;
+                    vars["orientation"]  = orientation;
+
+                    // Helper: load a config param from ir_config_parameter
+                    auto loadCfg = [&](const std::string& key, const std::string& def = "") -> std::string {
+                        try {
+                            auto r = txn.exec(
+                                "SELECT value FROM ir_config_parameter WHERE key=$1",
+                                pqxx::params{key});
+                            if (!r.empty() && !r[0]["value"].is_null())
+                                return r[0]["value"].c_str();
+                        } catch (...) {}
+                        return def;
+                    };
+
+                    int companyId = 1;
+                    int partnerId = 0;
+
+                    if (model == "sale.order") {
+                        auto rows = txn.exec(
+                            "SELECT so.name, so.state, "
+                            "to_char(so.date_order AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date_order, "
+                            "to_char(so.validity_date, 'YYYY-MM-DD') AS validity_date, "
+                            "COALESCE(so.amount_untaxed::TEXT,'0') AS amount_untaxed, "
+                            "COALESCE(so.amount_tax::TEXT,'0') AS amount_tax, "
+                            "COALESCE(so.amount_total::TEXT,'0') AS amount_total, "
+                            "COALESCE(so.note,'') AS note, "
+                            "so.partner_id, so.company_id "
+                            "FROM sale_order so WHERE so.id=$1",
+                            pqxx::params{recordId});
+                        if (rows.empty()) { cb(htmlError(404, "Sale order not found")); return; }
+                        const auto& r = rows[0];
+                        companyId = r["company_id"].is_null() ? 1 : r["company_id"].as<int>();
+                        partnerId = r["partner_id"].is_null() ? 0 : r["partner_id"].as<int>();
+
+                        std::string soState = safeStr(r["state"]);
+                        vars["document_title"] = (soState == "sale" || soState == "done") ? "Sales Order" : "Quotation";
+                        vars["doc_number"]     = safeStr(r["name"]);
+                        vars["doc_date"]       = ymdToDisplay(safeStr(r["date_order"]));
+                        vars["validity_date"]  = ymdToDisplay(safeStr(r["validity_date"]));
+                        vars["amount_untaxed"] = fmtMoneyField(r["amount_untaxed"]);
+                        vars["amount_tax"]     = fmtMoneyField(r["amount_tax"]);
+                        vars["amount_total"]   = fmtMoneyField(r["amount_total"]);
+
+                        // Lines
+                        auto lrows = txn.exec(
+                            "SELECT COALESCE(sol.name, pp.name, '') AS product_name, "
+                            "sol.product_uom_qty AS qty, "
+                            "sol.price_unit, "
+                            "sol.price_subtotal AS subtotal, "
+                            "COALESCE(uu.name,'') AS uom "
+                            "FROM sale_order_line sol "
+                            "LEFT JOIN product_product pp ON pp.id = sol.product_id "
+                            "LEFT JOIN uom_uom uu ON uu.id = sol.product_uom_id "
+                            "WHERE sol.order_id = $1 ORDER BY sol.id",
+                            pqxx::params{recordId});
+                        for (const auto& lr : lrows) {
+                            std::map<std::string, std::string> line;
+                            line["product_name"] = safeStr(lr["product_name"]);
+                            line["qty"]          = fmtMoneyField(lr["qty"]);
+                            line["uom"]          = safeStr(lr["uom"]);
+                            line["price_unit"]   = fmtMoneyField(lr["price_unit"]);
+                            line["subtotal"]     = fmtMoneyField(lr["subtotal"]);
+                            lines.push_back(line);
+                        }
+
+                    } else if (model == "account.move") {
+                        auto rows = txn.exec(
+                            "SELECT am.name, am.move_type, am.state, "
+                            "to_char(am.invoice_date, 'YYYY-MM-DD') AS invoice_date, "
+                            "to_char(am.due_date, 'YYYY-MM-DD') AS invoice_date_due, "
+                            "COALESCE(am.amount_untaxed::TEXT,'0') AS amount_untaxed, "
+                            "COALESCE(am.amount_tax::TEXT,'0') AS amount_tax, "
+                            "COALESCE(am.amount_total::TEXT,'0') AS amount_total, "
+                            "am.partner_id, am.company_id "
+                            "FROM account_move am WHERE am.id=$1",
+                            pqxx::params{recordId});
+                        if (rows.empty()) { cb(htmlError(404, "Invoice not found")); return; }
+                        const auto& r = rows[0];
+                        companyId = r["company_id"].is_null() ? 1 : r["company_id"].as<int>();
+                        partnerId = r["partner_id"].is_null() ? 0 : r["partner_id"].as<int>();
+
+                        std::string moveType = safeStr(r["move_type"]);
+                        vars["document_title"]   = (moveType == "in_invoice") ? "Vendor Bill" :
+                                                   (moveType == "out_refund")  ? "Credit Note" :
+                                                   (moveType == "in_refund")   ? "Vendor Credit Note" : "Sales Invoice";
+                        vars["doc_number"]       = safeStr(r["name"]);
+                        vars["doc_date"]         = ymdToDisplay(safeStr(r["invoice_date"]));
+                        vars["doc_date_due"]     = ymdToDisplay(safeStr(r["invoice_date_due"]));
+                        vars["amount_untaxed"]   = fmtMoneyField(r["amount_untaxed"]);
+                        vars["amount_tax"]       = fmtMoneyField(r["amount_tax"]);
+                        vars["amount_total"]     = fmtMoneyField(r["amount_total"]);
+
+                        // Lines — include display_type='' (product lines), exclude AR/AP accounting lines
+                        auto lrows = txn.exec(
+                            "SELECT COALESCE(aml.name,'') AS product_name, "
+                            "COALESCE(aml.quantity::TEXT,'0') AS qty, "
+                            "COALESCE(aml.price_unit::TEXT,'0') AS price_unit, "
+                            "COALESCE(NULLIF(aml.price_unit,0) * aml.quantity, aml.debit)::TEXT AS subtotal, "
+                            "COALESCE(NULLIF(aml.display_type,''),'product') AS line_type "
+                            "FROM account_move_line aml "
+                            "JOIN account_account aa ON aa.id = aml.account_id "
+                            "WHERE aml.move_id = $1 "
+                            "AND (aml.display_type IS NULL OR aml.display_type IN ('', 'product','line_section','line_note')) "
+                            "AND aa.account_type NOT IN ('liability_payable', 'asset_receivable') "
+                            "ORDER BY aml.id",
+                            pqxx::params{recordId});
+                        for (const auto& lr : lrows) {
+                            std::map<std::string, std::string> line;
+                            line["product_name"] = safeStr(lr["product_name"]);
+                            line["qty"]          = safeStr(lr["qty"]);
+                            line["price_unit"]   = safeStr(lr["price_unit"]);
+                            line["subtotal"]     = safeStr(lr["subtotal"]);
+                            line["line_type"]    = safeStr(lr["line_type"]);
+                            lines.push_back(line);
+                        }
+
+                    } else if (model == "purchase.order") {
+                        auto rows = txn.exec(
+                            "SELECT po.name, po.state, "
+                            "to_char(po.date_order AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date_order, "
+                            "to_char(po.date_planned AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date_planned, "
+                            "COALESCE(po.amount_untaxed::TEXT,'0') AS amount_untaxed, "
+                            "COALESCE(po.amount_tax::TEXT,'0') AS amount_tax, "
+                            "COALESCE(po.amount_total::TEXT,'0') AS amount_total, "
+                            "po.partner_id, po.company_id "
+                            "FROM purchase_order po WHERE po.id=$1",
+                            pqxx::params{recordId});
+                        if (rows.empty()) { cb(htmlError(404, "Purchase order not found")); return; }
+                        const auto& r = rows[0];
+                        companyId = r["company_id"].is_null() ? 1 : r["company_id"].as<int>();
+                        partnerId = r["partner_id"].is_null() ? 0 : r["partner_id"].as<int>();
+
+                        std::string poState = safeStr(r["state"]);
+                        vars["document_title"] = (poState == "purchase" || poState == "done") ? "Purchase Order" : "Request for Quotation";
+                        vars["doc_number"]     = safeStr(r["name"]);
+                        vars["doc_date"]       = ymdToDisplay(safeStr(r["date_order"]));
+                        vars["date_planned"]   = ymdToDisplay(safeStr(r["date_planned"]));
+                        vars["amount_untaxed"] = fmtMoneyField(r["amount_untaxed"]);
+                        vars["amount_tax"]     = fmtMoneyField(r["amount_tax"]);
+                        vars["amount_total"]   = fmtMoneyField(r["amount_total"]);
+
+                        // Lines
+                        auto lrows = txn.exec(
+                            "SELECT COALESCE(pol.name, pp.name, '') AS product_name, "
+                            "pol.product_qty AS qty, "
+                            "pol.price_unit, "
+                            "pol.price_subtotal AS subtotal, "
+                            "COALESCE(uu.name,'') AS uom "
+                            "FROM purchase_order_line pol "
+                            "LEFT JOIN product_product pp ON pp.id = pol.product_id "
+                            "LEFT JOIN uom_uom uu ON uu.id = pol.product_uom_id "
+                            "WHERE pol.order_id = $1 ORDER BY pol.id",
+                            pqxx::params{recordId});
+                        for (const auto& lr : lrows) {
+                            std::map<std::string, std::string> line;
+                            line["product_name"] = safeStr(lr["product_name"]);
+                            line["qty"]          = fmtMoneyField(lr["qty"]);
+                            line["uom"]          = safeStr(lr["uom"]);
+                            line["price_unit"]   = fmtMoneyField(lr["price_unit"]);
+                            line["subtotal"]     = fmtMoneyField(lr["subtotal"]);
+                            lines.push_back(line);
+                        }
+
+                    } else if (model == "stock.picking") {
+                        auto rows = txn.exec(
+                            "SELECT sp.name, sp.origin, sp.state, "
+                            "to_char(sp.scheduled_date AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS scheduled_date, "
+                            "sp.partner_id, sp.location_id, sp.location_dest_id, sp.company_id, "
+                            "COALESCE(spt.code,'') AS picking_type_code "
+                            "FROM stock_picking sp "
+                            "LEFT JOIN stock_picking_type spt ON spt.id = sp.picking_type_id "
+                            "WHERE sp.id=$1",
+                            pqxx::params{recordId});
+                        if (rows.empty()) { cb(htmlError(404, "Transfer not found")); return; }
+                        const auto& r = rows[0];
+                        companyId = r["company_id"].is_null() ? 1 : r["company_id"].as<int>();
+                        partnerId = r["partner_id"].is_null() ? 0 : r["partner_id"].as<int>();
+
+                        std::string code = safeStr(r["picking_type_code"]);
+
+                        // Location names
+                        std::string srcLoc, dstLoc;
+                        if (!r["location_id"].is_null()) {
+                            auto lrow = txn.exec(
+                                "SELECT complete_name FROM stock_location WHERE id=$1",
+                                pqxx::params{r["location_id"].as<int>()});
+                            if (!lrow.empty()) srcLoc = safeStr(lrow[0]["complete_name"]);
+                        }
+                        if (!r["location_dest_id"].is_null()) {
+                            auto lrow = txn.exec(
+                                "SELECT complete_name FROM stock_location WHERE id=$1",
+                                pqxx::params{r["location_dest_id"].as<int>()});
+                            if (!lrow.empty()) dstLoc = safeStr(lrow[0]["complete_name"]);
+                        }
+
+                        vars["document_title"]  = (code == "incoming") ? "Receipt" :
+                                                  (code == "outgoing") ? "Delivery Order" : "Internal Transfer";
+                        vars["doc_number"]      = safeStr(r["name"]);
+                        vars["doc_date"]        = ymdToDisplay(safeStr(r["scheduled_date"]));
+                        vars["origin"]          = safeStr(r["origin"]);
+                        vars["source_location"] = srcLoc;
+                        vars["dest_location"]   = dstLoc;
+
+                        // Lines
+                        auto lrows = txn.exec(
+                            "SELECT COALESCE(pp.name, sm.name, '') AS product_name, "
+                            "sm.product_uom_qty AS demand, "
+                            "sm.quantity AS done, "
+                            "COALESCE(uu.name,'') AS uom "
+                            "FROM stock_move sm "
+                            "LEFT JOIN product_product pp ON pp.id = sm.product_id "
+                            "LEFT JOIN uom_uom uu ON uu.id = sm.product_uom_id "
+                            "WHERE sm.picking_id = $1 ORDER BY sm.id",
+                            pqxx::params{recordId});
+                        for (const auto& lr : lrows) {
+                            std::map<std::string, std::string> line;
+                            line["product_name"] = safeStr(lr["product_name"]);
+                            line["demand"]       = fmtMoneyField(lr["demand"]);
+                            line["done"]         = fmtMoneyField(lr["done"]);
+                            line["uom"]          = safeStr(lr["uom"]);
+                            lines.push_back(line);
+                        }
+                    } else {
+                        cb(htmlError(404, "Unsupported model: " + model));
+                        return;
+                    }
+
+                    // ---- Company info ----
+                    auto crows = txn.exec(
+                        "SELECT rc.name, COALESCE(rc.phone,'') AS phone, COALESCE(rc.email,'') AS email, "
+                        "COALESCE(rc.website,'') AS website, "
+                        "COALESCE(rp.street,'') AS street, COALESCE(rp.city,'') AS city "
+                        "FROM res_company rc "
+                        "LEFT JOIN res_partner rp ON rp.id = rc.partner_id "
+                        "WHERE rc.id = $1",
+                        pqxx::params{companyId});
+
+                    std::string companyStreet, companyCity;
+                    if (!crows.empty()) {
+                        vars["company_name"]    = safeStr(crows[0]["name"]);
+                        vars["company_phone"]   = safeStr(crows[0]["phone"]);
+                        vars["company_email"]   = safeStr(crows[0]["email"]);
+                        vars["company_website"] = safeStr(crows[0]["website"]);
+                        companyStreet           = safeStr(crows[0]["street"]);
+                        companyCity             = safeStr(crows[0]["city"]);
+                    } else {
+                        vars["company_name"]    = "";
+                        vars["company_phone"]   = "";
+                        vars["company_email"]   = "";
+                        vars["company_website"] = "";
+                    }
+
+                    // ---- Load report config params ----
+                    std::string regNumber   = loadCfg("report.reg_number");
+                    std::string addr1       = loadCfg("report.addr1");
+                    std::string addr2       = loadCfg("report.addr2");
+                    std::string addr3       = loadCfg("report.addr3");
+                    std::string cityCountry = loadCfg("report.city_country");
+                    std::string currCode    = loadCfg("report.currency_code", "MYR");
+                    std::string ptDays      = loadCfg("report.payment_term_days", "30");
+                    std::string bankAccName = loadCfg("report.bank.account_name");
+                    std::string bankAccNo   = loadCfg("report.bank.account_no");
+                    std::string bankName    = loadCfg("report.bank.bank_name");
+                    std::string bankAddr    = loadCfg("report.bank.bank_address");
+                    std::string bankSwift   = loadCfg("report.bank.swift_code");
+
+                    vars["company_reg"]          = regNumber;
+                    vars["company_addr1"]        = addr1.empty() ? companyStreet : addr1;
+                    vars["company_addr2"]        = addr2;
+                    vars["company_addr3"]        = addr3;
+                    vars["company_city_country"] = cityCountry.empty() ? companyCity : cityCountry;
+                    vars["currency_code"]        = currCode;
+                    vars["payment_term_days"]    = ptDays;
+                    vars["bank_account_name"]    = bankAccName;
+                    vars["bank_account_no"]      = bankAccNo;
+                    vars["bank_name"]            = bankName;
+                    vars["bank_address"]         = bankAddr;
+                    vars["bank_swift"]           = bankSwift;
+
+                    // ---- Partner info ----
+                    if (partnerId > 0) {
+                        auto prows = txn.exec(
+                            "SELECT COALESCE(name,'') AS name, COALESCE(street,'') AS street, "
+                            "COALESCE(city,'') AS city, COALESCE(phone,'') AS phone "
+                            "FROM res_partner WHERE id=$1",
+                            pqxx::params{partnerId});
+                        if (!prows.empty()) {
+                            vars["partner_name"]   = safeStr(prows[0]["name"]);
+                            vars["partner_street"] = safeStr(prows[0]["street"]);
+                            vars["partner_city"]   = safeStr(prows[0]["city"]);
+                            vars["partner_phone"]  = safeStr(prows[0]["phone"]);
+                        }
+                    } else {
+                        vars["partner_name"]   = "";
+                        vars["partner_street"] = "";
+                        vars["partner_city"]   = "";
+                        vars["partner_phone"]  = "";
+                    }
+
+                    std::string rendered = TemplateRenderer::render(tplHtml, vars, lines);
+
+                    auto resp = drogon::HttpResponse::newHttpResponse();
+                    resp->setStatusCode(drogon::k200OK);
+                    resp->setContentTypeCode(drogon::CT_TEXT_HTML);
+                    resp->setBody(rendered);
+                    cb(resp);
+
+                } catch (const std::exception& ex) {
+                    cb(htmlError(500, std::string("Internal error: ") + ex.what()));
+                }
+            },
+            {drogon::Get}
+        );
+    }
+
+    void initialize() override {
+        ensureSchema_();
+        seedTemplates_();
+        seedConfigParams_();
+        seedMenuEntries_();
+    }
+
+private:
+    core::ModelFactory&     models_;
+    core::ServiceFactory&   services_;
+    core::ViewModelFactory& viewModels_;
+    core::ViewFactory&      views_;
+    std::shared_ptr<DbConnection> db_;
+
+    void ensureSchema_() {
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        txn.exec(
+            "CREATE TABLE IF NOT EXISTS ir_report_template ("
+            "  id            SERIAL PRIMARY KEY, "
+            "  name          TEXT NOT NULL, "
+            "  model         TEXT NOT NULL, "
+            "  template_html TEXT NOT NULL DEFAULT '', "
+            "  paper_format  TEXT NOT NULL DEFAULT 'A4', "
+            "  orientation   TEXT NOT NULL DEFAULT 'portrait', "
+            "  active        BOOLEAN NOT NULL DEFAULT true "
+            ")");
+        txn.commit();
+    }
+
+    void seedTemplates_() {
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        // Use pqxx params to safely insert large HTML templates
+        auto seed = [&](int id, const std::string& name, const std::string& model,
+                        const std::string& html, const std::string& paper, const std::string& orient)
+        {
+            txn.exec(
+                "INSERT INTO ir_report_template (id, name, model, template_html, paper_format, orientation) "
+                "VALUES ($1,$2,$3,$4,$5,$6) "
+                "ON CONFLICT (id) DO UPDATE SET "
+                "template_html=EXCLUDED.template_html, "
+                "paper_format=EXCLUDED.paper_format, "
+                "orientation=EXCLUDED.orientation",
+                pqxx::params{id, name, model, html, paper, orient});
+        };
+
+        seed(1, "Sales Order",    "sale.order",     SALE_ORDER_TEMPLATE,    "A4", "portrait");
+        seed(2, "Invoice",        "account.move",   INVOICE_TEMPLATE,       "A4", "portrait");
+        seed(3, "Purchase Order", "purchase.order", PURCHASE_ORDER_TEMPLATE,"A4", "portrait");
+        seed(4, "Delivery Order", "stock.picking",  STOCK_PICKING_TEMPLATE, "A4", "portrait");
+
+        txn.exec("SELECT setval('ir_report_template_id_seq', 4, true)");
+        txn.commit();
+    }
+
+    void seedConfigParams_() {
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        txn.exec(R"(
+            INSERT INTO ir_config_parameter (key, value) VALUES
+                ('report.reg_number',        ''),
+                ('report.addr1',             ''),
+                ('report.addr2',             ''),
+                ('report.addr3',             ''),
+                ('report.city_country',      ''),
+                ('report.currency_code',     'MYR'),
+                ('report.payment_term_days', '30'),
+                ('report.bank.account_name', ''),
+                ('report.bank.account_no',   ''),
+                ('report.bank.bank_name',    ''),
+                ('report.bank.bank_address', ''),
+                ('report.bank.swift_code',   '')
+            ON CONFLICT (key) DO NOTHING
+        )");
+        txn.commit();
+    }
+
+    void seedMenuEntries_() {
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        // Action id=30: Document Templates
+        txn.exec(
+            "INSERT INTO ir_act_window (id, name, res_model, view_mode, path) VALUES "
+            "(30, 'Document Templates', 'ir.report.template', 'list,form', 'report-templates') "
+            "ON CONFLICT (id) DO UPDATE SET "
+            "name=EXCLUDED.name, res_model=EXCLUDED.res_model, view_mode=EXCLUDED.view_mode");
+
+        // App tile: Settings (id=100)
+        txn.exec(
+            "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id, web_icon) VALUES "
+            "(100, 'Settings', NULL, 99, NULL, 'settings') "
+            "ON CONFLICT (id) DO NOTHING");
+
+        // Section under Settings (id=101)
+        txn.exec(
+            "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
+            "(101, 'Technical', 100, 10, NULL) "
+            "ON CONFLICT (id) DO NOTHING");
+
+        // Document Templates item (id=102)
+        txn.exec(
+            "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
+            "(102, 'Document Templates', 101, 10, 30) "
+            "ON CONFLICT (id) DO NOTHING");
+
+        txn.commit();
+    }
+};
+
+} // namespace odoo::modules::report

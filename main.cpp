@@ -10,6 +10,8 @@
 #include "modules/hr/HrModule.hpp"
 #include "modules/auth/AuthSignupModule.hpp"
 #include "modules/stock/StockModule.hpp"
+#include "modules/mail/MailModule.hpp"
+#include "modules/report/ReportModule.hpp"
 #include <csignal>
 #include <iostream>
 #include <memory>
@@ -44,6 +46,7 @@ int main(int, char**) {
     // Register modules in dependency order
     g_container->addModule<odoo::modules::base::BaseModule>();
     g_container->addModule<odoo::modules::auth::AuthModule>();
+    g_container->addModule<odoo::modules::mail::MailModule>();
     g_container->addModule<odoo::modules::ir::IrModule>();
     g_container->addModule<odoo::modules::account::AccountModule>();
     g_container->addModule<odoo::modules::uom::UomModule>();
@@ -53,6 +56,7 @@ int main(int, char**) {
     g_container->addModule<odoo::modules::hr::HrModule>();
     g_container->addModule<odoo::modules::auth::AuthSignupModule>();
     g_container->addModule<odoo::modules::stock::StockModule>();
+    g_container->addModule<odoo::modules::report::ReportModule>();
 
     try {
         std::cout << "[odoo-cpp] Booting modules...\n";

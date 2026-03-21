@@ -22,6 +22,7 @@
 #include "BaseView.hpp"
 #include "BaseViewModel.hpp"
 #include "DbConnection.hpp"
+#include "MailHelpers.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <memory>
@@ -525,9 +526,10 @@ public:
     explicit PurchaseOrderViewModel(std::shared_ptr<DbConnection> db)
         : PurchaseViewModel<PurchaseOrder>(std::move(db))
     {
-        REGISTER_METHOD("action_confirm",      handleActionConfirm)
-        REGISTER_METHOD("action_cancel",       handleActionCancel)
-        REGISTER_METHOD("action_create_bills", handleActionCreateBills)
+        REGISTER_METHOD("action_confirm",             handleActionConfirm)
+        REGISTER_METHOD("action_cancel",              handleActionCancel)
+        REGISTER_METHOD("action_create_bills",        handleActionCreateBills)
+        REGISTER_METHOD("action_create_down_payment", handleActionCreateDownPayment)
     }
 
     std::string modelName() const override { return "purchase.order"; }
@@ -611,6 +613,9 @@ private:
             }
         }
 
+        for (int id : ids)
+            odoo::modules::mail::postLog(txn, "purchase.order", id, 0,
+                "Purchase order confirmed.", "log_note");
         txn.commit();
         return true;
     }
@@ -628,6 +633,9 @@ private:
             "UPDATE purchase_order SET state = 'cancel', write_date = now() "
             "WHERE id = ANY($1::int[]) AND state = 'draft'",
             pqxx::params{purIdsArray(ids)});
+        for (int id : ids)
+            odoo::modules::mail::postLog(txn, "purchase.order", id, 0,
+                "Purchase order cancelled.", "log_note");
         txn.commit();
         return true;
     }
@@ -708,14 +716,15 @@ private:
             mp.append(amtTotal);
             mp.append(amtTotal);  // amount_residual
             mp.append(orderName); // ref
+            mp.append(ordId);     // purchase_id
 
             auto mvRow = txn.exec(
                 "INSERT INTO account_move "
                 "(move_type, state, date, journal_id, partner_id, "
                 " payment_term_id, company_id, currency_id, invoice_date, "
-                " amount_untaxed, amount_tax, amount_total, amount_residual, ref) "
+                " amount_untaxed, amount_tax, amount_total, amount_residual, ref, purchase_id) "
                 "VALUES ('in_invoice','draft',$6,$1,$2,$3,$4,$5,$6,"
-                "        $7,$8,$9,$10,$11) "
+                "        $7,$8,$9,$10,$11,$12) "
                 "RETURNING id",
                 mp);
             int moveId = mvRow[0][0].as<int>();
@@ -730,7 +739,7 @@ private:
             for (const auto& ln : lines) {
                 std::string lname = ln[0].c_str();
                 double      qty   = ln[1].as<double>();
-                // double   unit  = ln[2].as<double>();  // unused
+                double      unit  = ln[2].as<double>();
                 double      sub   = ln[3].as<double>();
                 double      tax   = ln[4].as<double>();
 
@@ -744,13 +753,14 @@ private:
                 el.append(lname);
                 if (partnerId > 0) el.append(partnerId); else el.append(nullptr);
                 el.append(qty);
+                el.append(unit);  // price_unit
                 el.append(sub);   // debit
                 el.append(0.0);   // credit
                 txn.exec(
                     "INSERT INTO account_move_line "
                     "(move_id, account_id, journal_id, company_id, date, "
-                    " name, partner_id, quantity, debit, credit) "
-                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                    " name, partner_id, quantity, price_unit, debit, credit) "
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
                     el);
 
                 // Tax line if any
@@ -799,6 +809,151 @@ private:
                 "UPDATE purchase_order SET invoice_status = 'billed', write_date = now() "
                 "WHERE id = $1",
                 pqxx::params{ordId});
+        }
+
+        txn.commit();
+        return true;
+    }
+
+    // ----------------------------------------------------------
+    // action_create_down_payment — create a partial advance bill
+    // kwargs: amount (numeric), note (optional string)
+    // ----------------------------------------------------------
+    nlohmann::json handleActionCreateDownPayment(const CallKwArgs& call) {
+        const auto ids = call.ids();
+        if (ids.empty()) return true;
+
+        double dpAmount = 0.0;
+        if (call.kwargs.contains("amount") && call.kwargs["amount"].is_number())
+            dpAmount = call.kwargs["amount"].get<double>();
+        if (dpAmount <= 0.0)
+            throw std::runtime_error("Down payment amount must be greater than zero");
+
+        std::string dpNote = "Down Payment";
+        if (call.kwargs.contains("note") && call.kwargs["note"].is_string())
+            dpNote = call.kwargs["note"].get<std::string>();
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        for (int ordId : ids) {
+            auto r = txn.exec(
+                "SELECT state, partner_id, payment_term_id, company_id, "
+                "       currency_id, amount_total, name "
+                "FROM purchase_order WHERE id = $1",
+                pqxx::params{ordId});
+            if (r.empty()) throw std::runtime_error("Purchase order not found");
+
+            std::string state      = r[0][0].c_str();
+            int         partnerId  = r[0][1].is_null() ? 0 : r[0][1].as<int>();
+            int         payTermId  = r[0][2].is_null() ? 0 : r[0][2].as<int>();
+            int         companyId  = r[0][3].as<int>();
+            int         currencyId = r[0][4].is_null() ? 0 : r[0][4].as<int>();
+            std::string orderName  = r[0][6].c_str();
+
+            if (state != "purchase")
+                throw std::runtime_error("Only confirmed orders can have a down payment");
+
+            // Find journals/accounts
+            auto jrow = txn.exec(
+                "SELECT id FROM account_journal "
+                "WHERE type = 'purchase' AND company_id = $1 AND active = TRUE "
+                "ORDER BY id LIMIT 1", pqxx::params{companyId});
+            if (jrow.empty()) throw std::runtime_error("No purchase journal found");
+            int journalId = jrow[0][0].as<int>();
+
+            auto expRow = txn.exec(
+                "SELECT id FROM account_account "
+                "WHERE account_type IN ('expense','expense_direct_cost') "
+                "  AND company_id = $1 AND active = TRUE ORDER BY code LIMIT 1",
+                pqxx::params{companyId});
+            if (expRow.empty()) throw std::runtime_error("No expense account found");
+            int expAccId = expRow[0][0].as<int>();
+
+            auto apRow = txn.exec(
+                "SELECT id FROM account_account "
+                "WHERE account_type = 'liability_payable' "
+                "  AND company_id = $1 AND active = TRUE ORDER BY code LIMIT 1",
+                pqxx::params{companyId});
+            if (apRow.empty()) throw std::runtime_error("No payable account found");
+            int apAccId = apRow[0][0].as<int>();
+
+            std::string today = purCurrentDate();
+            std::string ref   = dpNote + " - " + orderName;
+
+            // Create the advance bill header
+            pqxx::params mp;
+            mp.append(journalId);
+            if (partnerId  > 0) mp.append(partnerId);  else mp.append(nullptr);
+            if (payTermId  > 0) mp.append(payTermId);  else mp.append(nullptr);
+            mp.append(companyId);
+            if (currencyId > 0) mp.append(currencyId); else mp.append(nullptr);
+            mp.append(today);      // $6 — date and invoice_date
+            mp.append(dpAmount);   // $7 — amount_untaxed
+            mp.append(0.0);        // $8 — amount_tax
+            mp.append(dpAmount);   // $9 — amount_total
+            mp.append(dpAmount);   // $10 — amount_residual
+            mp.append(ref);        // $11 — ref
+            mp.append(ordId);      // $12 — purchase_id
+
+            auto mvRow = txn.exec(
+                "INSERT INTO account_move "
+                "(move_type, state, date, journal_id, partner_id, "
+                " payment_term_id, company_id, currency_id, invoice_date, "
+                " amount_untaxed, amount_tax, amount_total, amount_residual, ref, purchase_id) "
+                "VALUES ('in_invoice','draft',$6,$1,$2,$3,$4,$5,$6,"
+                "        $7,$8,$9,$10,$11,$12) "
+                "RETURNING id",
+                mp);
+            int moveId = mvRow[0][0].as<int>();
+
+            // Single expense line for the down payment amount
+            pqxx::params el;
+            el.append(moveId);
+            el.append(expAccId);
+            el.append(journalId);
+            el.append(companyId);
+            el.append(today);
+            el.append(ref);
+            if (partnerId > 0) el.append(partnerId); else el.append(nullptr);
+            el.append(1.0);         // qty
+            el.append(dpAmount);    // price_unit
+            el.append(dpAmount);    // debit
+            el.append(0.0);         // credit
+            txn.exec(
+                "INSERT INTO account_move_line "
+                "(move_id, account_id, journal_id, company_id, date, "
+                " name, partner_id, quantity, price_unit, debit, credit) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+                el);
+
+            // Payable (credit) line
+            pqxx::params pl;
+            pl.append(moveId);
+            pl.append(apAccId);
+            pl.append(journalId);
+            pl.append(companyId);
+            pl.append(today);
+            pl.append(ref);
+            if (partnerId > 0) pl.append(partnerId); else pl.append(nullptr);
+            pl.append(1.0);
+            pl.append(0.0);
+            pl.append(dpAmount);
+            txn.exec(
+                "INSERT INTO account_move_line "
+                "(move_id, account_id, journal_id, company_id, date, "
+                " name, partner_id, quantity, debit, credit) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                pl);
+
+            // Mark PO as partially billed
+            txn.exec(
+                "UPDATE purchase_order SET invoice_status = 'to invoice', write_date = now() "
+                "WHERE id = $1 AND invoice_status = 'nothing'",
+                pqxx::params{ordId});
+
+            odoo::modules::mail::postLog(txn, "purchase.order", ordId, 0,
+                "Down payment bill created: " + ref, "log_note");
         }
 
         txn.commit();
@@ -1034,6 +1189,11 @@ private:
                 write_date       TIMESTAMP DEFAULT now()
             )
         )");
+
+        // Add purchase_id FK to account_move if not already present
+        txn.exec(
+            "ALTER TABLE account_move "
+            "ADD COLUMN IF NOT EXISTS purchase_id INTEGER REFERENCES purchase_order(id)");
 
         txn.exec(R"(
             CREATE TABLE IF NOT EXISTS purchase_order_line (

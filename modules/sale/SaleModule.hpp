@@ -20,6 +20,7 @@
 #include "Factories.hpp"
 #include "BaseModel.hpp"
 #include "BaseView.hpp"
+#include "MailHelpers.hpp"
 #include "BaseViewModel.hpp"
 #include "DbConnection.hpp"
 #include <nlohmann/json.hpp>
@@ -624,6 +625,9 @@ private:
             }
         }
 
+        for (int id : ids)
+            odoo::modules::mail::postLog(txn, "sale.order", id, 0,
+                "Sales order confirmed.", "log_note");
         txn.commit();
         return true;
     }
@@ -641,6 +645,9 @@ private:
             "UPDATE sale_order SET state = 'cancel', write_date = now() "
             "WHERE id = ANY($1::int[]) AND state = 'draft'",
             pqxx::params{saleIdsArray(ids)});
+        for (int id : ids)
+            odoo::modules::mail::postLog(txn, "sale.order", id, 0,
+                "Sales order cancelled.", "log_note");
         txn.commit();
         return true;
     }

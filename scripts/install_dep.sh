@@ -57,8 +57,10 @@ sudo apt-get install -y \
     libc-ares-dev
 
 # Drogon optional backends (MySQL, SQLite, Redis)
+#libmysqlclient-dev \ # Replaced by libmariadb-dev-compat and libmariadb-dev, which provide the same API but are more up to date.
 sudo apt-get install -y \
-    libmysqlclient-dev \
+    libmariadb-dev-compat \
+    libmariadb-dev \
     libsqlite3-dev \
     libhiredis-dev
 

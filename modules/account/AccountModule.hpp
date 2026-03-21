@@ -18,6 +18,7 @@
 #include "BaseViewModel.hpp"
 #include "DbConnection.hpp"
 #include "AccountViews.hpp"
+#include "MailHelpers.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <memory>
@@ -707,6 +708,8 @@ private:
                 "SET state = 'posted', name = $1, write_date = now() "
                 "WHERE id = $2",
                 pqxx::params{ss.str(), id});
+            odoo::modules::mail::postLog(txn, "account.move", id, 0,
+                "Invoice posted.", "log_note");
         }
 
         txn.commit();
@@ -723,6 +726,9 @@ private:
             "UPDATE account_move SET state = 'cancel', write_date = now() "
             "WHERE id = ANY($1::int[]) AND state = 'posted'",
             pqxx::params{idsArray_(ids)});
+        for (int id : ids)
+            odoo::modules::mail::postLog(txn, "account.move", id, 0,
+                "Invoice cancelled.", "log_note");
         txn.commit();
         return true;
     }
@@ -778,6 +784,9 @@ private:
             "UPDATE account_move SET state = 'draft', name = '/', write_date = now() "
             "WHERE id = ANY($1::int[]) AND state = 'cancel'",
             pqxx::params{idsArray_(ids)});
+        for (int id : ids)
+            odoo::modules::mail::postLog(txn, "account.move", id, 0,
+                "Reset to draft.", "log_note");
         txn.commit();
         return true;
     }
@@ -1324,12 +1333,16 @@ private:
         pqxx::work txn{conn.get()};
 
         txn.exec(R"(
-            INSERT INTO ir_act_window (id, name, res_model, view_mode, path, context) VALUES
-                (4, 'Chart of Accounts', 'account.account', 'list,form', 'accounts', '{}'),
-                (5, 'Journals',          'account.journal', 'list,form', 'journals', '{}'),
-                (6, 'Journal Entries',   'account.move',    'list,form', 'moves',    '{}'),
-                (7, 'Payments',          'account.payment', 'list,form', 'payments', '{}')
-            ON CONFLICT (id) DO NOTHING
+            INSERT INTO ir_act_window (id, name, res_model, view_mode, path, context, domain) VALUES
+                (4, 'Chart of Accounts',  'account.account', 'list,form', 'accounts',       '{}', NULL),
+                (5, 'Journals',           'account.journal', 'list,form', 'journals',        '{}', NULL),
+                (6, 'Journal Entries',    'account.move',    'list,form', 'moves',           '{}', NULL),
+                (7, 'Payments',           'account.payment', 'list,form', 'payments',        '{}', NULL),
+                (8, 'Customer Invoices',  'account.move',    'list,form', 'out-invoices',    '{}', '[["move_type","=","out_invoice"]]'),
+                (9, 'Vendor Bills',       'account.move',    'list,form', 'in-invoices',     '{}', '[["move_type","=","in_invoice"]]')
+            ON CONFLICT (id) DO UPDATE
+                SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
+                    view_mode=EXCLUDED.view_mode, domain=EXCLUDED.domain
         )");
         txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
 
@@ -1343,19 +1356,33 @@ private:
             ON CONFLICT (id) DO NOTHING
         )");
 
-        // Level 2: Customers dropdown
+        // Level 2: Customers dropdown (id=15 Invoices, id=16 Payments)
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-                (15, 'Payments', 12, 10, 7)
-            ON CONFLICT (id) DO NOTHING
+                (15, 'Invoices', 12, 10, 8),
+                (16, 'Payments', 12, 20, 7)
+            ON CONFLICT (id) DO UPDATE
+                SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                    sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
         )");
 
-        // Level 2: Configuration dropdown
+        // Level 2: Vendors dropdown (id=17 Bills)
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-                (16, 'Chart of Accounts', 14, 10, 4),
-                (17, 'Journals',          14, 20, 5)
-            ON CONFLICT (id) DO NOTHING
+                (17, 'Bills', 13, 10, 9)
+            ON CONFLICT (id) DO UPDATE
+                SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                    sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
+        )");
+
+        // Level 2: Configuration dropdown (id=18, 19)
+        txn.exec(R"(
+            INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
+                (18, 'Chart of Accounts', 14, 10, 4),
+                (19, 'Journals',          14, 20, 5)
+            ON CONFLICT (id) DO UPDATE
+                SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                    sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
         )");
         txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");
 

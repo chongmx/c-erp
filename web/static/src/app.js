@@ -75,9 +75,13 @@ class ListView extends Component {
         try {
             const action = this.props.action;
             const cols   = this.columns.map(c => c.name);
+            let domain   = action.domain || [];
+            if (typeof domain === 'string') {
+                try { domain = JSON.parse(domain); } catch(_) { domain = []; }
+            }
             const recs   = await RpcService.call(
                 action.res_model, 'search_read',
-                [[]], { fields: cols, limit: 80 });
+                [domain], { fields: cols, limit: 80 });
             this.state.records = Array.isArray(recs) ? recs : [];
         } catch (e) {
             this.state.error = e.message;
@@ -499,10 +503,101 @@ class FormView extends Component {
 }
 
 // ----------------------------------------------------------------
+// ChatterPanel — shared audit-log / message feed component
+//   Props:
+//     model      {string}  — res.model string (e.g. 'sale.order')
+//     recordId   {number}  — record id (0 / null → don't load)
+//     refreshKey {number?} — change this to force a reload
+// ----------------------------------------------------------------
+class ChatterPanel extends Component {
+    static props = ['model', 'recordId', 'refreshKey?'];
+    static template = xml`
+        <div class="chatter-panel">
+            <div class="chatter-head"><span>Log</span></div>
+            <t t-if="props.recordId">
+                <t t-if="state.loading">
+                    <div class="chatter-loading">Loading…</div>
+                </t>
+                <t t-else="">
+                    <div class="chatter-feed">
+                        <t t-foreach="state.messages" t-as="msg" t-key="msg.id">
+                            <div class="chatter-entry">
+                                <div class="chatter-avatar" t-esc="avatarChar(msg.author_name)"/>
+                                <div class="chatter-body">
+                                    <span class="chatter-author" t-esc="msg.author_name"/>
+                                    <span class="chatter-date" t-esc="msg.date"/>
+                                    <div class="chatter-msg" t-esc="msg.body"/>
+                                </div>
+                            </div>
+                        </t>
+                        <t t-if="state.messages.length === 0">
+                            <div class="chatter-empty">No log entries yet.</div>
+                        </t>
+                    </div>
+                    <div class="chatter-compose">
+                        <textarea class="chatter-input"
+                                  placeholder="Log a note…"
+                                  t-att-value="state.noteText"
+                                  t-on-input="onNoteInput"/>
+                        <button class="btn btn-sm" t-on-click="onPost"
+                                t-att-disabled="state.posting ? true : undefined">
+                            <t t-if="state.posting">Posting…</t>
+                            <t t-else="">Post</t>
+                        </button>
+                    </div>
+                </t>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({ messages: [], loading: false, noteText: '', posting: false });
+        const { onMounted, onWillUpdateProps } = owl;
+        onMounted(() => { if (this.props.recordId) this.load(this.props.recordId); });
+        onWillUpdateProps(np => {
+            if (np.recordId !== this.props.recordId ||
+                np.refreshKey !== this.props.refreshKey) {
+                if (np.recordId) this.load(np.recordId);
+            }
+        });
+    }
+
+    async load(recordId) {
+        this.state.loading = true;
+        try {
+            const msgs = await RpcService.call('mail.message', 'search_read',
+                [[['res_model', '=', this.props.model], ['res_id', '=', recordId]]],
+                { fields: ['body', 'author_name', 'subtype', 'date'], limit: 50 });
+            this.state.messages = Array.isArray(msgs) ? msgs : [];
+        } catch (e) { console.error('ChatterPanel load:', e); }
+        this.state.loading = false;
+    }
+
+    onNoteInput(e) { this.state.noteText = e.target.value; }
+
+    async onPost() {
+        const body = this.state.noteText.trim();
+        if (!body || !this.props.recordId) return;
+        this.state.posting = true;
+        try {
+            const uid = RpcService.getSession().uid || 0;
+            await RpcService.call('mail.message', 'create',
+                [{ res_model: this.props.model, res_id: this.props.recordId,
+                   author_id: uid, body, subtype: 'note' }], {});
+            this.state.noteText = '';
+            await this.load(this.props.recordId);
+        } catch (e) { console.error('ChatterPanel post:', e); }
+        this.state.posting = false;
+    }
+
+    avatarChar(name) { return name ? name[0].toUpperCase() : 'S'; }
+}
+
+// ----------------------------------------------------------------
 // InvoiceFormView — Odoo 14-style Invoice (account.move) form
 // ----------------------------------------------------------------
 class InvoiceFormView extends Component {
-    static components = { DatePicker };
+    static components = { DatePicker, ChatterPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -528,6 +623,9 @@ class InvoiceFormView extends Component {
                         </t>
                         <t t-if="isCancelled">
                             <button class="btn"             t-on-click.stop="onResetDraft">Reset to Draft</button>
+                        </t>
+                        <t t-if="!isNew">
+                            <button class="btn" t-on-click.stop="onPrint">Print</button>
                         </t>
                         <button class="btn" t-on-click.stop="onBack">Back</button>
                     </div>
@@ -726,6 +824,13 @@ class InvoiceFormView extends Component {
                         </div>
                     </div>
                 </div>
+
+                <!-- Chatter -->
+                <t t-if="!isNew">
+                    <ChatterPanel model="'account.move'"
+                                  recordId="props.recordId"
+                                  refreshKey="state.chatRefreshKey"/>
+                </t>
             </t>
         </div>
     `;
@@ -744,6 +849,8 @@ class InvoiceFormView extends Component {
         return '';
     }
 
+    get isNew() { return !this.props.recordId; }
+
     setup() {
         this.state = useState({
             loading:        true,
@@ -754,6 +861,7 @@ class InvoiceFormView extends Component {
             partners:       [],
             journals:       [],
             paymentTerms:   [],
+            chatRefreshKey: 0,
         });
         this._nextKey   = 1;
         this._lineDefaults = {};   // account_id, journal_id, company_id, date, partner_id
@@ -1030,6 +1138,7 @@ class InvoiceFormView extends Component {
                 await this.syncLines(id);
             }
             await RpcService.call('account.move', 'action_post', [[this.state.record.id]], {});
+            this.state.chatRefreshKey++;
             await this.load();
         } catch (e) { this.state.error = e.message; }
     }
@@ -1037,6 +1146,7 @@ class InvoiceFormView extends Component {
     async onCancel() {
         try {
             await RpcService.call('account.move', 'button_cancel', [[this.state.record.id]], {});
+            this.state.chatRefreshKey++;
             await this.load();
         } catch (e) { this.state.error = e.message; }
     }
@@ -1044,18 +1154,21 @@ class InvoiceFormView extends Component {
     async onResetDraft() {
         try {
             await RpcService.call('account.move', 'button_draft', [[this.state.record.id]], {});
+            this.state.chatRefreshKey++;
             await this.load();
         } catch (e) { this.state.error = e.message; }
     }
 
     onBack() { this.props.onBack(); }
+
+    onPrint() { window.open('/report/html/account.move/' + this.state.record.id, '_blank'); }
 }
 
 // ----------------------------------------------------------------
 // SaleOrderFormView — Odoo 14-style Sales Order form
 // ----------------------------------------------------------------
 class SaleOrderFormView extends Component {
-    static components = { DatePicker, InvoiceFormView };
+    static components = { DatePicker, InvoiceFormView, ChatterPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -1085,6 +1198,7 @@ class SaleOrderFormView extends Component {
                         <t t-else="">
                             <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
                             <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
+                            <button class="btn" t-on-click.stop="onPrint">Print</button>
                         </t>
                         <button class="btn" t-on-click.stop="onBack">Discard</button>
                     </div>
@@ -1354,6 +1468,13 @@ class SaleOrderFormView extends Component {
                         </div>
                     </t>
                 </div>
+
+                <!-- Chatter -->
+                <t t-if="!state.isNew">
+                    <ChatterPanel model="'sale.order'"
+                                  recordId="props.recordId"
+                                  refreshKey="state.chatRefreshKey"/>
+                </t>
             </t>
             </t> <!-- end t-else: invoice mode off -->
         </div>
@@ -1378,6 +1499,7 @@ class SaleOrderFormView extends Component {
             invoiceCount:   0,
             invoiceIds:     [],
             invoiceMode:    null,   // null | { invoiceId: N }
+            chatRefreshKey: 0,
         });
         this._nextKey = 1;
         onMounted(() => this.load());
@@ -1699,6 +1821,7 @@ class SaleOrderFormView extends Component {
                 await this.syncLines(id);
             }
             await RpcService.call('sale.order', 'action_confirm', [[id]], {});
+            this.state.chatRefreshKey++;
             this.props.onBack();
         } catch (e) { this.state.error = e.message; }
     }
@@ -1707,6 +1830,7 @@ class SaleOrderFormView extends Component {
         try {
             await RpcService.call('sale.order', 'action_cancel',
                 [[this.state.record.id]], {});
+            this.state.chatRefreshKey++;
             this.state.record.state = 'cancel';
         } catch (e) { this.state.error = e.message; }
     }
@@ -1738,13 +1862,15 @@ class SaleOrderFormView extends Component {
     closeInvoiceView() {
         this.state.invoiceMode = null;
     }
+
+    onPrint() { window.open('/report/html/sale.order/' + this.state.record.id, '_blank'); }
 }
 
 // ----------------------------------------------------------------
 // PurchaseOrderFormView — Odoo 14-style Purchase Order form
 // ----------------------------------------------------------------
 class PurchaseOrderFormView extends Component {
-    static components = { DatePicker };
+    static components = { DatePicker, ChatterPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -1766,6 +1892,7 @@ class PurchaseOrderFormView extends Component {
                         <t t-else="">
                             <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
                             <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
+                            <button class="btn" t-on-click.stop="onPrint">Print</button>
                         </t>
                         <button class="btn" t-on-click.stop="onBack">Discard</button>
                     </div>
@@ -1778,6 +1905,10 @@ class PurchaseOrderFormView extends Component {
                     <t t-if="showConfirm">
                         <button class="btn btn-primary so-wf-btn" t-on-click.stop="onConfirm">Confirm Order</button>
                     </t>
+                    <t t-if="showBillActions">
+                        <button class="btn so-wf-btn" t-on-click.stop="onCreateBill">Create Bill</button>
+                        <button class="btn so-wf-btn" t-on-click.stop="onToggleDownPaymentForm">Down Payment</button>
+                    </t>
                     <t t-if="showCancelBtn">
                         <button class="btn ghost so-wf-btn" t-on-click.stop="onCancel">Cancel</button>
                     </t>
@@ -1788,6 +1919,22 @@ class PurchaseOrderFormView extends Component {
                     <div t-attf-class="so-step{{stepClass('done')}}">Done</div>
                 </div>
             </div>
+
+            <!-- Down payment inline form -->
+            <t t-if="state.dpFormOpen">
+                <div class="dp-form-bar">
+                    <span class="dp-form-title">Down Payment</span>
+                    <input type="number" class="form-input dp-amount-input" placeholder="Amount"
+                           t-att-value="state.dpAmount"
+                           t-on-input="onDpAmountInput"/>
+                    <input type="text" class="form-input dp-note-input" placeholder="Note"
+                           t-att-value="state.dpNote"
+                           t-on-input="onDpNoteInput"/>
+                    <button class="btn btn-primary" t-on-click.stop="onSubmitDownPayment">Create</button>
+                    <button class="btn" t-on-click.stop="onToggleDownPaymentForm">Cancel</button>
+                    <span t-if="state.dpError" class="dp-error" t-esc="state.dpError"/>
+                </div>
+            </t>
 
             <t t-if="state.loading">
                 <div class="loading">Loading…</div>
@@ -1801,9 +1948,13 @@ class PurchaseOrderFormView extends Component {
                     <div class="so-card-head">
                         <h1 class="so-doc-id" t-esc="state.record.name || 'New RFQ'"/>
                         <div class="so-stat-btns">
-                            <div class="so-stat-btn">
+                            <div class="so-stat-btn" t-on-click.stop="onOpenReceipts">
                                 <span class="so-stat-num" t-esc="state.receiptCount"/>
                                 <span class="so-stat-lbl">Receipts</span>
+                            </div>
+                            <div class="so-stat-btn" t-on-click.stop="onOpenBills">
+                                <span class="so-stat-num" t-esc="state.billCount"/>
+                                <span class="so-stat-lbl">Bills</span>
                             </div>
                         </div>
                     </div>
@@ -1996,6 +2147,13 @@ class PurchaseOrderFormView extends Component {
                         </div>
                     </t>
                 </div>
+
+                <!-- Chatter -->
+                <t t-if="!state.isNew">
+                    <ChatterPanel model="'purchase.order'"
+                                  recordId="props.recordId"
+                                  refreshKey="state.chatRefreshKey"/>
+                </t>
             </t>
         </div>
     `;
@@ -2015,7 +2173,12 @@ class PurchaseOrderFormView extends Component {
             currencies:     [],
             products:       [],
             uoms:           [],
-            receiptCount:   0,
+            receiptCount:     0,
+            billCount:        0,
+            dpFormOpen:       false,
+            dpAmount:         '',
+            dpNote:           'Down Payment',
+            chatRefreshKey:   0,
         });
         this._nextKey = 1;
         onMounted(() => this.load());
@@ -2024,6 +2187,12 @@ class PurchaseOrderFormView extends Component {
     get showConfirm() {
         const s = this.state.record.state;
         return this.state.isNew || s === 'draft';
+    }
+
+    get showBillActions() {
+        return !this.state.isNew &&
+               (this.state.record.state === 'purchase' || this.state.record.state === 'done') &&
+               this.state.record.invoice_status !== 'billed';
     }
 
     get showCancelBtn() {
@@ -2059,6 +2228,12 @@ class PurchaseOrderFormView extends Component {
                         [[['purchase_id', '=', this.props.recordId]]],
                         { fields: ['id'], limit: 500 });
                     this.state.receiptCount = Array.isArray(picks) ? picks.length : 0;
+                } catch (_) {}
+                try {
+                    const bills = await RpcService.call('account.move', 'search_read',
+                        [[['purchase_id', '=', this.props.recordId], ['move_type', '=', 'in_invoice']]],
+                        { fields: ['id'], limit: 500 });
+                    this.state.billCount = Array.isArray(bills) ? bills.length : 0;
                 } catch (_) {}
             }
         } catch (e) {
@@ -2281,6 +2456,7 @@ class PurchaseOrderFormView extends Component {
                 await this.syncLines(id);
             }
             await RpcService.call('purchase.order', 'action_confirm', [[id]], {});
+            this.state.chatRefreshKey++;
             this.props.onBack();
         } catch (e) { this.state.error = e.message; }
     }
@@ -2288,6 +2464,7 @@ class PurchaseOrderFormView extends Component {
     async onCancel() {
         try {
             await RpcService.call('purchase.order', 'action_cancel', [[this.state.record.id]], {});
+            this.state.chatRefreshKey++;
             this.state.record.state = 'cancel';
         } catch (e) { this.state.error = e.message; }
     }
@@ -2296,13 +2473,59 @@ class PurchaseOrderFormView extends Component {
 
     setDateOrder(v)   { this.state.record.date_order   = v; }
     setDatePlanned(v) { this.state.record.date_planned = v; }
+
+    onPrint() { window.open('/report/html/purchase.order/' + this.state.record.id, '_blank'); }
+
+    async onCreateBill() {
+        try {
+            await RpcService.call('purchase.order', 'action_create_bills',
+                [[this.state.record.id]], {});
+            await this.load();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    onToggleDownPaymentForm() {
+        this.state.dpFormOpen = !this.state.dpFormOpen;
+        this.state.dpAmount   = '';
+        this.state.dpNote     = 'Down Payment';
+        this.state.dpError    = '';
+    }
+
+    onDpAmountInput(ev) { this.state.dpAmount = ev.target.value; }
+    onDpNoteInput(ev)   { this.state.dpNote   = ev.target.value; }
+
+    async onSubmitDownPayment() {
+        const amount = parseFloat(this.state.dpAmount);
+        if (!amount || amount <= 0) {
+            this.state.dpError = 'Enter a valid amount.';
+            return;
+        }
+        try {
+            await RpcService.call('purchase.order', 'action_create_down_payment',
+                [[this.state.record.id]], { amount, note: this.state.dpNote });
+            this.state.dpFormOpen = false;
+            await this.load();
+        } catch (e) { this.state.dpError = e.message; }
+    }
+
+    onOpenReceipts() {
+        if (!this.props.recordId) return;
+        this.props.onNavigate?.('stock.picking',
+            [['purchase_id', '=', this.props.recordId]]);
+    }
+
+    onOpenBills() {
+        if (!this.props.recordId) return;
+        this.props.onNavigate?.('account.move',
+            [['purchase_id', '=', this.props.recordId], ['move_type', '=', 'in_invoice']]);
+    }
 }
 
 // ----------------------------------------------------------------
 // TransferFormView — stock.picking detail (Odoo 14-style)
 // ----------------------------------------------------------------
 class TransferFormView extends Component {
-    static components = { DatePicker };
+    static components = { DatePicker, ChatterPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -2319,6 +2542,9 @@ class TransferFormView extends Component {
                     <div class="so-action-btns">
                         <t t-if="canEdit">
                             <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                        </t>
+                        <t t-if="!isNew">
+                            <button class="btn" t-on-click.stop="onPrint">Print</button>
                         </t>
                         <button class="btn" t-on-click.stop="onBack">Back</button>
                     </div>
@@ -2521,20 +2747,11 @@ class TransferFormView extends Component {
                 </div>
 
                 <!-- Chatter / audit log -->
-                <div class="trn-chatter">
-                    <div class="trn-chatter-head">
-                        <span>Log</span>
-                    </div>
-                    <div class="trn-chatter-feed">
-                        <div class="trn-log-entry">
-                            <div class="trn-log-avatar">T</div>
-                            <div class="trn-log-body">
-                                <span class="trn-log-author">System</span>
-                                <span class="trn-log-msg">Transfer created</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                <t t-if="!isNew">
+                    <ChatterPanel model="'stock.picking'"
+                                  recordId="props.recordId"
+                                  refreshKey="state.chatRefreshKey"/>
+                </t>
             </t>
         </div>
     `;
@@ -2546,10 +2763,11 @@ class TransferFormView extends Component {
             record:      {},
             moves:       [],
             partners:    [],
-            users:       [],
-            locations:   [],
-            companyName: '',
-            activeTab:   'operations',
+            users:          [],
+            locations:      [],
+            companyName:    '',
+            activeTab:      'operations',
+            chatRefreshKey: 0,
         });
         this._locMap  = {};
         this._prodMap = {};
@@ -2664,6 +2882,7 @@ class TransferFormView extends Component {
     }
 
     // ---- Getters ----
+    get isNew()       { return !this.props.recordId; }
     get isDraft()     { return this.state.record.state === 'draft'; }
     get isConfirmed() { return this.state.record.state === 'confirmed'; }
     get isAssigned()  { return this.state.record.state === 'assigned'; }
@@ -2741,6 +2960,7 @@ class TransferFormView extends Component {
         await this.onSave();
         try {
             await RpcService.call('stock.picking', 'action_confirm', [[this.props.recordId]]);
+            this.state.chatRefreshKey++;
             await this.load();
         } catch (e) { alert('Confirm failed: ' + (e.message || e)); }
     }
@@ -2761,6 +2981,7 @@ class TransferFormView extends Component {
                 }
             }
             await RpcService.call('stock.picking', 'button_validate', [[this.props.recordId]]);
+            this.state.chatRefreshKey++;
             await this.load();
         } catch (e) { alert('Validate failed: ' + (e.message || e)); }
     }
@@ -2776,6 +2997,7 @@ class TransferFormView extends Component {
         if (!confirm('Cancel this transfer?')) return;
         try {
             await RpcService.call('stock.picking', 'action_cancel', [[this.props.recordId]]);
+            this.state.chatRefreshKey++;
             await this.load();
         } catch (e) { alert('Cancel failed: ' + (e.message || e)); }
     }
@@ -2788,12 +3010,15 @@ class TransferFormView extends Component {
     }
 
     onBack() { this.props.onBack(); }
+
+    onPrint() { window.open('/report/html/stock.picking/' + this.state.record.id, '_blank'); }
 }
 
 // ----------------------------------------------------------------
 // ProductFormView — product.product detail (Odoo 17-style)
 // ----------------------------------------------------------------
 class ProductFormView extends Component {
+    static components = { ChatterPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onFormChange"
@@ -2897,8 +3122,8 @@ class ProductFormView extends Component {
                                 </label>
                             </div>
                         </div>
-                        <!-- Product image — click to upload -->
-                        <div class="prd-image-box" t-on-click.stop="triggerImageUpload">
+                        <!-- Product image — label triggers file input natively -->
+                        <label class="prd-image-box" for="prd-file-input">
                             <t t-if="state.record.image_1920">
                                 <img class="prd-img-preview"
                                      t-att-src="'data:image/*;base64,' + state.record.image_1920"
@@ -2908,9 +3133,9 @@ class ProductFormView extends Component {
                                 <span class="prd-img-icon">📷</span>
                                 <span class="prd-img-lbl">Add Photo</span>
                             </t>
-                        </div>
-                        <input type="file" accept="image/*" style="display:none"
-                               t-on-change.stop="onImageChange"/>
+                        </label>
+                        <input id="prd-file-input" type="file" accept="image/*"
+                               style="display:none" t-on-change.stop="onImageChange"/>
                     </div>
 
                     <!-- ── Tabs ──────────────────────────────────────── -->
@@ -3023,19 +3248,12 @@ class ProductFormView extends Component {
 
                 </div><!-- /.so-card -->
 
-                <!-- ── Chatter (stub) ─────────────────────────────── -->
-                <div class="trn-chatter">
-                    <div class="trn-chatter-head"><span>Log</span></div>
-                    <div class="trn-chatter-feed">
-                        <div class="trn-log-entry">
-                            <div class="trn-log-avatar">P</div>
-                            <div class="trn-log-body">
-                                <span class="trn-log-author">System</span>
-                                <span class="trn-log-msg" t-esc="isNew ? 'Creating new product…' : 'Product record loaded.'"/>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                <!-- ── Chatter ───────────────────────────────────── -->
+                <t t-if="!isNew">
+                    <ChatterPanel model="'product.product'"
+                                  recordId="props.recordId"
+                                  refreshKey="state.chatRefreshKey"/>
+                </t>
 
             </t>
         </div>
@@ -3051,6 +3269,7 @@ class ProductFormView extends Component {
             currencySymbol: 'RM',
             moveCount:      0,
             activeTab:      'general',
+            chatRefreshKey: 0,
         });
         this._orig = {};
         onMounted(() => this.load());
@@ -3175,11 +3394,6 @@ class ProductFormView extends Component {
         this.state.record = { ...this._orig };
     }
 
-    triggerImageUpload() {
-        const input = this.el.querySelector('input[type="file"]');
-        if (input) input.click();
-    }
-
     onImageChange(e) {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -3201,6 +3415,395 @@ class ProductFormView extends Component {
 }
 
 // ----------------------------------------------------------------
+// ReportSettingsView — editor for ir.report.template records + report config settings
+// ----------------------------------------------------------------
+class ReportSettingsView extends Component {
+    static template = xml`
+        <div class="report-settings">
+            <!-- Tab bar -->
+            <div class="report-tabs">
+                <button t-attf-class="report-tab{{ state.activeTab === 'templates' ? ' active' : '' }}"
+                        t-on-click="() => this.setTab('templates')">Templates</button>
+                <button t-attf-class="report-tab{{ state.activeTab === 'settings' ? ' active' : '' }}"
+                        t-on-click="() => this.setTab('settings')">Report Settings</button>
+            </div>
+
+            <!-- ── TAB: Templates ── -->
+            <t t-if="state.activeTab === 'templates'">
+                <div class="report-settings-inner">
+                    <!-- Template list -->
+                    <div class="report-template-list">
+                        <h3>Templates</h3>
+                        <t t-if="state.loading">
+                            <div class="loading">Loading…</div>
+                        </t>
+                        <t t-elif="state.error">
+                            <div class="error" t-esc="state.error"/>
+                        </t>
+                        <t t-else="">
+                            <t t-foreach="state.templates" t-as="tpl" t-key="tpl.id">
+                                <div t-attf-class="rpt-list-item{{ state.selectedId === tpl.id ? ' active' : '' }}"
+                                     t-on-click="() => this.selectTemplate(tpl.id)">
+                                    <div t-esc="tpl.name"/>
+                                    <div class="rpt-list-model" t-esc="tpl.model"/>
+                                </div>
+                            </t>
+                        </t>
+                    </div>
+
+                    <!-- Editor panel -->
+                    <div class="report-template-editor-panel">
+                        <t t-if="!state.selectedId">
+                            <div class="report-empty-state">Select a template to edit</div>
+                        </t>
+                        <t t-elif="state.loadingTemplate">
+                            <div class="loading">Loading template…</div>
+                        </t>
+                        <t t-else="">
+                            <h3 t-esc="state.template ? state.template.name : ''"/>
+
+                            <!-- Format row -->
+                            <div class="report-format-row">
+                                <label>Paper Format:</label>
+                                <select t-on-change="onPaperFormatChange">
+                                    <option value="A4" t-att-selected="state.template.paper_format === 'A4' ? true : undefined">A4</option>
+                                    <option value="Letter" t-att-selected="state.template.paper_format === 'Letter' ? true : undefined">Letter</option>
+                                    <option value="A3" t-att-selected="state.template.paper_format === 'A3' ? true : undefined">A3</option>
+                                    <option value="Legal" t-att-selected="state.template.paper_format === 'Legal' ? true : undefined">Legal</option>
+                                </select>
+                                <label>Orientation:</label>
+                                <select t-on-change="onOrientationChange">
+                                    <option value="portrait" t-att-selected="state.template.orientation === 'portrait' ? true : undefined">Portrait</option>
+                                    <option value="landscape" t-att-selected="state.template.orientation === 'landscape' ? true : undefined">Landscape</option>
+                                </select>
+                                <button class="btn btn-primary"
+                                        t-att-disabled="state.saving ? true : undefined"
+                                        t-on-click="onSave">
+                                    <t t-if="state.saving">Saving…</t>
+                                    <t t-else="">Save</t>
+                                </button>
+                                <t t-if="state.dirty">
+                                    <span style="color:var(--muted);font-size:.8rem;">Unsaved changes</span>
+                                </t>
+                                <t t-if="state.saved">
+                                    <span style="color:var(--ok);font-size:.8rem;">Saved!</span>
+                                </t>
+                            </div>
+
+                            <!-- Preview row -->
+                            <div class="report-preview-row">
+                                <label>Preview Record ID:</label>
+                                <input type="number" min="1" t-model="state.previewId" placeholder="Record ID"/>
+                                <button class="btn" t-on-click="onPreview">Preview in New Tab</button>
+                            </div>
+
+                            <!-- HTML editor -->
+                            <textarea class="report-template-editor"
+                                      t-on-input="onEditorInput"
+                                      t-ref="editorRef">
+                                <t t-esc="state.template.template_html"/>
+                            </textarea>
+                        </t>
+                    </div>
+                </div>
+            </t>
+
+            <!-- ── TAB: Report Settings ── -->
+            <t t-if="state.activeTab === 'settings'">
+                <div class="report-cfg-panel">
+                    <t t-if="state.cfgLoading">
+                        <div class="loading">Loading settings…</div>
+                    </t>
+                    <t t-elif="state.cfgError">
+                        <div class="error" t-esc="state.cfgError"/>
+                    </t>
+                    <t t-else="">
+                        <h3>Company &amp; Invoice Settings</h3>
+                        <table class="report-cfg-table">
+                            <tbody>
+                                <tr>
+                                    <td><label>Company Registration No.</label></td>
+                                    <td><input type="text" t-model="state.cfg['report.reg_number']"/></td>
+                                </tr>
+                                <tr>
+                                    <td><label>Address Line 1</label></td>
+                                    <td><input type="text" t-model="state.cfg['report.addr1']"/></td>
+                                </tr>
+                                <tr>
+                                    <td><label>Address Line 2</label></td>
+                                    <td><input type="text" t-model="state.cfg['report.addr2']"/></td>
+                                </tr>
+                                <tr>
+                                    <td><label>Address Line 3</label></td>
+                                    <td><input type="text" t-model="state.cfg['report.addr3']"/></td>
+                                </tr>
+                                <tr>
+                                    <td><label>City &amp; Country</label></td>
+                                    <td><input type="text" t-model="state.cfg['report.city_country']"/></td>
+                                </tr>
+                                <tr>
+                                    <td><label>Currency Code</label></td>
+                                    <td><input type="text" t-model="state.cfg['report.currency_code']"/></td>
+                                </tr>
+                                <tr>
+                                    <td><label>Payment Terms (Days)</label></td>
+                                    <td><input type="text" t-model="state.cfg['report.payment_term_days']"/></td>
+                                </tr>
+                                <tr><td colspan="2"><hr/><strong>Bank Details</strong></td></tr>
+                                <tr>
+                                    <td><label>Bank Account Name</label></td>
+                                    <td><input type="text" t-model="state.cfg['report.bank.account_name']"/></td>
+                                </tr>
+                                <tr>
+                                    <td><label>Bank Account No.</label></td>
+                                    <td><input type="text" t-model="state.cfg['report.bank.account_no']"/></td>
+                                </tr>
+                                <tr>
+                                    <td><label>Bank Name</label></td>
+                                    <td><input type="text" t-model="state.cfg['report.bank.bank_name']"/></td>
+                                </tr>
+                                <tr>
+                                    <td><label>Bank Address</label></td>
+                                    <td><input type="text" t-model="state.cfg['report.bank.bank_address']"/></td>
+                                </tr>
+                                <tr>
+                                    <td><label>SWIFT Code</label></td>
+                                    <td><input type="text" t-model="state.cfg['report.bank.swift_code']"/></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div style="margin-top:12px;">
+                            <button class="btn btn-primary"
+                                    t-att-disabled="state.cfgSaving ? true : undefined"
+                                    t-on-click="onSaveCfg">
+                                <t t-if="state.cfgSaving">Saving…</t>
+                                <t t-else="">Save Settings</t>
+                            </button>
+                            <t t-if="state.cfgSaved">
+                                <span style="color:var(--ok);font-size:.8rem;margin-left:8px;">Saved!</span>
+                            </t>
+                            <t t-if="state.cfgSaveError">
+                                <span style="color:var(--danger);font-size:.8rem;margin-left:8px;" t-esc="state.cfgSaveError"/>
+                            </t>
+                        </div>
+                    </t>
+                </div>
+            </t>
+        </div>
+    `;
+
+    // Config param keys we manage
+    static CFG_KEYS = [
+        'report.reg_number',
+        'report.addr1',
+        'report.addr2',
+        'report.addr3',
+        'report.city_country',
+        'report.currency_code',
+        'report.payment_term_days',
+        'report.bank.account_name',
+        'report.bank.account_no',
+        'report.bank.bank_name',
+        'report.bank.bank_address',
+        'report.bank.swift_code',
+    ];
+
+    setup() {
+        this.state = useState({
+            activeTab:       'templates',
+            // Templates tab
+            loading:         true,
+            error:           '',
+            templates:       [],
+            selectedId:      null,
+            template:        null,
+            loadingTemplate: false,
+            dirty:           false,
+            saving:          false,
+            saved:           false,
+            previewId:       '',
+            // Settings tab
+            cfgLoading:      false,
+            cfgError:        '',
+            cfg:             {},
+            // Map key -> record id for write
+            cfgIds:          {},
+            cfgSaving:       false,
+            cfgSaved:        false,
+            cfgSaveError:    '',
+        });
+        this.editorRef = owl.useRef('editorRef');
+        onMounted(() => this.loadTemplates());
+    }
+
+    setTab(tab) {
+        this.state.activeTab = tab;
+        if (tab === 'settings' && !this.state.cfgLoading && Object.keys(this.state.cfg).length === 0) {
+            this.loadCfg();
+        }
+    }
+
+    async loadTemplates() {
+        this.state.loading = true;
+        this.state.error   = '';
+        try {
+            const recs = await RpcService.call(
+                'ir.report.template', 'search_read', [[]], { fields: ['id','name','model','paper_format','orientation'], limit: 50 });
+            this.state.templates = Array.isArray(recs) ? recs : [];
+        } catch (e) {
+            this.state.error = e.message;
+        } finally {
+            this.state.loading = false;
+        }
+    }
+
+    async loadCfg() {
+        this.state.cfgLoading = true;
+        this.state.cfgError   = '';
+        try {
+            // Load all report.* config params at once
+            const params = await RpcService.call(
+                'ir.config.parameter', 'search_read',
+                [[['key', 'like', 'report.']]], { fields: ['id', 'key', 'value'], limit: 100 });
+
+            const cfg   = {};
+            const cfgIds = {};
+            // Initialise all expected keys to empty string
+            for (const k of ReportSettingsView.CFG_KEYS) cfg[k] = '';
+
+            if (Array.isArray(params)) {
+                for (const p of params) {
+                    cfg[p.key]    = p.value || '';
+                    cfgIds[p.key] = p.id;
+                }
+            }
+            this.state.cfg    = cfg;
+            this.state.cfgIds = cfgIds;
+        } catch (e) {
+            this.state.cfgError = e.message || 'Failed to load settings';
+        } finally {
+            this.state.cfgLoading = false;
+        }
+    }
+
+    async onSaveCfg() {
+        this.state.cfgSaving    = true;
+        this.state.cfgSaved     = false;
+        this.state.cfgSaveError = '';
+        try {
+            for (const key of ReportSettingsView.CFG_KEYS) {
+                const value = this.state.cfg[key] || '';
+                const id    = this.state.cfgIds[key];
+                if (id) {
+                    // Record exists — write
+                    await RpcService.call(
+                        'ir.config.parameter', 'write',
+                        [[id], { value }], {});
+                } else {
+                    // Record missing — create
+                    const newId = await RpcService.call(
+                        'ir.config.parameter', 'create',
+                        [{ key, value }], {});
+                    this.state.cfgIds[key] = newId;
+                }
+            }
+            this.state.cfgSaved = true;
+            setTimeout(() => { this.state.cfgSaved = false; }, 2500);
+        } catch (e) {
+            this.state.cfgSaveError = e.message || 'Save failed';
+        } finally {
+            this.state.cfgSaving = false;
+        }
+    }
+
+    async selectTemplate(id) {
+        if (this.state.selectedId === id) return;
+        this.state.selectedId      = id;
+        this.state.template        = null;
+        this.state.loadingTemplate = true;
+        this.state.dirty           = false;
+        this.state.saved           = false;
+        try {
+            const recs = await RpcService.call(
+                'ir.report.template', 'read', [[id]], {});
+            if (Array.isArray(recs) && recs.length > 0) {
+                this.state.template = { ...recs[0] };
+                // After render, set textarea value and auto-size
+                setTimeout(() => {
+                    const el = this.editorRef.el;
+                    if (el) {
+                        el.value = this.state.template.template_html || '';
+                        el.style.height = 'auto';
+                        el.style.height = el.scrollHeight + 'px';
+                    }
+                }, 30);
+            }
+        } catch (e) {
+            console.error('Failed to load template:', e);
+        } finally {
+            this.state.loadingTemplate = false;
+        }
+    }
+
+    onEditorInput(e) {
+        if (this.state.template) {
+            this.state.template.template_html = e.target.value;
+            this.state.dirty = true;
+            this.state.saved = false;
+        }
+        e.target.style.height = 'auto';
+        e.target.style.height = e.target.scrollHeight + 'px';
+    }
+
+    onPaperFormatChange(e) {
+        if (this.state.template) {
+            this.state.template.paper_format = e.target.value;
+            this.state.dirty = true;
+            this.state.saved = false;
+        }
+    }
+
+    onOrientationChange(e) {
+        if (this.state.template) {
+            this.state.template.orientation = e.target.value;
+            this.state.dirty = true;
+            this.state.saved = false;
+        }
+    }
+
+    async onSave() {
+        if (!this.state.template || !this.state.selectedId) return;
+        this.state.saving = true;
+        try {
+            // Get current textarea value directly
+            const el = this.editorRef.el;
+            if (el) this.state.template.template_html = el.value;
+
+            await RpcService.call(
+                'ir.report.template', 'write',
+                [[this.state.selectedId], {
+                    template_html: this.state.template.template_html,
+                    paper_format:  this.state.template.paper_format,
+                    orientation:   this.state.template.orientation,
+                }], {});
+            this.state.dirty = false;
+            this.state.saved = true;
+            setTimeout(() => { this.state.saved = false; }, 2000);
+        } catch (e) {
+            console.error('Save failed:', e);
+        } finally {
+            this.state.saving = false;
+        }
+    }
+
+    onPreview() {
+        if (!this.state.template) return;
+        const id = this.state.previewId || '1';
+        window.open('/report/html/' + this.state.template.model + '/' + id, '_blank');
+    }
+}
+
+// ----------------------------------------------------------------
 // ActionView — orchestrates list ↔ form switching
 // ----------------------------------------------------------------
 class ActionView extends Component {
@@ -3209,8 +3812,11 @@ class ActionView extends Component {
             <t t-if="state.loading">
                 <div class="loading">Loading views…</div>
             </t>
+            <t t-elif="isReportTemplateModel">
+                <ReportSettingsView/>
+            </t>
             <t t-elif="state.mode === 'list'">
-                <ListView action="props.action"
+                <ListView action="currentAction"
                           viewDef="state.listView"
                           onOpenForm.bind="openForm"/>
             </t>
@@ -3223,7 +3829,8 @@ class ActionView extends Component {
                 <t t-elif="isPurchaseOrderModel">
                     <PurchaseOrderFormView action="props.action"
                                            recordId="state.recordId"
-                                           onBack.bind="backToList"/>
+                                           onBack.bind="backToList"
+                                           onNavigate.bind="navigateTo"/>
                 </t>
                 <t t-elif="isInvoiceModel">
                     <InvoiceFormView recordId="state.recordId"
@@ -3239,7 +3846,7 @@ class ActionView extends Component {
                                      onNavigate.bind="navigateTo"/>
                 </t>
                 <t t-else="">
-                    <FormView action="props.action"
+                    <FormView action="currentAction"
                               viewDef="state.formView"
                               recordId="state.recordId"
                               onBack.bind="backToList"/>
@@ -3248,21 +3855,26 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, ProductFormView };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, ProductFormView, ReportSettingsView };
 
-    get isSaleOrderModel()    { return this.props.action.res_model === 'sale.order'; }
-    get isPurchaseOrderModel(){ return this.props.action.res_model === 'purchase.order'; }
-    get isInvoiceModel()      { return this.props.action.res_model === 'account.move'; }
-    get isStockPickingModel() { return this.props.action.res_model === 'stock.picking'; }
-    get isProductModel()      { return this.props.action.res_model === 'product.product'; }
+    // Use overrideAction when navigateTo() has been called, else fall back to props.action
+    get currentAction()          { return this.state.overrideAction || this.props.action; }
+
+    get isSaleOrderModel()       { return this.currentAction.res_model === 'sale.order'; }
+    get isPurchaseOrderModel()   { return this.currentAction.res_model === 'purchase.order'; }
+    get isInvoiceModel()         { return this.currentAction.res_model === 'account.move'; }
+    get isStockPickingModel()    { return this.currentAction.res_model === 'stock.picking'; }
+    get isProductModel()         { return this.currentAction.res_model === 'product.product'; }
+    get isReportTemplateModel()  { return this.currentAction.res_model === 'ir.report.template'; }
 
     setup() {
         this.state = useState({
-            loading:  true,
-            mode:     'list',
-            recordId: null,
-            listView: null,
-            formView: null,
+            loading:        true,
+            mode:           'list',
+            recordId:       null,
+            listView:       null,
+            formView:       null,
+            overrideAction: null,   // set by navigateTo() to browse a different model
         });
         onMounted(() => this.loadViews());
     }
@@ -3288,13 +3900,25 @@ class ActionView extends Component {
     }
 
     backToList() {
-        this.state.recordId = null;
-        this.state.mode     = 'list';
+        this.state.recordId      = null;
+        this.state.mode          = 'list';
+        this.state.overrideAction = null;   // return to original model
     }
 
-    navigateTo(model, domain) {
-        // Stub: navigate to a filtered list (full cross-model navigation is Phase 27+)
-        alert(`Navigate to ${model} — use Inventory → Reporting → Moves History for now.`);
+    async navigateTo(model, domain) {
+        this.state.loading = true;
+        this.state.mode    = 'list';
+        this.state.recordId = null;
+        try {
+            const result = await RpcService.getViews(model, [[false,'list'],[false,'form']]);
+            this.state.listView      = result.views?.list || null;
+            this.state.formView      = result.views?.form || null;
+            this.state.overrideAction = { res_model: model, domain: domain || [] };
+        } catch (e) {
+            console.error('navigateTo failed:', e);
+        } finally {
+            this.state.loading = false;
+        }
     }
 }
 

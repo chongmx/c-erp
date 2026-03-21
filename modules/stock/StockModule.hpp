@@ -30,6 +30,7 @@
 #include "BaseViewModel.hpp"
 #include "GenericViewModel.hpp"
 #include "DbConnection.hpp"
+#include "MailHelpers.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <memory>
@@ -355,6 +356,8 @@ private:
         int lim = call.limit() > 0 ? call.limit() : 80;
         int off = call.offset();
 
+        auto [where, paramVec] = domainFromJson(call.domain()).toSql();
+
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
 
@@ -369,17 +372,26 @@ private:
                    sp.location_dest_id,
                    COALESCE(sl_dst.complete_name, sl_dst.name) AS location_dest_name,
                    sp.partner_id,
-                   rp.name AS partner_name
+                   rp.name AS partner_name,
+                   sp.purchase_id,
+                   sp.sale_id
             FROM stock_picking sp
             LEFT JOIN stock_location sl_src ON sl_src.id = sp.location_id
             LEFT JOIN stock_location sl_dst ON sl_dst.id = sp.location_dest_id
             LEFT JOIN res_partner    rp     ON rp.id     = sp.partner_id
-            ORDER BY sp.id DESC
-        )";
+            WHERE )";
+        sql += where;
+        sql += " ORDER BY sp.id DESC";
         sql += " LIMIT " + std::to_string(lim);
         if (off > 0) sql += " OFFSET " + std::to_string(off);
 
-        auto res = txn.exec(sql);
+        pqxx::result res;
+        if (paramVec.empty()) {
+            res = txn.exec(sql);
+        } else {
+            pqxx::params p; for (auto& s : paramVec) p.append(s);
+            res = txn.exec(sql, p);
+        }
 
         auto m2o = [](const pqxx::row& row,
                       const char* idCol, const char* nameCol) -> nlohmann::json {
@@ -509,6 +521,8 @@ private:
                 "UPDATE stock_move SET state='confirmed' WHERE picking_id=$1 AND state='draft'",
                 pqxx::params{id});
 
+            odoo::modules::mail::postLog(txn, "stock.picking", id, 0,
+                "Transfer confirmed.", "log_note");
             txn.commit();
         }
         return true;
@@ -623,20 +637,22 @@ private:
                         "WHERE order_id=$2 AND product_id=$3",
                         pqxx::params{qty, purchaseId, productId});
                 }
-                // Re-evaluate purchase order billing_status
+                // Re-evaluate purchase order invoice_status
                 txn.exec(R"(
                     UPDATE purchase_order po
-                    SET billing_status = CASE
+                    SET invoice_status = CASE
                         WHEN (SELECT COUNT(*) FROM purchase_order_line
                               WHERE order_id=po.id AND qty_received < product_qty) = 0
                         THEN 'to_bill'
-                        ELSE billing_status
+                        ELSE invoice_status
                     END,
                     write_date=now()
                     WHERE id=$1 AND state='purchase'
                 )", pqxx::params{purchaseId});
             }
 
+            odoo::modules::mail::postLog(txn, "stock.picking", id, 0,
+                "Transfer validated.", "log_note");
             txn.commit();
         }
         return true;

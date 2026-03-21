@@ -1,8 +1,12 @@
 # Phase 17g — Transfer + Product Form Small Fixes
 
-**Status:** ✅ Complete
+**Status:** ✅ Code complete — ⚠️ Transfer form changes NOT tested in browser
 **Date:** 2026-03-20
 **Build:** Clean
+
+> **Note:** Product form (image upload, expense_ok checkbox) was verified by user.
+> Transfer form changes (Responsible dropdown, Company from DB, editable locations on draft)
+> have not been manually tested. Test when possible before relying on them in production.
 
 ---
 
