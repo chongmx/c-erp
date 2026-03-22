@@ -26,7 +26,6 @@ const RpcService = (() => {
         // from the request body (fallback when cookies aren't transmitted).
         const ctx = Object.assign({ session_id: _session.sessionId }, kwargs.context || {});
         const fullKwargs = Object.assign({}, kwargs, { context: ctx });
-        console.log('[rpc] call', model, method, 'session_id in body:', ctx.session_id || '(empty)');
         const res = await fetch('/web/dataset/call_kw', {
             method:      'POST',
             credentials: 'include',
@@ -67,7 +66,6 @@ const RpcService = (() => {
             db:        data.result.db || db,
             context:   data.result.context || {},
         });
-        console.log('[rpc] authenticate ok, session:', _session.sessionId, 'uid:', _session.uid);
         return _session;
     }
 

@@ -456,12 +456,14 @@ private:
         )");
         txn.exec("SELECT setval('product_category_id_seq', (SELECT MAX(id) FROM product_category), true)");
 
-        // ir_act_window entries
+        // ir_act_window entries — IDs 9/10 are owned by product; account uses 32/33 for invoices/bills
         txn.exec(R"(
             INSERT INTO ir_act_window (id, name, res_model, view_mode, path, context) VALUES
                 (9,  'Products',           'product.product',  'list,form', 'products',            '{}'),
                 (10, 'Product Categories', 'product.category', 'list,form', 'product-categories',  '{}')
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT (id) DO UPDATE
+                SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
+                    view_mode=EXCLUDED.view_mode, path=EXCLUDED.path, domain=NULL
         )");
         txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
         txn.commit();
@@ -478,14 +480,16 @@ private:
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
                 (51, 'Products', 50, 10, 9)
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT (id) DO UPDATE
+                SET action_id=EXCLUDED.action_id
         )");
 
         // Level 2: Categories under Configuration section (id=52, created by UomModule)
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
                 (54, 'Categories', 52, 20, 10)
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT (id) DO UPDATE
+                SET action_id=EXCLUDED.action_id
         )");
 
         txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");

@@ -283,6 +283,11 @@ private:
             fdef.type != FieldType::Boolean)
             return nlohmann::json(nullptr);
 
+        // 0 → NULL for Many2one fields (0 is not a valid FK id)
+        if (fdef.type == FieldType::Many2one &&
+            val.is_number_integer() && val.get<int>() == 0)
+            return nlohmann::json(nullptr);
+
         // [id, "Name"] → id  (Many2one display tuple)
         if (fdef.type == FieldType::Many2one &&
             val.is_array() && !val.empty() && val[0].is_number_integer())

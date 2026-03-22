@@ -640,11 +640,12 @@ public:
     explicit AccountMoveViewModel(std::shared_ptr<infrastructure::DbConnection> db)
         : AccountViewModel<AccountMove>(std::move(db))
     {
-        REGISTER_METHOD("action_post",    handleActionPost)
-        REGISTER_METHOD("button_cancel",  handleButtonCancel)
-        REGISTER_METHOD("action_reverse", handleButtonCancel)  // simplified
-        REGISTER_METHOD("button_draft",      handleButtonDraft)
-        REGISTER_METHOD("recompute_totals",  handleRecomputeTotals)
+        REGISTER_METHOD("action_post",              handleActionPost)
+        REGISTER_METHOD("button_cancel",            handleButtonCancel)
+        REGISTER_METHOD("action_reverse",           handleButtonCancel)  // simplified
+        REGISTER_METHOD("button_draft",             handleButtonDraft)
+        REGISTER_METHOD("recompute_totals",         handleRecomputeTotals)
+        REGISTER_METHOD("action_register_payment",  handleActionRegisterPayment)
     }
 
     std::string modelName() const override { return "account.move"; }
@@ -768,6 +769,41 @@ private:
                 "UPDATE account_move_line SET debit=$1, write_date=now() "
                 "WHERE move_id=$2 AND debit>0",
                 pqxx::params{total, id});
+        }
+
+        txn.commit();
+        return true;
+    }
+
+    nlohmann::json handleActionRegisterPayment(const core::CallKwArgs& call) {
+        const auto ids = call.ids();
+        if (ids.empty()) return true;
+
+        // payment_date is passed as a kwarg from the frontend
+        std::string payDate;
+        if (call.kwargs.contains("payment_date") && call.kwargs["payment_date"].is_string())
+            payDate = call.kwargs["payment_date"].get<std::string>();
+
+        // Fallback: today
+        if (payDate.empty()) {
+            auto t  = std::time(nullptr);
+            auto tm = *std::localtime(&t);
+            char buf[11];
+            std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+            payDate = buf;
+        }
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        for (int id : ids) {
+            txn.exec(
+                "UPDATE account_move "
+                "SET payment_state='paid', amount_residual=0, write_date=now() "
+                "WHERE id=$1 AND state='posted'",
+                pqxx::params{id});
+            odoo::modules::mail::postLog(txn, "account.move", id, 0,
+                "Payment registered on " + payDate + ".", "log_note");
         }
 
         txn.commit();
@@ -1334,15 +1370,15 @@ private:
 
         txn.exec(R"(
             INSERT INTO ir_act_window (id, name, res_model, view_mode, path, context, domain) VALUES
-                (4, 'Chart of Accounts',  'account.account', 'list,form', 'accounts',       '{}', NULL),
-                (5, 'Journals',           'account.journal', 'list,form', 'journals',        '{}', NULL),
-                (6, 'Journal Entries',    'account.move',    'list,form', 'moves',           '{}', NULL),
-                (7, 'Payments',           'account.payment', 'list,form', 'payments',        '{}', NULL),
-                (8, 'Customer Invoices',  'account.move',    'list,form', 'out-invoices',    '{}', '[["move_type","=","out_invoice"]]'),
-                (9, 'Vendor Bills',       'account.move',    'list,form', 'in-invoices',     '{}', '[["move_type","=","in_invoice"]]')
+                (4,  'Chart of Accounts',  'account.account', 'list,form', 'accounts',       '{}', NULL),
+                (5,  'Journals',           'account.journal', 'list,form', 'journals',        '{}', NULL),
+                (6,  'Journal Entries',    'account.move',    'list,form', 'moves',           '{}', NULL),
+                (7,  'Payments',           'account.payment', 'list,form', 'payments',        '{}', NULL),
+                (32, 'Customer Invoices',  'account.move',    'list,form', 'out-invoices',    '{}', '[["move_type","=","out_invoice"]]'),
+                (33, 'Vendor Bills',       'account.move',    'list,form', 'in-invoices',     '{}', '[["move_type","=","in_invoice"]]')
             ON CONFLICT (id) DO UPDATE
                 SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
-                    view_mode=EXCLUDED.view_mode, domain=EXCLUDED.domain
+                    view_mode=EXCLUDED.view_mode, path=EXCLUDED.path, domain=EXCLUDED.domain
         )");
         txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
 
@@ -1359,7 +1395,7 @@ private:
         // Level 2: Customers dropdown (id=15 Invoices, id=16 Payments)
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-                (15, 'Invoices', 12, 10, 8),
+                (15, 'Invoices', 12, 10, 32),
                 (16, 'Payments', 12, 20, 7)
             ON CONFLICT (id) DO UPDATE
                 SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
@@ -1369,7 +1405,7 @@ private:
         // Level 2: Vendors dropdown (id=17 Bills)
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-                (17, 'Bills', 13, 10, 9)
+                (17, 'Bills', 13, 10, 33)
             ON CONFLICT (id) DO UPDATE
                 SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
                     sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id

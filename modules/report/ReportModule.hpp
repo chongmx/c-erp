@@ -520,12 +520,36 @@ public:
 private:
     std::shared_ptr<DbConnection> db_;
 
-    nlohmann::json handleSearchRead(const CallKwArgs&) {
+    nlohmann::json handleSearchRead(const CallKwArgs& call) {
+        // Extract model filter from domain e.g. [["model","=","account.move"]]
+        std::string modelFilter;
+        const auto& dom = call.domain();
+        if (dom.is_array()) {
+            for (const auto& leaf : dom) {
+                if (leaf.is_array() && leaf.size() == 3 &&
+                    leaf[0].is_string() && leaf[0].get<std::string>() == "model" &&
+                    leaf[1].is_string() && leaf[1].get<std::string>() == "=" &&
+                    leaf[2].is_string()) {
+                    modelFilter = leaf[2].get<std::string>();
+                    break;
+                }
+            }
+        }
+
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        auto rows = txn.exec(
-            "SELECT id, name, model, paper_format, orientation, active "
-            "FROM ir_report_template WHERE active=true ORDER BY id");
+        pqxx::result rows;
+        if (modelFilter.empty()) {
+            rows = txn.exec(
+                "SELECT id, name, model, paper_format, orientation, active "
+                "FROM ir_report_template WHERE active=true ORDER BY id");
+        } else {
+            rows = txn.exec(
+                "SELECT id, name, model, paper_format, orientation, active "
+                "FROM ir_report_template WHERE active=true AND model=$1 ORDER BY id LIMIT 1",
+                pqxx::params{modelFilter});
+        }
+
         nlohmann::json result = nlohmann::json::array();
         for (const auto& row : rows) {
             nlohmann::json rec;

@@ -6,7 +6,7 @@
  *   Top nav section → click direct link → load action
  *   Top nav section (with children) → dropdown → click leaf → load action
  */
-const { Component, useState, xml, mount, onMounted, useRef, onWillUnmount } = owl;
+const { Component, useState, xml, mount, onMounted, useRef, onWillUnmount, onWillUpdateProps } = owl;
 
 // App tile background colors (cycled by index)
 const APP_COLORS = [
@@ -58,6 +58,15 @@ class ListView extends Component {
     setup() {
         this.state = useState({ loading: true, records: [], error: '' });
         onMounted(() => this.load());
+        onWillUpdateProps((np) => {
+            const oa = this.props.action;
+            const na = np.action;
+            if (na?.res_model !== oa?.res_model ||
+                JSON.stringify(na?.domain) !== JSON.stringify(oa?.domain)) {
+                // Props will be updated by OWL before the microtask fires
+                Promise.resolve().then(() => this.load());
+            }
+        });
     }
 
     get columns() {
@@ -604,26 +613,65 @@ class InvoiceFormView extends Component {
              t-on-input="onAnyInput"
              t-on-click="onAnyClick">
 
+            <!-- Register Payment dialog -->
+            <t t-if="state.payDialogOpen">
+                <div class="pay-overlay" t-on-click.stop="onClosePayDialog">
+                    <div class="pay-dialog" t-on-click.stop="">
+                        <div class="pay-dialog-title">Register Payment</div>
+                        <div class="so-field-row" style="margin-bottom:4px;">
+                            <label class="so-field-lbl">Payment Date</label>
+                            <DatePicker value="state.payDate" onSelect.bind="setPayDate"/>
+                        </div>
+                        <div class="so-field-row">
+                            <label class="so-field-lbl">Amount</label>
+                            <span class="so-field-val" t-esc="formatMoney(state.record.amount_residual)"/>
+                        </div>
+                        <t t-if="state.payError">
+                            <div class="pay-dialog-error" t-esc="state.payError"/>
+                        </t>
+                        <div class="pay-dialog-actions">
+                            <button class="btn btn-primary" t-on-click.stop="onConfirmPayment">Validate</button>
+                            <button class="btn"             t-on-click.stop="onClosePayDialog">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            </t>
+
             <!-- Page header -->
             <div class="so-page-header">
                 <div class="so-header-left">
                     <div class="so-breadcrumbs">
                         <span class="so-bc-link" t-on-click.stop="onBack" t-esc="backLabel"/>
                         <span class="so-bc-sep">›</span>
+                        <t t-if="props.navTotal and props.navTotal > 1">
+                            <span class="so-bc-link" t-on-click.stop="onBack">Invoices</span>
+                            <span class="so-bc-sep">›</span>
+                        </t>
                         <span class="so-bc-cur" t-esc="state.record.name || 'Draft Invoice'"/>
                     </div>
                     <div class="so-action-btns">
+                        <t t-if="props.navTotal and props.navTotal > 1">
+                            <span style="font-size:.8rem;color:var(--muted);margin-right:4px;"
+                                  t-esc="(props.navIdx + 1) + ' / ' + props.navTotal"/>
+                            <button class="btn" t-att-disabled="props.navIdx === 0 ? true : undefined"
+                                    t-on-click.stop="props.onPrev">&#8592;</button>
+                            <button class="btn" t-att-disabled="props.navIdx === props.navTotal - 1 ? true : undefined"
+                                    t-on-click.stop="props.onNext">&#8594;</button>
+                        </t>
                         <t t-if="isDraft">
                             <button class="btn btn-primary" t-on-click.stop="onPost">Confirm</button>
                             <button class="btn"             t-on-click.stop="onSave">Save</button>
                             <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
                         </t>
+                        <t t-if="canRegisterPayment">
+                            <button class="btn btn-success" t-on-click.stop="onOpenPayDialog">Register Payment</button>
+                        </t>
                         <t t-if="isPosted">
-                            <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
-                            <button class="btn btn-danger"  t-on-click.stop="onCancel">Cancel</button>
+                            <button class="btn"           t-on-click.stop="onSave">Save</button>
+                            <button class="btn btn-danger" t-on-click.stop="onCancel">Cancel</button>
                         </t>
                         <t t-if="isCancelled">
-                            <button class="btn"             t-on-click.stop="onResetDraft">Reset to Draft</button>
+                            <button class="btn" t-on-click.stop="onResetDraft">Reset to Draft</button>
                         </t>
                         <t t-if="!isNew">
                             <button class="btn" t-on-click.stop="onPrint">Print</button>
@@ -836,10 +884,12 @@ class InvoiceFormView extends Component {
         </div>
     `;
 
-    get backLabel()  { return this.props.backLabel || 'Invoices'; }
-    get isDraft()    { return this.state.record.state === 'draft'; }
-    get isPosted()   { return this.state.record.state === 'posted'; }
-    get isCancelled(){ return this.state.record.state === 'cancel'; }
+    get backLabel()    { return this.props.backLabel || 'Invoices'; }
+    get isDraft()      { return this.state.record.state === 'draft'; }
+    get isPosted()     { return this.state.record.state === 'posted'; }
+    get isCancelled()  { return this.state.record.state === 'cancel'; }
+    get isPaid()       { return this.state.record.payment_state === 'paid'; }
+    get canRegisterPayment() { return this.isPosted && !this.isPaid; }
 
     stepClass(step) {
         const order = { draft: 0, posted: 1, cancel: 2 };
@@ -863,13 +913,19 @@ class InvoiceFormView extends Component {
             journals:       [],
             paymentTerms:   [],
             chatRefreshKey: 0,
+            payDialogOpen:  false,
+            payDate:        '',
+            payError:       '',
         });
         this._nextKey   = 1;
         this._lineDefaults = {};   // account_id, journal_id, company_id, date, partner_id
         onMounted(() => this.load());
+        onWillUpdateProps((np) => {
+            if (np.recordId !== this.props.recordId) this.load(np.recordId);
+        });
     }
 
-    async load() {
+    async load(overrideId) {
         this.state.loading = true;
         this.state.error   = '';
         try {
@@ -879,9 +935,10 @@ class InvoiceFormView extends Component {
                 'payment_term_id', 'invoice_origin', 'payment_state',
                 'amount_untaxed', 'amount_tax', 'amount_total', 'amount_residual',
             ];
+            const recId = overrideId ?? this.props.recordId;
             const [rec] = await Promise.all([
-                this.props.recordId
-                    ? RpcService.call('account.move', 'read', [[this.props.recordId]], { fields })
+                recId
+                    ? RpcService.call('account.move', 'read', [[recId]], { fields })
                           .then(r => (Array.isArray(r) ? r[0] : r) || {})
                     : Promise.resolve({}),
                 this.loadOpts('res.partner',          'partners',     ['id', 'name']),
@@ -890,7 +947,7 @@ class InvoiceFormView extends Component {
             ]);
             this.state.record = rec;
             this.state.deletedLineIds = [];
-            if (this.props.recordId) await this.loadLines();
+            if (recId) await this.loadLines(recId);
         } catch (e) {
             this.state.error = e.message;
         } finally {
@@ -907,11 +964,12 @@ class InvoiceFormView extends Component {
         } catch (_) { this.state[key] = []; }
     }
 
-    async loadLines() {
+    async loadLines(overrideId) {
         try {
+            const recId = overrideId ?? this.props.recordId;
             // Load income lines + section/note lines (exclude AR/AP debit-only lines)
             const raw = await RpcService.call('account.move.line', 'search_read',
-                [[['move_id', '=', this.props.recordId],
+                [[['move_id', '=', recId],
                   ['debit', '=', 0]]],
                 { fields: ['id', 'name', 'quantity', 'price_unit', 'credit',
                             'display_type', 'account_id', 'journal_id',
@@ -1171,6 +1229,41 @@ class InvoiceFormView extends Component {
     onBack() { this.props.onBack(); }
 
     onPrint() { window.open('/report/html/account.move/' + this.state.record.id, '_blank'); }
+
+    // ---- Register Payment ----
+    onOpenPayDialog() {
+        // Default to today's date
+        const today = new Date().toISOString().slice(0, 10);
+        this.state.payDate     = today;
+        this.state.payError    = '';
+        this.state.payDialogOpen = true;
+    }
+
+    onClosePayDialog() {
+        this.state.payDialogOpen = false;
+        this.state.payError      = '';
+    }
+
+    setPayDate(v) { this.state.payDate = v; }
+
+    async onConfirmPayment() {
+        if (!this.state.payDate) {
+            this.state.payError = 'Please select a payment date.';
+            return;
+        }
+        try {
+            this.state.payError = '';
+            await RpcService.call(
+                'account.move', 'action_register_payment',
+                [[this.state.record.id]],
+                { payment_date: this.state.payDate });
+            this.state.payDialogOpen = false;
+            this.state.chatRefreshKey++;
+            await this.load();
+        } catch (e) {
+            this.state.payError = e.message || 'Payment registration failed.';
+        }
+    }
 }
 
 // ----------------------------------------------------------------
@@ -1187,8 +1280,56 @@ class SaleOrderFormView extends Component {
             <!-- Invoice sub-view overlay -->
             <t t-if="state.invoiceMode">
                 <InvoiceFormView recordId="state.invoiceMode.invoiceId"
-                                 backLabel="'← Sales Order'"
-                                 onBack.bind="closeInvoiceView"/>
+                                 backLabel="state.invoiceMode.fromList ? ('← ' + (state.record.name || 'Sales Order')) : ('← ' + (state.record.name || 'Sales Order'))"
+                                 onBack.bind="closeInvoiceView"
+                                 navIdx="state.invoiceMode.idx"
+                                 navTotal="state.invoiceList.length"
+                                 onPrev.bind="prevInvoice"
+                                 onNext.bind="nextInvoice"/>
+            </t>
+            <!-- Invoice list (when multiple invoices) -->
+            <t t-elif="state.invoiceListMode">
+                <div class="so-page-header">
+                    <div class="so-header-left">
+                        <div class="so-breadcrumbs">
+                            <span class="so-bc-link" t-on-click.stop="closeInvoiceList" t-esc="state.record.name || 'Sales Order'"/>
+                            <span class="so-bc-sep">›</span>
+                            <span class="so-bc-cur">Invoices</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="so-body">
+                    <table class="so-line-table" style="width:100%">
+                        <thead>
+                            <tr>
+                                <th>Invoice #</th>
+                                <th>Status</th>
+                                <th>Payment</th>
+                                <th style="text-align:right">Amount</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <t t-foreach="state.invoiceList" t-as="inv" t-key="inv.id">
+                                <tr class="list-row"
+                                    t-att-data-inv-id="inv.id"
+                                    t-on-click="onInvRowClick">
+                                    <td t-esc="inv.name || '/'"/>
+                                    <td t-esc="inv.state"/>
+                                    <td t-esc="inv.payment_state || '—'"/>
+                                    <td style="text-align:right" t-esc="formatMoney(inv.amount_total)"/>
+                                    <td style="text-align:center">
+                                        <t t-if="inv.state === 'draft' || inv.state === 'cancel'">
+                                            <button class="btn btn-danger" style="padding:2px 8px;font-size:12px"
+                                                    t-att-data-del-inv-id="inv.id"
+                                                    t-on-click.stop="onInvDeleteClick">Delete</button>
+                                        </t>
+                                    </td>
+                                </tr>
+                            </t>
+                        </tbody>
+                    </table>
+                </div>
             </t>
             <t t-else="">
 
@@ -1229,7 +1370,7 @@ class SaleOrderFormView extends Component {
                         <button class="btn btn-primary so-wf-btn" t-on-click.stop="onCreateFinalInvoice">Final Invoice</button>
                         <span class="so-inv-remaining">
                             Invoiced: <t t-esc="formatMoney(state.invoicedAmount)"/>
-                            &amp;nbsp;·&amp;nbsp;
+                            <span style="margin:0 6px;color:var(--muted)">·</span>
                             Remaining: <t t-esc="formatMoney(remainingAmount)"/>
                         </span>
                     </t>
@@ -1536,6 +1677,8 @@ class SaleOrderFormView extends Component {
             deliveryCount:  0,
             invoiceCount:   0,
             invoiceIds:     [],
+            invoiceList:    [],
+            invoiceListMode: false,
             invoiceMode:    null,   // null | { invoiceId: N }
             dpFormOpen:     false,
             dpMode:         'down_payment', // 'down_payment' | 'progress'
@@ -1603,6 +1746,10 @@ class SaleOrderFormView extends Component {
                 this.loadOpts('uom.uom',                 'uoms',         ['id', 'name']),
             ]);
             this.state.record = recordData;
+            // Default currency for new records
+            if (!this.props.recordId && !this.state.record.currency_id && this.state.currencies.length > 0) {
+                this.state.record.currency_id = this.state.currencies[0].id;
+            }
             if (this.props.recordId) {
                 await this.loadLines();
                 try {
@@ -1615,9 +1762,10 @@ class SaleOrderFormView extends Component {
                     const moves = await RpcService.call('account.move', 'search_read',
                         [[['sale_id', '=', this.props.recordId],
                           ['move_type', '=', 'out_invoice']]],
-                        { fields: ['id', 'amount_total', 'state'], limit: 500 });
+                        { fields: ['id', 'name', 'amount_total', 'state', 'payment_state'], limit: 500 });
                     const all = Array.isArray(moves) ? moves : [];
                     this.state.invoiceIds   = all.map(m => m.id);
+                    this.state.invoiceList  = all;
                     this.state.invoiceCount = all.length;
                     this.state.invoicedAmount = all
                         .filter(m => m.state === 'posted')
@@ -1711,7 +1859,7 @@ class SaleOrderFormView extends Component {
     // ---- Event delegation handlers ----
 
     onAnyChange(e) {
-        if (this.state.invoiceMode) return;
+        if (this.state.invoiceMode || this.state.invoiceListMode) return;
         const lineField = e.target.dataset.lineField;
         if (lineField) {
             const key = e.target.dataset.key;
@@ -1729,7 +1877,7 @@ class SaleOrderFormView extends Component {
     }
 
     onAnyInput(e) {
-        if (this.state.invoiceMode) return;
+        if (this.state.invoiceMode || this.state.invoiceListMode) return;
         if (e.target.tagName === 'SELECT') return;
         const lineField = e.target.dataset.lineField;
         if (lineField) {
@@ -1743,7 +1891,7 @@ class SaleOrderFormView extends Component {
     }
 
     onAnyClick(e) {
-        if (this.state.invoiceMode) return;
+        if (this.state.invoiceMode || this.state.invoiceListMode) return;
         if (e.target.dataset.addLine) {
             e.preventDefault();
             this.state.lines.push({
@@ -1809,7 +1957,7 @@ class SaleOrderFormView extends Component {
             partner_shipping_id: this.getM2oId(r.partner_shipping_id),
             payment_term_id:     this.getM2oId(r.payment_term_id),
             user_id:             this.getM2oId(r.user_id),
-            currency_id:         this.getM2oId(r.currency_id),
+            currency_id:         this.getM2oId(r.currency_id) || false,
             date_order:          r.date_order          || false,
             validity_date:       r.validity_date       || false,
             client_order_ref:    r.client_order_ref    || false,
@@ -1967,12 +2115,64 @@ class SaleOrderFormView extends Component {
 
     onViewInvoices() {
         if (this.state.invoiceIds.length === 0) return;
-        // Open the first (or only) invoice inline
-        this.state.invoiceMode = { invoiceId: this.state.invoiceIds[0] };
+        if (this.state.invoiceIds.length === 1) {
+            this.state.invoiceMode = { invoiceId: this.state.invoiceIds[0], idx: 0, fromList: false };
+        } else {
+            this.state.invoiceListMode = true;
+        }
+    }
+
+    openInvoiceFromList(id) {
+        const idx = this.state.invoiceList.findIndex(inv => inv.id === id);
+        this.state.invoiceListMode = false;
+        this.state.invoiceMode = { invoiceId: id, idx: idx >= 0 ? idx : 0, fromList: true };
+    }
+
+    onInvRowClick(e) {
+        const row = e.currentTarget.closest('[data-inv-id]');
+        const id = row ? parseInt(row.dataset.invId) : 0;
+        if (!id) return;
+        this.openInvoiceFromList(id);
+    }
+
+    async onInvDeleteClick(e) {
+        const id = parseInt(e.currentTarget.dataset.delInvId);
+        if (!id) return;
+        await this.deleteInvoiceFromList(id);
+    }
+
+    closeInvoiceList() {
+        this.state.invoiceListMode = false;
+    }
+
+    async deleteInvoiceFromList(id) {
+        try {
+            await RpcService.call('account.move', 'unlink', [[id]], {});
+            await this.load();
+            if (this.state.invoiceIds.length <= 1) {
+                this.state.invoiceListMode = false;
+            }
+        } catch (e) { this.state.error = e.message; }
     }
 
     closeInvoiceView() {
+        const fromList = this.state.invoiceMode && this.state.invoiceMode.fromList;
         this.state.invoiceMode = null;
+        this.state.invoiceListMode = fromList && this.state.invoiceList.length > 1;
+    }
+
+    prevInvoice() {
+        const cur = this.state.invoiceMode;
+        if (!cur || cur.idx <= 0) return;
+        const newIdx = cur.idx - 1;
+        this.state.invoiceMode = { invoiceId: this.state.invoiceList[newIdx].id, idx: newIdx, fromList: cur.fromList };
+    }
+
+    nextInvoice() {
+        const cur = this.state.invoiceMode;
+        if (!cur || cur.idx >= this.state.invoiceList.length - 1) return;
+        const newIdx = cur.idx + 1;
+        this.state.invoiceMode = { invoiceId: this.state.invoiceList[newIdx].id, idx: newIdx, fromList: cur.fromList };
     }
 
     onPrint() { window.open('/report/html/sale.order/' + this.state.record.id, '_blank'); }
@@ -2336,6 +2536,10 @@ class PurchaseOrderFormView extends Component {
                 this.loadOpts('uom.uom',              'uoms',         ['id', 'name']),
             ]);
             this.state.record = recordData;
+            // Default currency for new records
+            if (!this.props.recordId && !this.state.record.currency_id && this.state.currencies.length > 0) {
+                this.state.record.currency_id = this.state.currencies[0].id;
+            }
             if (this.props.recordId) {
                 await this.loadLines();
                 try {
@@ -2504,7 +2708,7 @@ class PurchaseOrderFormView extends Component {
             partner_id:      this.getM2oId(r.partner_id),
             payment_term_id: this.getM2oId(r.payment_term_id),
             user_id:         this.getM2oId(r.user_id),
-            currency_id:     this.getM2oId(r.currency_id),
+            currency_id:     this.getM2oId(r.currency_id) || false,
             date_order:      r.date_order   || false,
             date_planned:    r.date_planned || false,
             origin:          r.origin       || false,
@@ -3259,10 +3463,11 @@ class ProductFormView extends Component {
                     <!-- ── Tabs ──────────────────────────────────────── -->
                     <div class="so-tabs">
                         <div t-attf-class="so-tab{{state.activeTab==='general'?' active':''}}"
-                             t-on-click.stop="setTabGeneral">General Information</div>
+                             t-on-click.stop="()=>this.setTab('general')">General Information</div>
                         <div class="so-tab prd-tab-disabled" title="Sales tab — coming soon">Sales</div>
                         <div class="so-tab prd-tab-disabled" title="Purchase tab — coming soon">Purchase</div>
-                        <div class="so-tab prd-tab-disabled" title="Inventory tab — coming soon">Inventory</div>
+                        <div t-attf-class="so-tab{{state.activeTab==='inventory'?' active':''}}"
+                             t-on-click.stop="()=>this.setTab('inventory')">Inventory</div>
                         <div class="so-tab prd-tab-disabled" title="Accounting tab — coming soon">Accounting</div>
                     </div>
 
@@ -3352,6 +3557,37 @@ class ProductFormView extends Component {
                         </div>
                     </t>
 
+                    <!-- ── Inventory tab ─────────────────────────────── -->
+                    <t t-if="state.activeTab === 'inventory'">
+                        <div class="so-info-grid" style="margin-top:12px;">
+                            <div class="so-info-col">
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Weight (kg)</label>
+                                    <input class="form-input" type="number" step="0.001" min="0"
+                                           data-field="weight"
+                                           t-att-value="state.record.weight ?? 0"/>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Volume (m³)</label>
+                                    <input class="form-input" type="number" step="0.001" min="0"
+                                           data-field="volume"
+                                           t-att-value="state.record.volume ?? 0"/>
+                                </div>
+                            </div>
+                            <div class="so-info-col">
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Product Type</label>
+                                    <span class="so-field-val" t-esc="typeLabel"/>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Tracking</label>
+                                    <span class="so-field-val prd-stub-note"
+                                          title="Lot/serial tracking — coming soon">No Tracking</span>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+
                     <!-- ── Internal Notes ────────────────────────────── -->
                     <div class="prd-notes-section">
                         <div class="prd-notes-header">
@@ -3414,7 +3650,7 @@ class ProductFormView extends Component {
                     { fields: ['id','name','default_code','barcode','description','type',
                                'categ_id','uom_id','uom_po_id','list_price',
                                'standard_price','sale_ok','purchase_ok','expense_ok',
-                               'image_1920','active'] });
+                               'volume','weight','image_1920','active'] });
                 if (!recs || recs.length === 0) throw new Error('Product not found');
                 this.state.record = { ...recs[0] };
                 this._orig        = { ...recs[0] };
@@ -3428,6 +3664,7 @@ class ProductFormView extends Component {
                     description: false, type: 'consu',
                     categ_id: false, uom_id: 1, uom_po_id: 1,
                     list_price: 0, standard_price: 0,
+                    volume: 0, weight: 0,
                     sale_ok: true, purchase_ok: true, expense_ok: false,
                     image_1920: false, active: true,
                 };
@@ -3451,7 +3688,12 @@ class ProductFormView extends Component {
     strVal(val) { return (!val || val === false) ? '' : String(val); }
     isType(t)   { return (this.state.record.type || 'consu') === t ? true : undefined; }
 
-    setTabGeneral() { this.state.activeTab = 'general'; }
+    setTab(tab) { this.state.activeTab = tab; }
+
+    get typeLabel() {
+        const t = this.state.record.type || 'consu';
+        return t === 'consu' ? 'Consumable' : t === 'service' ? 'Service' : 'Storable Product';
+    }
 
     // ---- Event handlers ----
     onFormChange(e) {
@@ -3490,6 +3732,8 @@ class ProductFormView extends Component {
             uom_po_id:      this.m2oId(r.uom_po_id) || 1,
             list_price:     r.list_price     ?? 0,
             standard_price: r.standard_price ?? 0,
+            volume:         r.volume         ?? 0,
+            weight:         r.weight         ?? 0,
             sale_ok:        !!r.sale_ok,
             purchase_ok:    !!r.purchase_ok,
             expense_ok:     !!r.expense_ok,
@@ -5505,13 +5749,13 @@ class ActionView extends Component {
 
     async navigateTo(model, domain) {
         this.state.loading = true;
-        this.state.mode    = 'list';
-        this.state.recordId = null;
         try {
             const result = await RpcService.getViews(model, [[false,'list'],[false,'form']]);
-            this.state.listView      = result.views?.list || null;
-            this.state.formView      = result.views?.form || null;
+            this.state.listView       = result.views?.list || null;
+            this.state.formView       = result.views?.form || null;
             this.state.overrideAction = { res_model: model, domain: domain || [] };
+            this.state.recordId       = null;
+            this.state.mode           = 'list';
         } catch (e) {
             console.error('navigateTo failed:', e);
         } finally {

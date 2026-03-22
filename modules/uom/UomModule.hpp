@@ -247,11 +247,13 @@ private:
         )");
         txn.exec("SELECT setval('uom_uom_id_seq', (SELECT MAX(id) FROM uom_uom), true)");
 
-        // ir_act_window for uom.uom
+        // ir_act_window for uom.uom — ID 8 is owned by uom; account uses 32 for Customer Invoices
         txn.exec(R"(
             INSERT INTO ir_act_window (id, name, res_model, view_mode, path, context) VALUES
                 (8, 'Units of Measure', 'uom.uom', 'list,form', 'uom', '{}')
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT (id) DO UPDATE
+                SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
+                    view_mode=EXCLUDED.view_mode, path=EXCLUDED.path, domain=NULL
         )");
         txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
         txn.commit();
@@ -282,7 +284,8 @@ private:
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
                 (53, 'Units of Measure', 52, 10, 8)
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT (id) DO UPDATE
+                SET action_id=EXCLUDED.action_id
         )");
 
         txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");

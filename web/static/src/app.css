@@ -1769,3 +1769,54 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
     font-weight: bold;
     flex-shrink: 0;
 }
+
+/* ----------------------------------------------------------------
+ * Register Payment dialog
+ * ---------------------------------------------------------------- */
+.pay-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.pay-dialog {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 28px 32px;
+    min-width: 340px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.4);
+}
+
+.pay-dialog-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+}
+
+.pay-dialog-error {
+    font-size: 0.82rem;
+    color: #e74c3c;
+}
+
+.pay-dialog-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 4px;
+}
+
+.btn-success {
+    background: #27ae60;
+    color: #fff;
+    border: none;
+}
+.btn-success:hover { background: #219a52; }
