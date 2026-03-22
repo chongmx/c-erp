@@ -4293,18 +4293,47 @@ const DLE_DUMMY = {
         partner_city:'50088 Kuala Lumpur, Malaysia', partner_phone:'+603-2181 9000',
         notes:'Thank you for your business.', text_content:'Additional information.',
     },
-    'account.move':   { document_title:'Sales Invoice', doc_number:'INV/2025/0001', doc_date:'01/03/2025', doc_date_due:'31/03/2025', amount_untaxed:'10,000.00', amount_tax:'600.00', amount_total:'10,600.00', lines:[{product_name:'Industrial Motor 5kW',qty:'2.00',uom:'Unit',price_unit:'2,500.00',subtotal:'5,000.00',line_type:'product'},{product_name:'Control Panel Assembly',qty:'1.00',uom:'Unit',price_unit:'3,000.00',subtotal:'3,000.00',line_type:'product'},{product_name:'Installation Service',qty:'1.00',uom:'Job',price_unit:'2,000.00',subtotal:'2,000.00',line_type:'product'}] },
-    'sale.order':     { document_title:'Sales Order', doc_number:'SO/2025/0001', doc_date:'01/03/2025', validity_date:'31/03/2025', amount_untaxed:'10,000.00', amount_tax:'600.00', amount_total:'10,600.00', lines:[{product_name:'Industrial Motor 5kW',qty:'2.00',uom:'Unit',price_unit:'2,500.00',subtotal:'5,000.00',line_type:'product'},{product_name:'Control Panel Assembly',qty:'1.00',uom:'Unit',price_unit:'3,000.00',subtotal:'3,000.00',line_type:'product'}] },
-    'purchase.order': { document_title:'Purchase Order', doc_number:'PO/2025/0001', doc_date:'01/03/2025', date_planned:'15/03/2025', amount_untaxed:'8,000.00', amount_tax:'480.00', amount_total:'8,480.00', lines:[{product_name:'Industrial Motor 5kW',qty:'2.00',uom:'Unit',price_unit:'2,000.00',subtotal:'4,000.00',line_type:'product'},{product_name:'Cable Set',qty:'10.00',uom:'Pcs',price_unit:'150.00',subtotal:'1,500.00',line_type:'product'}] },
+    'account.move':   { document_title:'Sales Invoice', doc_number:'INV/2025/0001', doc_date:'01/03/2025', doc_date_due:'31/03/2025', amount_untaxed:'10,000.00', amount_tax:'600.00', amount_total:'10,600.00', lines:[
+        {product_name:'Electrical Equipment', line_type:'line_section'},
+        {product_name:'Industrial Motor 5kW',qty:'2.00',uom:'Unit',price_unit:'2,500.00',subtotal:'5,000.00',line_type:'product'},
+        {product_name:'Control Panel Assembly',qty:'1.00',uom:'Unit',price_unit:'3,000.00',subtotal:'3,000.00',line_type:'product'},
+        {product_name:'Please ensure all equipment is inspected before installation.',line_type:'line_note'},
+        {product_name:'Installation & Services', line_type:'line_section'},
+        {product_name:'Installation Service',qty:'1.00',uom:'Job',price_unit:'2,000.00',subtotal:'2,000.00',line_type:'product'},
+        {product_name:'Delivery charges included. Contact us for warranty claims.',line_type:'line_note'},
+    ] },
+    'sale.order':     { document_title:'Sales Order', doc_number:'SO/2025/0001', doc_date:'01/03/2025', validity_date:'31/03/2025', amount_untaxed:'10,000.00', amount_tax:'600.00', amount_total:'10,600.00', lines:[
+        {product_name:'Equipment', line_type:'line_section'},
+        {product_name:'Industrial Motor 5kW',qty:'2.00',uom:'Unit',price_unit:'2,500.00',subtotal:'5,000.00',line_type:'product'},
+        {product_name:'Control Panel Assembly',qty:'1.00',uom:'Unit',price_unit:'3,000.00',subtotal:'3,000.00',line_type:'product'},
+        {product_name:'Lead time: 2–3 weeks upon order confirmation.',line_type:'line_note'},
+        {product_name:'Installation Service',qty:'1.00',uom:'Job',price_unit:'2,000.00',subtotal:'2,000.00',line_type:'product'},
+    ] },
+    'purchase.order': { document_title:'Purchase Order', doc_number:'PO/2025/0001', doc_date:'01/03/2025', date_planned:'15/03/2025', amount_untaxed:'5,500.00', amount_tax:'330.00', amount_total:'5,830.00', lines:[
+        {product_name:'Motors & Drives', line_type:'line_section'},
+        {product_name:'Industrial Motor 5kW',qty:'2.00',uom:'Unit',price_unit:'2,000.00',subtotal:'4,000.00',line_type:'product'},
+        {product_name:'Accessories', line_type:'line_section'},
+        {product_name:'Cable Set',qty:'10.00',uom:'Pcs',price_unit:'150.00',subtotal:'1,500.00',line_type:'product'},
+        {product_name:'Please deliver to warehouse loading bay. Call ahead.',line_type:'line_note'},
+    ] },
     'stock.picking':  { document_title:'Delivery Order', doc_number:'WH/OUT/2025/0001', doc_date:'01/03/2025', origin:'SO/2025/0001', source_location:'WH/Stock', dest_location:'Customers', lines:[{product_name:'Industrial Motor 5kW',demand:'2.00',done:'2.00',uom:'Unit'},{product_name:'Control Panel Assembly',demand:'1.00',done:'1.00',uom:'Unit'}] },
 };
 
 function dleRenderPreview(templateHtml, model) {
     const d = { ...DLE_DUMMY.common, ...(DLE_DUMMY[model] || {}) };
-    let html = templateHtml.replace(/\{\{(\w+)\}\}/g, (_, k) => d[k] !== undefined ? d[k] : '');
-    html = html.replace(/\{\{#each lines\}\}([\s\S]*?)\{\{\/each\}\}/g, (_, tpl) =>
-        (d.lines || []).map(ln => tpl.replace(/\{\{(\w+)\}\}/g, (__, k) => ln[k] || '')).join('')
+    const cols = model === 'stock.picking' ? 4 : 5;
+    // Process #each blocks FIRST — the simple replace below would blank inner {{vars}}
+    let html = templateHtml.replace(/\{\{#each lines\}\}([\s\S]*?)\{\{\/each\}\}/g, (_, tpl) =>
+        (d.lines || []).map(ln => {
+            if (ln.line_type === 'line_section')
+                return `<tr class="row-line_section"><td colspan="${cols}">${ln.product_name || ''}</td></tr>`;
+            if (ln.line_type === 'line_note')
+                return `<tr class="row-line_note"><td colspan="${cols}">${ln.product_name || ''}</td></tr>`;
+            return tpl.replace(/\{\{(\w+)\}\}/g, (__, k) => ln[k] || '');
+        }).join('')
     );
+    // Then replace top-level document variables
+    html = html.replace(/\{\{(\w+)\}\}/g, (_, k) => d[k] !== undefined ? d[k] : '');
     return html;
 }
 
@@ -4426,7 +4455,7 @@ class DocumentLayoutEditor extends Component {
                     <t t-if="state.sidebarTab==='props'">
                         <div class="dle-props-panel">
                             <t t-if="state.selectedBlock !== null">
-                                <div class="dle-props-title" t-esc="'Block: ' + getBlockDef(state.blocks[state.selectedBlock].type).label"/>
+                                <div class="dle-props-title" t-esc="getBlockDef(state.blocks[state.selectedBlock].type).label"/>
                                 <!-- Visible toggle always shown -->
                                 <div class="dle-prop-row">
                                     <label>Visible</label>
@@ -4748,7 +4777,10 @@ class DocumentLayoutEditor extends Component {
     }
 
     // ---- Left tab ----
-    setLeftTab(tab) { this.state.leftTab = tab; }
+    setLeftTab(tab) {
+        this.state.leftTab = tab;
+        if (tab === 'blocks') this.state.selectedBlock = null;
+    }
 
     togglePropSect(label) {
         this.state.propSectClosed = { ...this.state.propSectClosed, [label]: !this.state.propSectClosed[label] };

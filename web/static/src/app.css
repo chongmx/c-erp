@@ -1548,8 +1548,8 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
     display: flex;
     align-items: center;
     padding: 7px 10px;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
+    background: var(--border);
+    border-bottom: 1px solid rgba(255,255,255,.06);
     cursor: pointer;
     flex-shrink: 0;
     font-size: 0.78rem;
@@ -1559,7 +1559,7 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
     gap: 6px;
     transition: background 0.12s;
 }
-.dle-acc-hdr:hover { background: var(--border); }
+.dle-acc-hdr:hover { background: #1a3a6e; }
 .dle-acc-hdr span:first-child { flex: 1; }
 .dle-acc-icon { font-size: 10px; color: var(--muted); flex-shrink: 0; }
 
