@@ -3985,6 +3985,353 @@ class ProductFormView extends Component {
 }
 
 // ----------------------------------------------------------------
+// LocationFormView — stock.location detail
+// ----------------------------------------------------------------
+class LocationFormView extends Component {
+    static template = xml`
+        <div class="so-shell" t-on-change="onFormChange" t-on-input="onFormInput">
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Locations</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.complete_name || state.record.name || 'New'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                        <button class="btn"             t-on-click.stop="onDiscard">Discard</button>
+                    </div>
+                </div>
+            </div>
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="so-card">
+                    <div class="so-info-grid" style="margin-top:12px;">
+                        <div class="so-info-col">
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Location Name</label>
+                                <input class="form-input" type="text" data-field="name"
+                                       t-att-value="state.record.name || ''"
+                                       placeholder="e.g. Stock, Shelf A, Room 1"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Parent Location</label>
+                                <select class="form-input" data-field="location_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.locations" t-as="loc" t-key="loc.id">
+                                        <option t-att-value="loc.id"
+                                                t-att-selected="m2oId(state.record.location_id)===loc.id?true:undefined"
+                                                t-esc="loc.complete_name || loc.name"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Usage</label>
+                                <select class="form-input" data-field="usage">
+                                    <option value="internal"   t-att-selected="(state.record.usage||'internal')==='internal'?true:undefined">Internal Location</option>
+                                    <option value="view"       t-att-selected="state.record.usage==='view'?true:undefined">View</option>
+                                    <option value="supplier"   t-att-selected="state.record.usage==='supplier'?true:undefined">Vendor Location</option>
+                                    <option value="customer"   t-att-selected="state.record.usage==='customer'?true:undefined">Customer Location</option>
+                                    <option value="inventory"  t-att-selected="state.record.usage==='inventory'?true:undefined">Inventory Adjustments</option>
+                                    <option value="transit"    t-att-selected="state.record.usage==='transit'?true:undefined">Transit</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="so-info-col">
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Full Path</label>
+                                <span class="so-field-val" t-esc="state.record.complete_name || '—'"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Active</label>
+                                <input type="checkbox" data-field="active"
+                                       t-att-checked="state.record.active !== false ? true : undefined"/>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({ loading: true, error: null, record: {}, locations: [] });
+        this._orig = {};
+        onMounted(() => this.load());
+    }
+
+    async load() {
+        this.state.loading = true;
+        this.state.error   = null;
+        try {
+            const locs = await RpcService.call('stock.location', 'search_read', [[]], {
+                fields: ['id','name','complete_name'], limit: 200 });
+            this.state.locations = Array.isArray(locs) ? locs : [];
+
+            if (this.props.recordId) {
+                const recs = await RpcService.call('stock.location', 'read',
+                    [[this.props.recordId]],
+                    { fields: ['id','name','complete_name','location_id','usage','active','company_id'] });
+                if (!recs || recs.length === 0) throw new Error('Location not found');
+                this.state.record = { ...recs[0] };
+                this._orig        = { ...recs[0] };
+            } else {
+                this.state.record = { name:'', complete_name:'', location_id: false, usage:'internal', active: true };
+                this._orig = { ...this.state.record };
+            }
+        } catch (e) {
+            this.state.error = e.message || 'Failed to load location';
+        } finally {
+            this.state.loading = false;
+        }
+    }
+
+    m2oId(val) {
+        if (!val && val !== 0) return 0;
+        if (typeof val === 'number') return val;
+        if (Array.isArray(val)) return val[0] || 0;
+        return parseInt(val) || 0;
+    }
+
+    onFormChange(e) {
+        const field = e.target.dataset.field;
+        if (!field) return;
+        if (e.target.type === 'checkbox') {
+            this.state.record[field] = e.target.checked;
+        } else if (e.target.tagName === 'SELECT') {
+            const raw = e.target.value;
+            this.state.record[field] = isNaN(raw) || raw === '' ? raw : (parseInt(raw) || 0);
+        }
+    }
+    onFormInput(e) {
+        const field = e.target.dataset.field;
+        if (!field || e.target.tagName === 'SELECT') return;
+        this.state.record[field] = e.target.value;
+    }
+
+    async onSave() {
+        const r = this.state.record;
+        if (!r.name || !r.name.trim()) { alert('Location name is required.'); return; }
+        const vals = {
+            name:        r.name.trim(),
+            location_id: this.m2oId(r.location_id) || false,
+            usage:       r.usage || 'internal',
+            active:      r.active !== false,
+        };
+        try {
+            if (this.props.recordId) {
+                await RpcService.call('stock.location', 'write', [[this.props.recordId], vals]);
+                await this.load();
+            } else {
+                await RpcService.call('stock.location', 'create', [vals]);
+                this.props.onBack();
+            }
+        } catch (e) { alert('Save failed: ' + (e.message || e)); }
+    }
+    onDiscard() {
+        if (!this.props.recordId) { this.props.onBack(); return; }
+        this.state.record = { ...this._orig };
+    }
+    onBack() { this.props.onBack(); }
+}
+
+
+// ----------------------------------------------------------------
+// WarehouseFormView — stock.warehouse detail
+// ----------------------------------------------------------------
+class WarehouseFormView extends Component {
+    static template = xml`
+        <div class="so-shell" t-on-change="onFormChange" t-on-input="onFormInput">
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Warehouses</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.name || 'New Warehouse'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                        <button class="btn"             t-on-click.stop="onDiscard">Discard</button>
+                    </div>
+                </div>
+            </div>
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="so-card">
+                    <div class="so-info-grid" style="margin-top:12px;">
+                        <!-- Left: identity -->
+                        <div class="so-info-col">
+                            <div class="prd-tab-section-title">Identity</div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Warehouse Name</label>
+                                <input class="form-input" type="text" data-field="name"
+                                       t-att-value="state.record.name || ''"
+                                       placeholder="e.g. Main Warehouse"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Short Name</label>
+                                <input class="form-input" type="text" data-field="code"
+                                       t-att-value="state.record.code || ''"
+                                       placeholder="e.g. WH" maxlength="5"/>
+                            </div>
+                        </div>
+                        <!-- Right: locations + operation types (read-only info) -->
+                        <div class="so-info-col">
+                            <div class="prd-tab-section-title">Locations</div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Main Stock Location</label>
+                                <select class="form-input" data-field="lot_stock_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="internalLocations" t-as="loc" t-key="loc.id">
+                                        <option t-att-value="loc.id"
+                                                t-att-selected="m2oId(state.record.lot_stock_id)===loc.id?true:undefined"
+                                                t-esc="loc.complete_name || loc.name"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="prd-tab-section-title" style="margin-top:12px;">Operation Types</div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Receipts</label>
+                                <select class="form-input" data-field="in_type_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.pickingTypes" t-as="pt" t-key="pt.id">
+                                        <option t-att-value="pt.id"
+                                                t-att-selected="m2oId(state.record.in_type_id)===pt.id?true:undefined"
+                                                t-esc="pt.name"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Deliveries</label>
+                                <select class="form-input" data-field="out_type_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.pickingTypes" t-as="pt" t-key="pt.id">
+                                        <option t-att-value="pt.id"
+                                                t-att-selected="m2oId(state.record.out_type_id)===pt.id?true:undefined"
+                                                t-esc="pt.name"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Internal Transfers</label>
+                                <select class="form-input" data-field="int_type_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.pickingTypes" t-as="pt" t-key="pt.id">
+                                        <option t-att-value="pt.id"
+                                                t-att-selected="m2oId(state.record.int_type_id)===pt.id?true:undefined"
+                                                t-esc="pt.name"/>
+                                    </t>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({ loading: true, error: null, record: {}, locations: [], pickingTypes: [] });
+        this._orig = {};
+        onMounted(() => this.load());
+    }
+
+    get internalLocations() {
+        return this.state.locations.filter(l => l.usage === 'internal' || l.usage === 'view');
+    }
+
+    async load() {
+        this.state.loading = true;
+        this.state.error   = null;
+        try {
+            const [locs, pts] = await Promise.all([
+                RpcService.call('stock.location', 'search_read', [[]], {
+                    fields: ['id','name','complete_name','usage'], limit: 200 }),
+                RpcService.call('stock.picking.type', 'search_read', [[]], {
+                    fields: ['id','name','code'], limit: 50 }),
+            ]);
+            this.state.locations    = Array.isArray(locs) ? locs : [];
+            this.state.pickingTypes = Array.isArray(pts)  ? pts  : [];
+
+            if (this.props.recordId) {
+                const recs = await RpcService.call('stock.warehouse', 'read',
+                    [[this.props.recordId]],
+                    { fields: ['id','name','code','company_id','lot_stock_id','view_location_id',
+                               'in_type_id','out_type_id','int_type_id','active'] });
+                if (!recs || recs.length === 0) throw new Error('Warehouse not found');
+                this.state.record = { ...recs[0] };
+                this._orig        = { ...recs[0] };
+            } else {
+                this.state.record = {
+                    name: '', code: '', active: true,
+                    lot_stock_id: false, view_location_id: false,
+                    in_type_id: false, out_type_id: false, int_type_id: false,
+                };
+                this._orig = { ...this.state.record };
+            }
+        } catch (e) {
+            this.state.error = e.message || 'Failed to load warehouse';
+        } finally {
+            this.state.loading = false;
+        }
+    }
+
+    m2oId(val) {
+        if (!val && val !== 0) return 0;
+        if (typeof val === 'number') return val;
+        if (Array.isArray(val)) return val[0] || 0;
+        return parseInt(val) || 0;
+    }
+
+    onFormChange(e) {
+        const field = e.target.dataset.field;
+        if (!field) return;
+        if (e.target.type === 'checkbox') {
+            this.state.record[field] = e.target.checked;
+        } else if (e.target.tagName === 'SELECT') {
+            const raw = e.target.value;
+            this.state.record[field] = isNaN(raw) || raw === '' ? raw : (parseInt(raw) || 0);
+        }
+    }
+    onFormInput(e) {
+        const field = e.target.dataset.field;
+        if (!field || e.target.tagName === 'SELECT') return;
+        this.state.record[field] = e.target.value;
+    }
+
+    async onSave() {
+        const r = this.state.record;
+        if (!r.name || !r.name.trim()) { alert('Warehouse name is required.'); return; }
+        if (!r.code || !r.code.trim()) { alert('Short name is required.'); return; }
+        const vals = {
+            name:             r.name.trim(),
+            code:             r.code.trim().toUpperCase(),
+            lot_stock_id:     this.m2oId(r.lot_stock_id)  || false,
+            in_type_id:       this.m2oId(r.in_type_id)    || false,
+            out_type_id:      this.m2oId(r.out_type_id)   || false,
+            int_type_id:      this.m2oId(r.int_type_id)   || false,
+        };
+        try {
+            if (this.props.recordId) {
+                await RpcService.call('stock.warehouse', 'write', [[this.props.recordId], vals]);
+                await this.load();
+            } else {
+                await RpcService.call('stock.warehouse', 'create', [vals]);
+                this.props.onBack();
+            }
+        } catch (e) { alert('Save failed: ' + (e.message || e)); }
+    }
+    onDiscard() {
+        if (!this.props.recordId) { this.props.onBack(); return; }
+        this.state.record = { ...this._orig };
+    }
+    onBack() { this.props.onBack(); }
+}
+
+
+// ----------------------------------------------------------------
 // ContactFormView — res.partner detail
 // ----------------------------------------------------------------
 class ContactFormView extends Component {
@@ -6693,6 +7040,14 @@ class ActionView extends Component {
                     <TransferFormView recordId="state.recordId"
                                       onBack.bind="backToList"/>
                 </t>
+                <t t-elif="isStockLocationModel">
+                    <LocationFormView recordId="state.recordId"
+                                      onBack.bind="backToList"/>
+                </t>
+                <t t-elif="isStockWarehouseModel">
+                    <WarehouseFormView recordId="state.recordId"
+                                       onBack.bind="backToList"/>
+                </t>
                 <t t-elif="isProductModel">
                     <ProductFormView recordId="state.recordId"
                                      onBack.bind="backToList"
@@ -6716,7 +7071,7 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor };
 
     // Use overrideAction when navigateTo() has been called, else fall back to props.action
     get currentAction()          { return this.state.overrideAction || this.props.action; }
@@ -6725,6 +7080,8 @@ class ActionView extends Component {
     get isPurchaseOrderModel()   { return this.currentAction.res_model === 'purchase.order'; }
     get isInvoiceModel()         { return this.currentAction.res_model === 'account.move'; }
     get isStockPickingModel()    { return this.currentAction.res_model === 'stock.picking'; }
+    get isStockLocationModel()   { return this.currentAction.res_model === 'stock.location'; }
+    get isStockWarehouseModel()  { return this.currentAction.res_model === 'stock.warehouse'; }
     get isProductModel()         { return this.currentAction.res_model === 'product.product'; }
     get isBomModel()             { return this.currentAction.res_model === 'mrp.bom'; }
     get isReportTemplateModel()  { return this.currentAction.res_model === 'ir.report.template'; }

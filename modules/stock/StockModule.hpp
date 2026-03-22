@@ -314,6 +314,70 @@ public:
 };
 
 
+// ----------------------------------------------------------------
+// StockWarehouse — stock.warehouse
+// ----------------------------------------------------------------
+class StockWarehouse : public BaseModel<StockWarehouse> {
+public:
+    ODOO_MODEL("stock.warehouse", "stock_warehouse")
+
+    std::string name, code;
+    int         companyId       = 0;
+    int         lotStockId      = 0;   // main stock location (WH/Stock)
+    int         viewLocationId  = 0;   // parent view location (WH)
+    int         inTypeId        = 0;   // receipt picking type
+    int         outTypeId       = 0;   // delivery picking type
+    int         intTypeId       = 0;   // internal picking type
+    bool        active          = true;
+
+    explicit StockWarehouse(std::shared_ptr<DbConnection> db)
+        : BaseModel<StockWarehouse>(std::move(db)) {}
+
+    void registerFields() override {
+        fieldRegistry_.add({"name",             FieldType::Char,    "Warehouse",          true});
+        fieldRegistry_.add({"code",             FieldType::Char,    "Short Name",         true});
+        fieldRegistry_.add({"company_id",       FieldType::Many2one,"Company",            false, false, true, false, "res.company"});
+        fieldRegistry_.add({"lot_stock_id",     FieldType::Many2one,"Location Stock",     false, false, true, false, "stock.location"});
+        fieldRegistry_.add({"view_location_id", FieldType::Many2one,"View Location",      false, false, true, false, "stock.location"});
+        fieldRegistry_.add({"in_type_id",       FieldType::Many2one,"Receipts",           false, false, true, false, "stock.picking.type"});
+        fieldRegistry_.add({"out_type_id",      FieldType::Many2one,"Deliveries",         false, false, true, false, "stock.picking.type"});
+        fieldRegistry_.add({"int_type_id",      FieldType::Many2one,"Internal Transfers", false, false, true, false, "stock.picking.type"});
+        fieldRegistry_.add({"active",           FieldType::Boolean, "Active"});
+    }
+
+    void serializeFields(nlohmann::json& j) const override {
+        j["name"]             = name;
+        j["code"]             = code;
+        j["company_id"]       = companyId      > 0 ? nlohmann::json(companyId)      : nlohmann::json(false);
+        j["lot_stock_id"]     = lotStockId     > 0 ? nlohmann::json(lotStockId)     : nlohmann::json(false);
+        j["view_location_id"] = viewLocationId > 0 ? nlohmann::json(viewLocationId) : nlohmann::json(false);
+        j["in_type_id"]       = inTypeId       > 0 ? nlohmann::json(inTypeId)       : nlohmann::json(false);
+        j["out_type_id"]      = outTypeId      > 0 ? nlohmann::json(outTypeId)      : nlohmann::json(false);
+        j["int_type_id"]      = intTypeId      > 0 ? nlohmann::json(intTypeId)      : nlohmann::json(false);
+        j["active"]           = active;
+    }
+
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("name") && j["name"].is_string()) name = j["name"].get<std::string>();
+        if (j.contains("code") && j["code"].is_string()) code = j["code"].get<std::string>();
+        if (j.contains("active") && j["active"].is_boolean()) active = j["active"].get<bool>();
+        if (const int v = parseM2o(j, "company_id"))       companyId      = v;
+        if (const int v = parseM2o(j, "lot_stock_id"))     lotStockId     = v;
+        if (const int v = parseM2o(j, "view_location_id")) viewLocationId = v;
+        if (const int v = parseM2o(j, "in_type_id"))       inTypeId       = v;
+        if (const int v = parseM2o(j, "out_type_id"))      outTypeId      = v;
+        if (const int v = parseM2o(j, "int_type_id"))      intTypeId      = v;
+    }
+
+    std::vector<std::string> validate() const override {
+        std::vector<std::string> e;
+        if (name.empty()) e.push_back("Warehouse name is required");
+        if (code.empty()) e.push_back("Short name is required");
+        return e;
+    }
+};
+
+
 // ================================================================
 // 2. VIEWMODELS
 // ================================================================
@@ -812,6 +876,7 @@ public:
         models_.registerCreator("stock.picking.type", [db]{ return std::make_shared<StockPickingType>(db); });
         models_.registerCreator("stock.picking",      [db]{ return std::make_shared<StockPicking>(db); });
         models_.registerCreator("stock.move",         [db]{ return std::make_shared<StockMove>(db); });
+        models_.registerCreator("stock.warehouse",    [db]{ return std::make_shared<StockWarehouse>(db); });
     }
 
     void registerServices() override {}
@@ -834,12 +899,16 @@ public:
         viewModels_.registerCreator("stock.picking.type", [db]{
             return std::make_shared<GenericViewModel<StockPickingType>>(db);
         });
+        viewModels_.registerCreator("stock.warehouse", [db]{
+            return std::make_shared<GenericViewModel<StockWarehouse>>(db);
+        });
     }
 
     void initialize() override {
         ensureSchema_();
         seedLocations_();
         seedPickingTypes_();
+        seedWarehouses_();
         seedMenus_();
     }
 
@@ -923,6 +992,23 @@ private:
             )
         )");
 
+        txn.exec(R"(
+            CREATE TABLE IF NOT EXISTS stock_warehouse (
+                id               SERIAL  PRIMARY KEY,
+                name             VARCHAR NOT NULL,
+                code             VARCHAR(5) NOT NULL UNIQUE,
+                company_id       INTEGER REFERENCES res_company(id)        ON DELETE SET NULL,
+                lot_stock_id     INTEGER REFERENCES stock_location(id)     ON DELETE SET NULL,
+                view_location_id INTEGER REFERENCES stock_location(id)     ON DELETE SET NULL,
+                in_type_id       INTEGER REFERENCES stock_picking_type(id) ON DELETE SET NULL,
+                out_type_id      INTEGER REFERENCES stock_picking_type(id) ON DELETE SET NULL,
+                int_type_id      INTEGER REFERENCES stock_picking_type(id) ON DELETE SET NULL,
+                active           BOOLEAN NOT NULL DEFAULT TRUE,
+                create_date      TIMESTAMP DEFAULT now(),
+                write_date       TIMESTAMP DEFAULT now()
+            )
+        )");
+
         // Migrations for new columns
         txn.exec("ALTER TABLE stock_picking ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES res_users(id)");
 
@@ -976,6 +1062,24 @@ private:
     }
 
     // ----------------------------------------------------------
+    // Seed default warehouse
+    // ----------------------------------------------------------
+    void seedWarehouses_() {
+        auto conn = services_.db()->acquire();
+        pqxx::work txn{conn.get()};
+        txn.exec(R"(
+            INSERT INTO stock_warehouse
+                (id, name, code, company_id, lot_stock_id, view_location_id,
+                 in_type_id, out_type_id, int_type_id)
+            VALUES
+                (1, 'Main Warehouse', 'WH', 1, 4, 3, 1, 2, 3)
+            ON CONFLICT (id) DO NOTHING
+        )");
+        txn.exec("SELECT setval('stock_warehouse_id_seq', (SELECT MAX(id) FROM stock_warehouse), true)");
+        txn.commit();
+    }
+
+    // ----------------------------------------------------------
     // Seed IR menus
     // ----------------------------------------------------------
     void seedMenus_() {
@@ -984,13 +1088,19 @@ private:
 
         // ── Window actions ──────────────────────────────────────────
         txn.exec(R"(
-            INSERT INTO ir_act_window (id, name, res_model, view_mode, context) VALUES
-                (17, 'Transfers',      'stock.picking',      'list,form', '{}'),
-                (18, 'Locations',      'stock.location',     'list,form', '{}'),
-                (19, 'Operation Types','stock.picking.type', 'list,form', '{}'),
-                (20, 'Products',       'product.product',    'list,form', '{}'),
-                (21, 'Moves History',  'stock.move',         'list,form', '{}')
-            ON CONFLICT (id) DO NOTHING
+            INSERT INTO ir_act_window (id, name, res_model, view_mode, domain, context) VALUES
+                (17, 'All Transfers',       'stock.picking',      'list,form', '[]',                           '{}'),
+                (18, 'Locations',           'stock.location',     'list,form', '[]',                           '{}'),
+                (19, 'Operation Types',     'stock.picking.type', 'list,form', '[]',                           '{}'),
+                (20, 'Products',            'product.product',    'list,form', '[]',                           '{}'),
+                (21, 'Moves History',       'stock.move',         'list,form', '[]',                           '{}'),
+                (22, 'Receipts',            'stock.picking',      'list,form', '[["picking_type_id","=",1]]',  '{}'),
+                (23, 'Deliveries',          'stock.picking',      'list,form', '[["picking_type_id","=",2]]',  '{}'),
+                (24, 'Internal Transfers',  'stock.picking',      'list,form', '[["picking_type_id","=",3]]',  '{}'),
+                (25, 'Warehouses',          'stock.warehouse',    'list,form', '[]',                           '{}')
+            ON CONFLICT (id) DO UPDATE
+                SET name      = EXCLUDED.name,
+                    domain    = EXCLUDED.domain
         )");
         txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
 
@@ -1002,7 +1112,6 @@ private:
         )");
 
         // ── Top-level sections (Operations, Products, Reporting, Configuration)
-        // id=91 existed as "Transfers" — update it to become "Operations" parent
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
                 (91, 'Operations',    90, 10, NULL),
@@ -1016,11 +1125,18 @@ private:
                     action_id = EXCLUDED.action_id
         )");
 
-        // ── Operations sub-menu ──────────────────────────────────────
+        // ── Operations sub-menus (Receipts, Deliveries, Internal, All) ─
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-                (95, 'Transfers', 91, 10, 17)
-            ON CONFLICT (id) DO NOTHING
+                (200, 'Receipts',            91, 10, 22),
+                (201, 'Deliveries',          91, 20, 23),
+                (202, 'Internal Transfers',  91, 30, 24),
+                (95,  'All Transfers',       91, 40, 17)
+            ON CONFLICT (id) DO UPDATE
+                SET name      = EXCLUDED.name,
+                    parent_id = EXCLUDED.parent_id,
+                    sequence  = EXCLUDED.sequence,
+                    action_id = EXCLUDED.action_id
         )");
 
         // ── Products sub-menu ────────────────────────────────────────
@@ -1037,12 +1153,17 @@ private:
             ON CONFLICT (id) DO NOTHING
         )");
 
-        // ── Configuration sub-menu (Locations, Operation Types) ─────
+        // ── Configuration sub-menus (Warehouses, Locations, Operation Types) ─
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-                (93, 'Locations',       92, 10, 18),
-                (94, 'Operation Types', 92, 20, 19)
-            ON CONFLICT (id) DO NOTHING
+                (203, 'Warehouses',      92,  5, 25),
+                (93,  'Locations',       92, 10, 18),
+                (94,  'Operation Types', 92, 20, 19)
+            ON CONFLICT (id) DO UPDATE
+                SET name      = EXCLUDED.name,
+                    parent_id = EXCLUDED.parent_id,
+                    sequence  = EXCLUDED.sequence,
+                    action_id = EXCLUDED.action_id
         )");
 
         txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");
