@@ -1031,6 +1031,147 @@ public:
             },
             {drogon::Get}
         );
+
+        // Preview route — renders template with dummy data (no real record needed)
+        // NOTE: uses /report/preview/ (not /report/html/) to avoid collision with /report/html/{model}/{id}
+        drogon::app().registerHandler(
+            "/report/preview/{1}",
+            [db](const drogon::HttpRequestPtr& req,
+                 std::function<void(const drogon::HttpResponsePtr&)>&& cb,
+                 const std::string& model)
+            {
+                try {
+                    auto conn = db->acquire();
+                    pqxx::work txn{conn.get()};
+
+                    // ---- Load template ----
+                    auto tplRows = txn.exec(
+                        "SELECT template_html, paper_format, orientation "
+                        "FROM ir_report_template "
+                        "WHERE model=$1 AND active=true ORDER BY id LIMIT 1",
+                        pqxx::params{model});
+
+                    if (tplRows.empty()) {
+                        cb(htmlError(404, "No template found for model: " + model));
+                        return;
+                    }
+
+                    std::string tplHtml     = safeStr(tplRows[0]["template_html"]);
+                    std::string paperFormat = safeStr(tplRows[0]["paper_format"]);
+                    std::string orientation = safeStr(tplRows[0]["orientation"]);
+                    if (paperFormat.empty()) paperFormat = "A4";
+                    if (orientation.empty()) orientation = "portrait";
+
+                    std::map<std::string, std::string> vars;
+                    std::vector<std::map<std::string, std::string>> lines;
+
+                    vars["paper_format"] = paperFormat;
+                    vars["orientation"]  = orientation;
+
+                    // Helper: load a config param from ir_config_parameter
+                    auto loadCfg = [&](const std::string& key, const std::string& def = "") -> std::string {
+                        try {
+                            auto r = txn.exec(
+                                "SELECT value FROM ir_config_parameter WHERE key=$1",
+                                pqxx::params{key});
+                            if (!r.empty() && !r[0]["value"].is_null()) {
+                                std::string v = r[0]["value"].c_str();
+                                if (!v.empty()) return v;
+                            }
+                        } catch (...) {}
+                        return def;
+                    };
+
+                    // ---- Company info from ir_config_parameter ----
+                    vars["company_name"]         = loadCfg("company.name", "Demo Company Sdn. Bhd.");
+                    vars["company_phone"]        = loadCfg("company.phone", "+603-2181 8000");
+                    vars["company_email"]        = loadCfg("company.email", "info@democompany.com");
+                    vars["company_website"]      = loadCfg("company.website", "www.democompany.com");
+                    vars["company_reg"]          = loadCfg("report.reg_number", "123456-A");
+                    vars["company_addr1"]        = loadCfg("report.addr1", "Level 10, Menara Demo");
+                    vars["company_addr2"]        = loadCfg("report.addr2", "Jalan Ampang");
+                    vars["company_addr3"]        = loadCfg("report.addr3", "");
+                    vars["company_city_country"] = loadCfg("report.city_country", "50450 Kuala Lumpur, Malaysia");
+                    vars["currency_code"]        = loadCfg("report.currency_code", "MYR");
+                    vars["payment_term_days"]    = loadCfg("report.payment_term_days", "30");
+                    vars["bank_account_name"]    = loadCfg("report.bank.account_name", "Demo Company Sdn. Bhd.");
+                    vars["bank_account_no"]      = loadCfg("report.bank.account_no", "1234567890");
+                    vars["bank_name"]            = loadCfg("report.bank.bank_name", "Maybank Berhad");
+                    vars["bank_address"]         = loadCfg("report.bank.bank_address", "Jalan Tun Perak, Kuala Lumpur");
+                    vars["bank_swift"]           = loadCfg("report.bank.swift_code", "MBBEMYKL");
+
+                    // ---- Dummy partner info ----
+                    vars["partner_name"]   = "ABC Technology Sdn. Bhd.";
+                    vars["partner_street"] = "Level 3, Menara KL";
+                    vars["partner_city"]   = "50088 Kuala Lumpur, Malaysia";
+                    vars["partner_phone"]  = "+603-2181 9000";
+
+                    // ---- Model-specific dummy data ----
+                    if (model == "account.move") {
+                        vars["document_title"] = "Sales Invoice";
+                        vars["doc_number"]     = "INV/2025/0001";
+                        vars["doc_date"]       = "01/03/2025";
+                        vars["doc_date_due"]   = "31/03/2025";
+                        vars["amount_untaxed"] = "10,000.00";
+                        vars["amount_tax"]     = "600.00";
+                        vars["amount_total"]   = "10,600.00";
+                    } else if (model == "sale.order") {
+                        vars["document_title"] = "Sales Order";
+                        vars["doc_number"]     = "SO/2025/0001";
+                        vars["doc_date"]       = "01/03/2025";
+                        vars["validity_date"]  = "31/03/2025";
+                        vars["amount_untaxed"] = "10,000.00";
+                        vars["amount_tax"]     = "600.00";
+                        vars["amount_total"]   = "10,600.00";
+                    } else if (model == "purchase.order") {
+                        vars["document_title"] = "Purchase Order";
+                        vars["doc_number"]     = "PO/2025/0001";
+                        vars["doc_date"]       = "01/03/2025";
+                        vars["date_planned"]   = "15/03/2025";
+                        vars["amount_untaxed"] = "8,000.00";
+                        vars["amount_tax"]     = "480.00";
+                        vars["amount_total"]   = "8,480.00";
+                    } else if (model == "stock.picking") {
+                        vars["document_title"]  = "Delivery Order";
+                        vars["doc_number"]      = "WH/OUT/2025/0001";
+                        vars["doc_date"]        = "01/03/2025";
+                        vars["origin"]          = "SO/2025/0001";
+                        vars["source_location"] = "WH/Stock";
+                        vars["dest_location"]   = "Customers";
+                    } else {
+                        vars["document_title"] = "Document";
+                        vars["doc_number"]     = "DOC/2025/0001";
+                        vars["doc_date"]       = "01/03/2025";
+                        vars["amount_untaxed"] = "10,000.00";
+                        vars["amount_tax"]     = "600.00";
+                        vars["amount_total"]   = "10,600.00";
+                    }
+
+                    // ---- Dummy lines ----
+                    if (model == "stock.picking") {
+                        lines.push_back({{"product_name","Industrial Motor 5kW"},{"demand","2.00"},{"done","2.00"},{"uom","Unit"}});
+                        lines.push_back({{"product_name","Control Panel Assembly"},{"demand","1.00"},{"done","1.00"},{"uom","Unit"}});
+                        lines.push_back({{"product_name","Installation Service"},{"demand","1.00"},{"done","1.00"},{"uom","Job"}});
+                    } else {
+                        lines.push_back({{"product_name","Industrial Motor 5kW"},{"qty","2.00"},{"uom","Unit"},{"price_unit","2,500.00"},{"subtotal","5,000.00"},{"line_type","product"}});
+                        lines.push_back({{"product_name","Control Panel Assembly"},{"qty","1.00"},{"uom","Unit"},{"price_unit","3,000.00"},{"subtotal","3,000.00"},{"line_type","product"}});
+                        lines.push_back({{"product_name","Installation Service"},{"qty","1.00"},{"uom","Job"},{"price_unit","2,000.00"},{"subtotal","2,000.00"},{"line_type","product"}});
+                    }
+
+                    std::string rendered = TemplateRenderer::render(tplHtml, vars, lines);
+
+                    auto resp = drogon::HttpResponse::newHttpResponse();
+                    resp->setStatusCode(drogon::k200OK);
+                    resp->setContentTypeCode(drogon::CT_TEXT_HTML);
+                    resp->setBody(rendered);
+                    cb(resp);
+
+                } catch (const std::exception& ex) {
+                    cb(htmlError(500, std::string("Internal error: ") + ex.what()));
+                }
+            },
+            {drogon::Get}
+        );
     }
 
     void initialize() override {
@@ -1038,6 +1179,7 @@ public:
         seedTemplates_();
         seedConfigParams_();
         seedMenuEntries_();
+        seedConfigParams_extra_();
     }
 
 private:
@@ -1074,10 +1216,7 @@ private:
             txn.exec(
                 "INSERT INTO ir_report_template (id, name, model, template_html, paper_format, orientation) "
                 "VALUES ($1,$2,$3,$4,$5,$6) "
-                "ON CONFLICT (id) DO UPDATE SET "
-                "template_html=EXCLUDED.template_html, "
-                "paper_format=EXCLUDED.paper_format, "
-                "orientation=EXCLUDED.orientation",
+                "ON CONFLICT (id) DO NOTHING",
                 pqxx::params{id, name, model, html, paper, orient});
         };
 
@@ -1124,24 +1263,51 @@ private:
             "ON CONFLICT (id) DO UPDATE SET "
             "name=EXCLUDED.name, res_model=EXCLUDED.res_model, view_mode=EXCLUDED.view_mode");
 
-        // App tile: Settings (id=100)
-        txn.exec(
-            "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id, web_icon) VALUES "
-            "(100, 'Settings', NULL, 99, NULL, 'settings') "
-            "ON CONFLICT (id) DO NOTHING");
+        // Remove the duplicate Settings app tile (id=100) — we reuse id=30 from IrModule
+        txn.exec("UPDATE ir_ui_menu SET parent_id=30 WHERE id IN (101,103) AND parent_id=100");
+        txn.exec("DELETE FROM ir_ui_menu WHERE id=100");
 
-        // Section under Settings (id=101)
+        // Section under unified Settings (id=101): Technical — parent_id=30
         txn.exec(
             "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
-            "(101, 'Technical', 100, 10, NULL) "
-            "ON CONFLICT (id) DO NOTHING");
+            "(101, 'Technical', 30, 30, NULL) "
+            "ON CONFLICT (id) DO UPDATE SET parent_id=30, sequence=30");
 
-        // Document Templates item (id=102)
+        // Document Templates item (id=102) under Technical (id=101)
         txn.exec(
             "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
             "(102, 'Document Templates', 101, 10, 30) "
+            "ON CONFLICT (id) DO UPDATE SET parent_id=101");
+
+        // Action id=31: ERP Settings
+        txn.exec(
+            "INSERT INTO ir_act_window (id, name, res_model, view_mode) VALUES "
+            "(31, 'ERP Settings', 'ir.erp.settings', 'list,form') "
             "ON CONFLICT (id) DO NOTHING");
 
+        // Menu id=103: ERP Settings directly under unified Settings (id=30)
+        txn.exec(
+            "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
+            "(103, 'ERP Settings', 30, 25, 31) "
+            "ON CONFLICT (id) DO UPDATE SET parent_id=30, sequence=25");
+
+        txn.commit();
+    }
+
+    void seedConfigParams_extra_() {
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        txn.exec(R"(
+            INSERT INTO ir_config_parameter (key, value) VALUES
+                ('company.name',               ''),
+                ('company.phone',              ''),
+                ('company.email',              ''),
+                ('company.website',            ''),
+                ('report.design.accent_color', '#4a4a4a'),
+                ('report.design.font_family',  'Arial, sans-serif')
+            ON CONFLICT (key) DO NOTHING
+        )");
         txn.commit();
     }
 };

@@ -616,6 +616,7 @@ class InvoiceFormView extends Component {
                         <t t-if="isDraft">
                             <button class="btn btn-primary" t-on-click.stop="onPost">Confirm</button>
                             <button class="btn"             t-on-click.stop="onSave">Save</button>
+                            <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
                         </t>
                         <t t-if="isPosted">
                             <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
@@ -1159,6 +1160,14 @@ class InvoiceFormView extends Component {
         } catch (e) { this.state.error = e.message; }
     }
 
+    async onDelete() {
+        if (!confirm('Delete this draft invoice? This cannot be undone.')) return;
+        try {
+            await RpcService.call('account.move', 'unlink', [[this.state.record.id]], {});
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+
     onBack() { this.props.onBack(); }
 
     onPrint() { window.open('/report/html/account.move/' + this.state.record.id, '_blank'); }
@@ -1213,6 +1222,16 @@ class SaleOrderFormView extends Component {
                     </t>
                     <t t-if="showCreateInvoice">
                         <button class="btn so-wf-btn" t-on-click.stop="onCreateInvoice">Create Invoice</button>
+                        <button class="btn so-wf-btn" t-on-click.stop="onToggleDownPaymentForm">Down Payment</button>
+                    </t>
+                    <t t-if="showProgressInvoice">
+                        <button class="btn so-wf-btn" t-on-click.stop="onToggleProgressForm">Progress Invoice</button>
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onCreateFinalInvoice">Final Invoice</button>
+                        <span class="so-inv-remaining">
+                            Invoiced: <t t-esc="formatMoney(state.invoicedAmount)"/>
+                            &amp;nbsp;·&amp;nbsp;
+                            Remaining: <t t-esc="formatMoney(remainingAmount)"/>
+                        </span>
                     </t>
                     <t t-if="showCancelBtn">
                         <button class="btn ghost so-wf-btn" t-on-click.stop="onCancel">Cancel</button>
@@ -1224,6 +1243,25 @@ class SaleOrderFormView extends Component {
                     <div t-attf-class="so-step{{stepClass('sale')}}">Sales Order</div>
                 </div>
             </div>
+
+            <!-- Down payment / progress invoice inline form -->
+            <t t-if="state.dpFormOpen">
+                <div class="dp-form-bar">
+                    <span class="dp-form-title" t-esc="state.dpMode === 'progress' ? 'Progress Invoice' : 'Down Payment'"/>
+                    <input type="number" class="form-input dp-amount-input" placeholder="Amount"
+                           t-att-value="state.dpAmount"
+                           t-on-input="onDpAmountInput"/>
+                    <button class="btn dp-pct-btn" t-on-click.stop="onDpSetPercent" data-pct="30">30%</button>
+                    <button class="btn dp-pct-btn" t-on-click.stop="onDpSetPercent" data-pct="50">50%</button>
+                    <button class="btn dp-pct-btn" t-on-click.stop="onDpSetPercent" data-pct="100">100%</button>
+                    <input type="text" class="form-input dp-note-input" placeholder="Description (e.g. Down Payment, Progress Claim)"
+                           t-att-value="state.dpNote"
+                           t-on-input="onDpNoteInput"/>
+                    <button class="btn btn-primary" t-on-click.stop="onSubmitDownPayment">Create</button>
+                    <button class="btn" t-on-click.stop="onToggleDownPaymentForm">Cancel</button>
+                    <span t-if="state.dpError" class="dp-error" t-esc="state.dpError"/>
+                </div>
+            </t>
 
             <!-- Loading / error / content -->
             <t t-if="state.loading">
@@ -1499,6 +1537,12 @@ class SaleOrderFormView extends Component {
             invoiceCount:   0,
             invoiceIds:     [],
             invoiceMode:    null,   // null | { invoiceId: N }
+            dpFormOpen:     false,
+            dpMode:         'down_payment', // 'down_payment' | 'progress'
+            dpAmount:       '',
+            dpNote:         'Down Payment',
+            dpError:        '',
+            invoicedAmount: 0,
             chatRefreshKey: 0,
         });
         this._nextKey = 1;
@@ -1513,7 +1557,20 @@ class SaleOrderFormView extends Component {
     }
 
     get showCreateInvoice() {
-        return this.state.record.state === 'sale';
+        const invStatus = this.state.record.invoice_status;
+        return this.state.record.state === 'sale' &&
+               invStatus !== 'invoiced' && invStatus !== 'to invoice';
+    }
+
+    get showProgressInvoice() {
+        return this.state.record.state === 'sale' &&
+               this.state.record.invoice_status === 'to invoice';
+    }
+
+    get remainingAmount() {
+        const total    = parseFloat(this.state.record.amount_total) || 0;
+        const invoiced = parseFloat(this.state.invoicedAmount) || 0;
+        return Math.max(0, total - invoiced);
     }
 
     get showCancelBtn() {
@@ -1556,12 +1613,15 @@ class SaleOrderFormView extends Component {
                 } catch (_) {}
                 try {
                     const moves = await RpcService.call('account.move', 'search_read',
-                        [[['invoice_origin', '=', this.state.record.name],
+                        [[['sale_id', '=', this.props.recordId],
                           ['move_type', '=', 'out_invoice']]],
-                        { fields: ['id'], limit: 500 });
-                    const ids = (Array.isArray(moves) ? moves : []).map(m => m.id);
-                    this.state.invoiceIds   = ids;
-                    this.state.invoiceCount = ids.length;
+                        { fields: ['id', 'amount_total', 'state'], limit: 500 });
+                    const all = Array.isArray(moves) ? moves : [];
+                    this.state.invoiceIds   = all.map(m => m.id);
+                    this.state.invoiceCount = all.length;
+                    this.state.invoicedAmount = all
+                        .filter(m => m.state === 'posted')
+                        .reduce((s, m) => s + (parseFloat(m.amount_total) || 0), 0);
                 } catch (_) {}
             }
         } catch (e) {
@@ -1839,7 +1899,59 @@ class SaleOrderFormView extends Component {
         try {
             await RpcService.call('sale.order', 'action_create_invoices',
                 [[this.state.record.id]], {});
-            await this.load();   // reload to update invoice count
+            await this.load();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    onToggleDownPaymentForm() {
+        const wasOpen = this.state.dpFormOpen && this.state.dpMode === 'down_payment';
+        this.state.dpFormOpen = !wasOpen;
+        this.state.dpMode     = 'down_payment';
+        this.state.dpAmount   = '';
+        this.state.dpNote     = 'Down Payment';
+        this.state.dpError    = '';
+    }
+
+    onToggleProgressForm() {
+        const wasOpen = this.state.dpFormOpen && this.state.dpMode === 'progress';
+        this.state.dpFormOpen = !wasOpen;
+        this.state.dpMode     = 'progress';
+        this.state.dpAmount   = '';
+        this.state.dpNote     = 'Progress Payment';
+        this.state.dpError    = '';
+    }
+
+    onDpAmountInput(ev) { this.state.dpAmount = ev.target.value; }
+    onDpNoteInput(ev)   { this.state.dpNote   = ev.target.value; }
+
+    onDpSetPercent(ev) {
+        const pct   = parseFloat(ev.currentTarget.dataset.pct);
+        const base  = this.state.dpMode === 'progress'
+            ? this.remainingAmount
+            : (parseFloat(this.state.record.amount_total) || 0);
+        this.state.dpAmount = ((pct / 100) * base).toFixed(2);
+    }
+
+    async onSubmitDownPayment() {
+        const amount = parseFloat(this.state.dpAmount);
+        if (!amount || amount <= 0) { this.state.dpError = 'Enter a valid amount.'; return; }
+        const method = this.state.dpMode === 'progress'
+            ? 'action_create_progress_payment'
+            : 'action_create_down_payment';
+        try {
+            await RpcService.call('sale.order', method,
+                [[this.state.record.id]], { amount, note: this.state.dpNote });
+            this.state.dpFormOpen = false;
+            await this.load();
+        } catch (e) { this.state.dpError = e.message; }
+    }
+
+    async onCreateFinalInvoice() {
+        this.state.dpFormOpen = false;
+        try {
+            await RpcService.call('sale.order', 'action_create_final_invoice',
+                [[this.state.record.id]], {});
+            await this.load();
         } catch (e) { this.state.error = e.message; }
     }
 
@@ -1923,11 +2035,14 @@ class PurchaseOrderFormView extends Component {
             <!-- Down payment inline form -->
             <t t-if="state.dpFormOpen">
                 <div class="dp-form-bar">
-                    <span class="dp-form-title">Down Payment</span>
+                    <span class="dp-form-title">Advance Bill</span>
                     <input type="number" class="form-input dp-amount-input" placeholder="Amount"
                            t-att-value="state.dpAmount"
                            t-on-input="onDpAmountInput"/>
-                    <input type="text" class="form-input dp-note-input" placeholder="Note"
+                    <button class="btn dp-pct-btn" t-on-click.stop="onDpSetPercent" data-pct="30">30%</button>
+                    <button class="btn dp-pct-btn" t-on-click.stop="onDpSetPercent" data-pct="50">50%</button>
+                    <button class="btn dp-pct-btn" t-on-click.stop="onDpSetPercent" data-pct="100">100%</button>
+                    <input type="text" class="form-input dp-note-input" placeholder="Description (e.g. Advance, Deposit)"
                            t-att-value="state.dpNote"
                            t-on-input="onDpNoteInput"/>
                     <button class="btn btn-primary" t-on-click.stop="onSubmitDownPayment">Create</button>
@@ -2494,12 +2609,15 @@ class PurchaseOrderFormView extends Component {
     onDpAmountInput(ev) { this.state.dpAmount = ev.target.value; }
     onDpNoteInput(ev)   { this.state.dpNote   = ev.target.value; }
 
+    onDpSetPercent(ev) {
+        const pct   = parseFloat(ev.currentTarget.dataset.pct);
+        const total = parseFloat(this.state.record.amount_total) || 0;
+        this.state.dpAmount = ((pct / 100) * total).toFixed(2);
+    }
+
     async onSubmitDownPayment() {
         const amount = parseFloat(this.state.dpAmount);
-        if (!amount || amount <= 0) {
-            this.state.dpError = 'Enter a valid amount.';
-            return;
-        }
+        if (!amount || amount <= 0) { this.state.dpError = 'Enter a valid amount.'; return; }
         try {
             await RpcService.call('purchase.order', 'action_create_down_payment',
                 [[this.state.record.id]], { amount, note: this.state.dpNote });
@@ -3415,6 +3533,1354 @@ class ProductFormView extends Component {
 }
 
 // ----------------------------------------------------------------
+// ERPSettingsView — company / banking / documents / email config
+// ----------------------------------------------------------------
+class ERPSettingsView extends Component {
+    static template = xml`
+        <div class="erp-settings-shell">
+            <div class="erp-settings-header">
+                <h2>ERP Settings</h2>
+            </div>
+            <div class="erp-tab-bar">
+                <button t-attf-class="erp-tab{{ state.activeTab==='general'?' active':'' }}"
+                        t-on-click="()=>this.setTab('general')">General</button>
+                <button t-attf-class="erp-tab{{ state.activeTab==='banking'?' active':'' }}"
+                        t-on-click="()=>this.setTab('banking')">Banking</button>
+                <button t-attf-class="erp-tab{{ state.activeTab==='documents'?' active':'' }}"
+                        t-on-click="()=>this.setTab('documents')">Documents</button>
+                <button t-attf-class="erp-tab{{ state.activeTab==='email'?' active':'' }}"
+                        t-on-click="()=>this.setTab('email')">Email</button>
+            </div>
+            <div class="erp-settings-body">
+                <t t-if="state.loading">
+                    <div class="loading">Loading settings…</div>
+                </t>
+                <t t-elif="state.error">
+                    <div class="error" t-esc="state.error"/>
+                </t>
+                <t t-else="">
+                    <!-- General Tab -->
+                    <t t-if="state.activeTab==='general'">
+                        <div class="erp-section">
+                            <div class="erp-section-title">Company Information</div>
+                            <div class="erp-field-grid">
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Company Name</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['company.name']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Registration No.</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.reg_number']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Address Line 1</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.addr1']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Address Line 2</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.addr2']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Address Line 3</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.addr3']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">City &amp; Country</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.city_country']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Phone</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['company.phone']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Email</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['company.email']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Website</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['company.website']"/>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="erp-section">
+                            <div class="erp-section-title">Invoice Defaults</div>
+                            <div class="erp-field-grid">
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Currency Code</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.currency_code']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Payment Terms Days</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.payment_term_days']"/>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="erp-save-row">
+                            <button class="btn btn-primary" t-att-disabled="state.saving" t-on-click="onSave">
+                                <t t-if="state.saving">Saving…</t><t t-else="">Save Changes</t>
+                            </button>
+                            <t t-if="state.saved"><span class="erp-saved-ok">Saved!</span></t>
+                            <t t-if="state.saveError"><span class="erp-save-err" t-esc="state.saveError"/></t>
+                        </div>
+                    </t>
+
+                    <!-- Banking Tab -->
+                    <t t-if="state.activeTab==='banking'">
+                        <div class="erp-section">
+                            <div class="erp-section-title">Bank Account Details</div>
+                            <div class="erp-field-grid">
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Account Holder Name</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.bank.account_name']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Account Number</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.bank.account_no']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Bank Name</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.bank.bank_name']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Bank Address</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.bank.bank_address']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">SWIFT Code</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.bank.swift_code']"/>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="erp-save-row">
+                            <button class="btn btn-primary" t-att-disabled="state.saving" t-on-click="onSave">
+                                <t t-if="state.saving">Saving…</t><t t-else="">Save Changes</t>
+                            </button>
+                            <t t-if="state.saved"><span class="erp-saved-ok">Saved!</span></t>
+                            <t t-if="state.saveError"><span class="erp-save-err" t-esc="state.saveError"/></t>
+                        </div>
+                    </t>
+
+                    <!-- Documents Tab -->
+                    <t t-if="state.activeTab==='documents'">
+                        <div class="erp-section">
+                            <div class="erp-section-title">Document Layout</div>
+                            <div class="erp-field-grid">
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Paper Format</label>
+                                    <select class="erp-field-input" t-model="state.cfg['report.paper_format']">
+                                        <option value="A4">A4</option>
+                                        <option value="Letter">Letter</option>
+                                        <option value="A3">A3</option>
+                                        <option value="Legal">Legal</option>
+                                    </select>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Orientation</label>
+                                    <select class="erp-field-input" t-model="state.cfg['report.orientation']">
+                                        <option value="portrait">Portrait</option>
+                                        <option value="landscape">Landscape</option>
+                                    </select>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Font Family</label>
+                                    <select class="erp-field-input" t-model="state.cfg['report.design.font_family']">
+                                        <option value="Arial, sans-serif">Arial</option>
+                                        <option value="'Times New Roman', serif">Times New Roman</option>
+                                        <option value="Helvetica, sans-serif">Helvetica</option>
+                                        <option value="Georgia, serif">Georgia</option>
+                                    </select>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Accent Color</label>
+                                    <input class="erp-field-input" type="color" t-att-value="state.cfg['report.design.accent_color']"
+                                           t-on-input="ev=>this.state.cfg['report.design.accent_color']=ev.target.value"/>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="erp-save-row">
+                            <button class="btn btn-primary" t-att-disabled="state.saving" t-on-click="onSave">
+                                <t t-if="state.saving">Saving…</t><t t-else="">Save Changes</t>
+                            </button>
+                            <t t-if="state.saved"><span class="erp-saved-ok">Saved!</span></t>
+                            <t t-if="state.saveError"><span class="erp-save-err" t-esc="state.saveError"/></t>
+                        </div>
+                    </t>
+
+                    <!-- Email Tab -->
+                    <t t-if="state.activeTab==='email'">
+                        <div class="erp-section">
+                            <div class="erp-section-title">SMTP Configuration</div>
+                            <div class="erp-field-grid">
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">SMTP Host</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['mail.smtp_host']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">SMTP Port</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['mail.smtp_port']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">SSL</label>
+                                    <input type="checkbox" t-att-checked="state.cfg['mail.smtp_ssl']==='1'||state.cfg['mail.smtp_ssl']==='true'"
+                                           t-on-change="ev=>this.state.cfg['mail.smtp_ssl']=ev.target.checked?'1':'0'"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">From Address</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['mail.from_address']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Username</label>
+                                    <input class="erp-field-input" type="text" t-model="state.cfg['mail.smtp_user']"/>
+                                </div>
+                                <div class="erp-field-row">
+                                    <label class="erp-field-label">Password</label>
+                                    <input class="erp-field-input" type="password" t-model="state.cfg['mail.smtp_password']"/>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="erp-save-row">
+                            <button class="btn btn-primary" t-att-disabled="state.saving" t-on-click="onSave">
+                                <t t-if="state.saving">Saving…</t><t t-else="">Save Changes</t>
+                            </button>
+                            <t t-if="state.saved"><span class="erp-saved-ok">Saved!</span></t>
+                            <t t-if="state.saveError"><span class="erp-save-err" t-esc="state.saveError"/></t>
+                        </div>
+                    </t>
+                </t>
+            </div>
+        </div>
+    `;
+
+    static ALL_KEYS = [
+        'company.name','company.phone','company.email','company.website',
+        'report.reg_number','report.addr1','report.addr2','report.addr3',
+        'report.city_country','report.currency_code','report.payment_term_days',
+        'report.bank.account_name','report.bank.account_no','report.bank.bank_name',
+        'report.bank.bank_address','report.bank.swift_code',
+        'report.paper_format','report.orientation',
+        'report.design.font_family','report.design.accent_color',
+        'mail.smtp_host','mail.smtp_port','mail.smtp_ssl',
+        'mail.from_address','mail.smtp_user','mail.smtp_password',
+    ];
+
+    setup() {
+        this.state = useState({
+            activeTab: 'general',
+            loading:   true,
+            error:     '',
+            saving:    false,
+            saved:     false,
+            saveError: '',
+            cfg:       {},
+            cfgIds:    {},
+        });
+        onMounted(() => this.loadCfg());
+    }
+
+    setTab(tab) { this.state.activeTab = tab; }
+
+    async loadCfg() {
+        this.state.loading = true;
+        this.state.error = '';
+        try {
+            const keys = ERPSettingsView.ALL_KEYS;
+            // Init defaults
+            const cfg = {};
+            const cfgIds = {};
+            for (const k of keys) cfg[k] = '';
+            const params = await RpcService.call(
+                'ir.config.parameter', 'search_read',
+                [[['key', 'in', keys]]],
+                { fields: ['id', 'key', 'value'], limit: 200 });
+            if (Array.isArray(params)) {
+                for (const p of params) {
+                    cfg[p.key]    = p.value || '';
+                    cfgIds[p.key] = p.id;
+                }
+            }
+            this.state.cfg    = cfg;
+            this.state.cfgIds = cfgIds;
+        } catch (e) {
+            this.state.error = e.message || 'Failed to load settings';
+        } finally {
+            this.state.loading = false;
+        }
+    }
+
+    async onSave() {
+        this.state.saving    = true;
+        this.state.saved     = false;
+        this.state.saveError = '';
+        try {
+            for (const key of ERPSettingsView.ALL_KEYS) {
+                const value = this.state.cfg[key] || '';
+                const id    = this.state.cfgIds[key];
+                if (id) {
+                    await RpcService.call('ir.config.parameter', 'write', [[id], { value }], {});
+                } else {
+                    const newId = await RpcService.call('ir.config.parameter', 'create', [{ key, value }], {});
+                    this.state.cfgIds[key] = newId;
+                }
+            }
+            this.state.saved = true;
+            setTimeout(() => { if (this.state) this.state.saved = false; }, 2500);
+        } catch (e) {
+            this.state.saveError = e.message || 'Save failed';
+        } finally {
+            this.state.saving = false;
+        }
+    }
+}
+
+// ----------------------------------------------------------------
+// DocumentLayoutEditor constants
+// ----------------------------------------------------------------
+const DLE_BLOCK_DEFS = [
+    // Content blocks
+    { type:'doc_header',    label:'Document Header',    icon:'\u25F0', group:'content' },
+    { type:'logo',          label:'Company Logo',       icon:'\uD83D\uDDBC', group:'content' },
+    { type:'from_address',  label:'Company Address',    icon:'\u2302', group:'content' },
+    { type:'to_address',    label:'Recipient Address',  icon:'\u2709', group:'content' },
+    { type:'doc_details',   label:'Document Details',   icon:'\u229E', group:'content' },
+    { type:'items_table',   label:'Items Table',        icon:'\u25A4', group:'content' },
+    { type:'totals',        label:'Totals Summary',     icon:'\u2211', group:'content' },
+    { type:'payment_terms', label:'Payment Terms',      icon:'\u25F7', group:'content' },
+    { type:'bank_details',  label:'Bank Details',       icon:'\u2295', group:'content' },
+    { type:'notes',         label:'Notes',              icon:'\u270E', group:'content' },
+    { type:'text_block',    label:'Text Block',         icon:'\u00B6', group:'content' },
+    { type:'footer_bar',    label:'Footer Bar',         icon:'\u25AC', group:'content' },
+    // Layout blocks
+    { type:'separator',     label:'Separator Line',     icon:'\u2015', group:'layout' },
+    { type:'spacer',        label:'Spacer / Gap',       icon:'\u2B1C', group:'layout' },
+    { type:'row_start',     label:'Row Start',          icon:'\u2997', group:'layout' },
+    { type:'col_break',     label:'Column Break',       icon:'\u2998', group:'layout' },
+    { type:'row_end',       label:'Row End',            icon:'\u29D8', group:'layout' },
+];
+
+const DLE_DEFAULT_BLOCKS = {
+    'account.move':   ['doc_header','from_address','to_address','doc_details','items_table','totals','payment_terms','bank_details','footer_bar'],
+    'sale.order':     ['doc_header','from_address','to_address','doc_details','items_table','totals','payment_terms','notes','footer_bar'],
+    'purchase.order': ['doc_header','from_address','to_address','doc_details','items_table','totals','notes','footer_bar'],
+    'stock.picking':  ['doc_header','from_address','to_address','doc_details','items_table','footer_bar'],
+};
+
+const DLE_DOC_TYPES = [
+    { model:'account.move',   label:'Invoice' },
+    { model:'sale.order',     label:'Sales Order' },
+    { model:'purchase.order', label:'Purchase Order' },
+    { model:'stock.picking',  label:'Delivery' },
+];
+
+// ---- Shared CSS embedded in generated templates ----
+const DLE_CSS = `<style>
+@page { size: A4; margin: 0; }
+* { box-sizing: border-box; }
+body { font-family: Arial, Helvetica, sans-serif; font-size: 10pt; color: #333333; line-height: 1.5; margin: 0; padding: 15mm 18mm 20mm 18mm; position: relative; min-height: 257mm; }
+.clearfix { overflow: hidden; }
+.hdr-left { float: left; width: 40%; }
+.hdr-right { float: right; width: 58%; }
+.company-name { font-weight: bold; font-size: 11pt; }
+.company-detail { font-size: 10pt; }
+.info-row { overflow: hidden; margin-top: 10mm; margin-bottom: 6mm; }
+.buyer-col { float: left; width: 55%; }
+.meta-col { float: right; width: 42%; }
+.buyer-name { font-weight: bold; font-size: 11pt; }
+.doc-title { font-weight: bold; font-size: 14pt; margin-bottom: 2mm; }
+.meta-line { font-size: 10pt; }
+.meta-lbl { font-weight: bold; }
+.currency-note { margin-bottom: 3mm; font-size: 10pt; }
+.lines-table { width: 100%; border-collapse: collapse; margin-bottom: 4mm; border: 0.5pt solid #cccccc; }
+.lines-table thead th { background-color: #4a4a4a; color: #ffffff; font-weight: bold; text-transform: uppercase; padding: 6px 8px; font-size: 10pt; text-align: left; }
+.lines-table thead th.r { text-align: right; }
+.lines-table thead th.c { text-align: center; }
+.lines-table tbody td { padding: 6px 8px; border-bottom: 0.5pt solid #cccccc; font-size: 10pt; vertical-align: top; }
+.lines-table tbody td.r { text-align: right; }
+.lines-table tbody td.c { text-align: center; }
+.col-desc { width: 55%; }
+.col-qty { width: 12%; }
+.col-uom { width: 10%; }
+.col-price { width: 16%; }
+.col-amount { width: 17%; }
+.row-line_section td { font-weight: bold; background-color: #f5f5f5; }
+.row-line_note td { font-style: italic; color: #666666; }
+.totals-wrap { overflow: hidden; margin-bottom: 8mm; }
+.totals-table { float: right; width: 45%; border-collapse: collapse; }
+.totals-table td { padding: 5px 8px; font-size: 10pt; }
+.totals-table .t-lbl { text-align: right; font-weight: bold; padding-right: 12px; }
+.totals-table .t-val { text-align: right; white-space: nowrap; }
+.totals-table .row-total td { background-color: #4a4a4a; color: #ffffff; font-weight: bold; }
+.payment-terms { margin-bottom: 5mm; font-size: 11pt; }
+.bank-details { font-size: 9.5pt; line-height: 1.7; }
+.notes-block { margin-bottom: 5mm; font-size: 10pt; }
+.text-block { margin: 4mm 0; font-size: 10pt; }
+.doc-separator { border: none; border-top: 1.5pt solid #888888; margin: 5mm 0; }
+.page-footer { position: fixed; bottom: 0; left: 0; right: 0; background-color: #4a4a4a; color: #ffffff; text-align: center; padding: 6px 0; font-size: 9pt; }
+.print-btn { display: inline-block; margin-top: 10mm; padding: 8px 20px; background: #4a4a4a; color: #fff; border: none; font-size: 10pt; cursor: pointer; }
+@media print { .print-btn { display: none; } }
+</style>`;
+
+// ---- Property schema helpers ----
+const _D = (label) => ({ type: 'divider', label });
+const _FONT_OPTS = [
+    { v: '',                         l: 'Default' },
+    { v: 'Arial, sans-serif',        l: 'Arial' },
+    { v: 'Georgia, serif',           l: 'Georgia' },
+    { v: "'Times New Roman', serif", l: 'Times New Roman' },
+    { v: 'Verdana, sans-serif',      l: 'Verdana' },
+    { v: 'Tahoma, sans-serif',       l: 'Tahoma' },
+    { v: "'Courier New', monospace", l: 'Courier New' },
+];
+const _ALIGN_OPTS  = [{ v:'',l:'Default'},{v:'left',l:'Left'},{v:'center',l:'Center'},{v:'right',l:'Right'},{v:'justify',l:'Justify'}];
+const _BSTYLE_OPTS = [{ v:'solid',l:'Solid'},{v:'dashed',l:'Dashed'},{v:'dotted',l:'Dotted'}];
+
+function _typo()   { return [_D('Typography'),
+    { key:'font_size',   label:'Font Size',   type:'number', unit:'pt', min:6,  max:48 },
+    { key:'font_family', label:'Font',        type:'select', options:_FONT_OPTS },
+    { key:'color',       label:'Text Color',  type:'color' },
+    { key:'text_align',  label:'Align',       type:'select', options:_ALIGN_OPTS },
+    { key:'bold',        label:'Bold',        type:'boolean' },
+    { key:'italic',      label:'Italic',      type:'boolean' },
+]; }
+function _spac()   { return [_D('Spacing'),
+    { key:'padding',       label:'Padding',      type:'number', unit:'mm', min:0, max:20 },
+    { key:'margin_bottom', label:'Margin Below', type:'number', unit:'mm', min:0, max:30 },
+]; }
+function _bgbd()   { return [_D('Background & Border'),
+    { key:'bg_color',     label:'Background',   type:'color' },
+    { key:'border_width', label:'Border Width', type:'number', unit:'pt', min:0, max:8 },
+    { key:'border_color', label:'Border Color', type:'color' },
+    { key:'border_style', label:'Border Style', type:'select', options:_BSTYLE_OPTS },
+]; }
+function _layout() { return [_D('Layout'),
+    { key:'same_line', label:'Same Line', type:'boolean' },
+    { key:'width',     label:'Width',     type:'number',  unit:'%', min:10, max:100 },
+]; }
+
+const DLE_PROP_DEFS = {
+    doc_header: [
+        ..._typo(), ..._spac(), ..._bgbd(),
+        _D('Accent Line'),
+        { key:'show_line',  label:'Show Line',  type:'boolean' },
+        { key:'line_color', label:'Line Color', type:'color'   },
+        ..._layout(),
+    ],
+    logo: [
+        _D('Image'),
+        { key:'src',    label:'Logo URL', type:'text' },
+        { key:'width',  label:'Width',    type:'number', unit:'mm', min:10, max:150 },
+        { key:'height', label:'Height',   type:'number', unit:'mm', min:5,  max:80  },
+        ..._spac(),
+    ],
+    from_address:  [..._typo(), ..._spac(), ..._bgbd(), ..._layout()],
+    to_address:    [..._typo(), ..._spac(), ..._bgbd()],
+    doc_details:   [..._typo(), ..._spac(), ..._bgbd()],
+    items_table: [
+        ..._typo(), ..._spac(),
+        _D('Table Header'),
+        { key:'header_bg',    label:'Header Background',  type:'color' },
+        { key:'header_color', label:'Header Text Color',  type:'color' },
+        _D('Table Body'),
+        { key:'alt_row_bg',   label:'Alternate Row Bg',   type:'color' },
+        { key:'cell_border',  label:'Cell Border Color',  type:'color' },
+        ..._bgbd(), ..._layout(),
+    ],
+    totals: [
+        ..._typo(), ..._spac(), ..._bgbd(),
+        _D('Total Row'),
+        { key:'total_bg',    label:'Total Background', type:'color' },
+        { key:'total_color', label:'Total Text Color', type:'color' },
+        ..._layout(),
+    ],
+    payment_terms: [..._typo(), ..._spac(), ..._bgbd(), ..._layout()],
+    bank_details:  [..._typo(), ..._spac(), ..._bgbd(), ..._layout()],
+    notes:         [..._typo(), ..._spac(), ..._bgbd(), ..._layout()],
+    text_block: [
+        _D('Content'),
+        { key:'content', label:'Text Content', type:'textarea' },
+        ..._typo(), ..._spac(), ..._bgbd(), ..._layout(),
+    ],
+    footer_bar: [..._typo(), ..._spac(), ..._bgbd()],
+    separator: [
+        _D('Line Style'),
+        { key:'color',         label:'Color',        type:'color' },
+        { key:'thickness',     label:'Thickness',    type:'number', unit:'pt', min:0.5, max:10 },
+        { key:'margin_top',    label:'Margin Top',   type:'number', unit:'mm', min:0,   max:20 },
+        { key:'margin_bottom', label:'Margin Below', type:'number', unit:'mm', min:0,   max:20 },
+    ],
+    spacer:    [_D('Size'), { key:'height', label:'Height', type:'number', unit:'mm', min:1, max:80 }],
+    row_start: [_D('Row'), { key:'flex', label:'1st Column Width', type:'number', unit:'flex', min:1, max:10 },
+                            { key:'gap',  label:'Column Gap',       type:'number', unit:'mm',   min:0, max:30 }],
+    col_break: [_D('Column'), { key:'flex', label:'Column Width', type:'number', unit:'flex', min:1, max:10 }],
+    row_end:   [],
+};
+
+// Build inline CSS style string from a props object
+function dleStyleStr(p) {
+    if (!p) return '';
+    const s = [];
+    if (p.font_size)                               s.push(`font-size:${p.font_size}pt`);
+    if (p.font_family)                             s.push(`font-family:${p.font_family}`);
+    if (p.color)                                   s.push(`color:${p.color}`);
+    if (p.bg_color)                                s.push(`background:${p.bg_color}`);
+    if (p.text_align)                              s.push(`text-align:${p.text_align}`);
+    if (p.padding       != null && p.padding      !== '') s.push(`padding:${p.padding}mm`);
+    if (p.margin_bottom != null && p.margin_bottom!== '') s.push(`margin-bottom:${p.margin_bottom}mm`);
+    if (p.border_width  && p.border_width > 0)
+        s.push(`border:${p.border_width}pt ${p.border_style || 'solid'} ${p.border_color || '#cccccc'}`);
+    if (p.bold)   s.push('font-weight:bold');
+    if (p.italic) s.push('font-style:italic');
+    return s.join(';');
+}
+
+// ---- Per-block HTML snippet generator ----
+// Every block must produce visible HTML so show/hide actually works.
+// to_address and doc_details use floats; dleBuildHtml injects a clearfix after them.
+function dleBlockHtml(type, model, props) {
+    props = props || {};
+    const st = dleStyleStr(props);
+    const sa = st ? ` style="${st}"` : '';   // style attribute fragment
+
+    switch (type) {
+        case 'doc_header': {
+            const lineHtml = props.show_line
+                ? `<div style="border-top:2pt solid ${props.line_color || '#4a4a4a'};margin:2mm 0;"></div>` : '';
+            return `<div class="clearfix"${sa}>
+  <div class="hdr-left">
+    <div class="company-name">{{company_name}} ({{company_reg}})</div>
+  </div>
+  <div class="hdr-right"></div>
+</div>${lineHtml}`;
+        }
+
+        case 'logo':
+            return ''; // handled structurally in dleBuildHtml
+
+        case 'from_address':
+            return `<div style="margin-bottom:4mm;${st}">
+  <div class="company-detail">{{company_addr1}}</div>
+  <div class="company-detail">{{company_addr2}}</div>
+  <div class="company-detail">{{company_addr3}}</div>
+  <div class="company-detail">{{company_city_country}}</div>
+  <div class="company-detail">Tel: {{company_phone}}</div>
+</div>`;
+
+        case 'to_address':
+            return `<div class="buyer-col" style="margin-top:8mm;margin-bottom:4mm;${st}">
+  <div class="buyer-name">{{partner_name}}</div>
+  <div>{{partner_street}}</div>
+  <div>{{partner_city}}</div>
+  <div>{{partner_phone}}</div>
+</div>`;
+
+        case 'doc_details': {
+            const lines = {
+                'account.move':   `  <div class="meta-line"><span class="meta-lbl">Invoice No. :</span> {{doc_number}}</div>\n  <div class="meta-line"><span class="meta-lbl">Invoice Date :</span> {{doc_date}}</div>\n  <div class="meta-line"><span class="meta-lbl">Due Date :</span> {{doc_date_due}}</div>`,
+                'sale.order':     `  <div class="meta-line"><span class="meta-lbl">Order No. :</span> {{doc_number}}</div>\n  <div class="meta-line"><span class="meta-lbl">Order Date :</span> {{doc_date}}</div>\n  <div class="meta-line"><span class="meta-lbl">Valid Until :</span> {{validity_date}}</div>`,
+                'purchase.order': `  <div class="meta-line"><span class="meta-lbl">PO No. :</span> {{doc_number}}</div>\n  <div class="meta-line"><span class="meta-lbl">Order Date :</span> {{doc_date}}</div>\n  <div class="meta-line"><span class="meta-lbl">Expected :</span> {{date_planned}}</div>`,
+                'stock.picking':  `  <div class="meta-line"><span class="meta-lbl">DO No. :</span> {{doc_number}}</div>\n  <div class="meta-line"><span class="meta-lbl">Date :</span> {{doc_date}}</div>\n  <div class="meta-line"><span class="meta-lbl">Origin :</span> {{origin}}</div>`,
+            }[model] || '';
+            return `<div class="meta-col" style="margin-top:8mm;margin-bottom:4mm;${st}">
+  <div class="doc-title">{{document_title}}</div>
+${lines}
+</div>`;
+        }
+
+        case 'items_table': {
+            const hBg    = props.header_bg    || '';
+            const hClr   = props.header_color || '';
+            const altBg  = props.alt_row_bg   || '';
+            const cellBd = props.cell_border  || '';
+            const thSt   = (hBg || hClr) ? ` style="${hBg ? `background:${hBg};` : ''}${hClr ? `color:${hClr};` : ''}"` : '';
+            let overrides = '';
+            if (altBg)  overrides += `.lines-table tbody tr:nth-child(even) td{background:${altBg};}`;
+            if (cellBd) overrides += `.lines-table,.lines-table tbody td{border-color:${cellBd};}`;
+            const styleBlk = overrides ? `<style>${overrides}</style>` : '';
+            const wrap  = `${styleBlk}<div${sa}><div class="currency-note">All Amount Stated in - {{currency_code}}</div>`;
+            if (model === 'stock.picking') {
+                return wrap + `<table class="lines-table">
+  <thead><tr>
+    <th class="col-desc"${thSt}>DESCRIPTION</th>
+    <th class="col-qty c"${thSt}>DEMAND</th>
+    <th class="col-qty c"${thSt}>DONE</th>
+    <th class="col-uom"${thSt}>UOM</th>
+  </tr></thead>
+  <tbody>
+    {{#each lines}}
+    <tr><td>{{product_name}}</td><td class="c">{{demand}}</td><td class="c">{{done}}</td><td>{{uom}}</td></tr>
+    {{/each}}
+  </tbody>
+</table></div>`;
+            }
+            return wrap + `<table class="lines-table">
+  <thead><tr>
+    <th class="col-desc"${thSt}>DESCRIPTION</th>
+    <th class="col-qty c"${thSt}>QUANTITY</th>
+    <th class="col-uom"${thSt}>UOM</th>
+    <th class="col-price r"${thSt}>UNIT PRICE</th>
+    <th class="col-amount r"${thSt}>AMOUNT</th>
+  </tr></thead>
+  <tbody>
+    {{#each lines}}
+    <tr class="row-{{line_type}}">
+      <td>{{product_name}}</td><td class="c">{{qty}}</td><td>{{uom}}</td>
+      <td class="r">{{price_unit}}</td><td class="r">{{subtotal}}</td>
+    </tr>
+    {{/each}}
+  </tbody>
+</table></div>`;
+        }
+
+        case 'totals': {
+            const tBg  = props.total_bg    || '#4a4a4a';
+            const tClr = props.total_color || '#ffffff';
+            return `<div class="totals-wrap"${sa}>
+  <table class="totals-table">
+    <tr><td class="t-lbl">Subtotal</td><td class="t-val">{{currency_code}} {{amount_untaxed}}</td></tr>
+    <tr><td class="t-lbl">Tax</td><td class="t-val">{{currency_code}} {{amount_tax}}</td></tr>
+    <tr style="background:${tBg};color:${tClr};">
+      <td class="t-lbl" style="color:${tClr};">Total</td>
+      <td class="t-val" style="color:${tClr};">{{currency_code}} {{amount_total}}</td>
+    </tr>
+  </table>
+</div>`;
+        }
+
+        case 'payment_terms':
+            return `<div class="payment-terms"${sa}><strong>Payment terms:</strong> {{payment_term_days}} Days</div>`;
+
+        case 'bank_details':
+            return `<div class="bank-details"${sa}>
+  <div>TT Transfer Payable to</div>
+  <div>Account Name : {{bank_account_name}}</div>
+  <div>Account No. : {{bank_account_no}}</div>
+  <div>Bank Name : {{bank_name}}</div>
+  <div>Bank Address : {{bank_address}}</div>
+  <div>Bank SWIFT Code : {{bank_swift}}</div>
+</div>`;
+
+        case 'notes':
+            return `<div class="notes-block"${sa}><strong>Notes:</strong> {{notes}}</div>`;
+
+        case 'separator': {
+            const color = props.color     || '#888888';
+            const thick = props.thickness || 1.5;
+            const mt    = (props.margin_top    != null && props.margin_top    !== '') ? props.margin_top    : 5;
+            const mb    = (props.margin_bottom != null && props.margin_bottom !== '') ? props.margin_bottom : 5;
+            return `<hr style="border:none;border-top:${thick}pt solid ${color};margin:${mt}mm 0 ${mb}mm;">`;
+        }
+
+        case 'spacer':
+            return `<div class="doc-spacer"></div>`; // height handled in dleBuildHtml
+
+        case 'text_block': {
+            const content = props.content || '{{text_content}}';
+            return `<div class="text-block"${sa}>${content}</div>`;
+        }
+
+        case 'row_start':
+        case 'col_break':
+        case 'row_end':
+            return '';
+
+        case 'footer_bar':
+            return `<div class="page-footer"${sa}>{{company_website}}</div>
+<button class="print-btn" onclick="window.print()">Print / Save as PDF</button>`;
+
+        default:
+            return '';
+    }
+}
+
+// Blocks that float (need clearfix after their run)
+const DLE_FLOAT_BLOCKS = new Set(['to_address', 'doc_details']);
+// Layout-control block types
+const DLE_LAYOUT_BLOCKS = new Set(['row_start', 'col_break', 'row_end']);
+
+// ---- Assemble full HTML document from block list ----
+function dleBuildHtml(blocks, model) {
+    const label = { 'account.move':'Invoice', 'sale.order':'Sales Order', 'purchase.order':'Purchase Order', 'stock.picking':'Delivery Order' }[model] || 'Document';
+    const parts = [];
+    let pendingClearfix = false;
+    let inRow = false;
+    let firstColInRow = true;
+
+    for (const blk of blocks) {
+        if (blk.visible === false) continue;
+        const props = blk.props || {};
+
+        // ---- Layout control blocks ----
+        if (blk.type === 'row_start') {
+            if (pendingClearfix) { parts.push('<div style="clear:both;"></div>'); pendingClearfix = false; }
+            const gap = props.gap || 6;
+            parts.push(`<div style="display:flex; gap:${gap}mm; align-items:flex-start; margin-bottom:4mm;">`);
+            const flex = props.flex || 1;
+            parts.push(`<div style="flex:${flex};">`);
+            inRow = true; firstColInRow = true;
+            continue;
+        }
+        if (blk.type === 'col_break') {
+            if (inRow) {
+                parts.push('</div>'); // close previous column
+                const flex = props.flex || 1;
+                parts.push(`<div style="flex:${flex};">`);
+            }
+            continue;
+        }
+        if (blk.type === 'row_end') {
+            if (inRow) { parts.push('</div></div>'); inRow = false; }
+            continue;
+        }
+
+        // ---- Spacer with configurable height ----
+        if (blk.type === 'spacer') {
+            const h = props.height || 8;
+            if (pendingClearfix) { parts.push('<div style="clear:both;"></div>'); pendingClearfix = false; }
+            parts.push(`<div style="height:${h}mm;"></div>`);
+            continue;
+        }
+
+        // ---- Logo with configurable size ----
+        if (blk.type === 'logo') {
+            const h = props.height || 20;
+            const w = props.width  || 50;
+            const src = props.src  || '';
+            if (pendingClearfix && !inRow) { parts.push('<div style="clear:both;"></div>'); pendingClearfix = false; }
+            if (src) {
+                parts.push(`<div style="padding:2mm 0;"><img src="${src}" style="max-height:${h}mm; max-width:${w}mm;" alt="Logo"/></div>`);
+            } else {
+                parts.push(`<div style="padding:2mm 0;"><div style="width:${w}mm; height:${h}mm; display:flex; align-items:center; justify-content:center; background:#f5f5f5; border:1pt dashed #bbb; color:#aaa; font-size:9pt; font-style:italic;">Company Logo</div></div>`);
+            }
+            continue;
+        }
+
+        // ---- Standard content blocks ----
+        const html = dleBlockHtml(blk.type, model, props);
+        if (!html) continue;
+
+        if (DLE_FLOAT_BLOCKS.has(blk.type)) {
+            pendingClearfix = true;
+        } else if (!inRow) {
+            if (pendingClearfix) { parts.push('<div style="clear:both;"></div>'); pendingClearfix = false; }
+        }
+
+        if (props.same_line && !DLE_FLOAT_BLOCKS.has(blk.type)) {
+            const ilw = props.width || 50;
+            parts.push(`<div style="display:inline-block;vertical-align:top;width:${ilw}%;box-sizing:border-box;">${html}</div>`);
+        } else {
+            parts.push(html);
+        }
+    }
+
+    // Close any unclosed row
+    if (inRow) parts.push('</div></div>');
+    if (pendingClearfix) parts.push('<div style="clear:both;"></div>');
+
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${label} - {{doc_number}}</title>\n${DLE_CSS}\n</head><body>\n${parts.join('\n\n')}\n</body></html>`;
+}
+
+// ---- Client-side preview renderer (substitutes {{vars}} with dummy data) ----
+const DLE_DUMMY = {
+    common: {
+        company_name:'Demo Company Sdn. Bhd.', company_reg:'123456-A',
+        company_addr1:'Level 10, Menara Demo', company_addr2:'Jalan Ampang',
+        company_addr3:'', company_city_country:'50450 Kuala Lumpur, Malaysia',
+        company_phone:'+603-2181 8000', company_email:'info@democompany.com',
+        company_website:'www.democompany.com',
+        currency_code:'MYR', payment_term_days:'30',
+        bank_account_name:'Demo Company Sdn. Bhd.', bank_account_no:'1234567890',
+        bank_name:'Maybank Berhad', bank_address:'Jalan Tun Perak, KL', bank_swift:'MBBEMYKL',
+        partner_name:'ABC Technology Sdn. Bhd.', partner_street:'Level 3, Menara KL',
+        partner_city:'50088 Kuala Lumpur, Malaysia', partner_phone:'+603-2181 9000',
+        notes:'Thank you for your business.', text_content:'Additional information.',
+    },
+    'account.move':   { document_title:'Sales Invoice', doc_number:'INV/2025/0001', doc_date:'01/03/2025', doc_date_due:'31/03/2025', amount_untaxed:'10,000.00', amount_tax:'600.00', amount_total:'10,600.00', lines:[{product_name:'Industrial Motor 5kW',qty:'2.00',uom:'Unit',price_unit:'2,500.00',subtotal:'5,000.00',line_type:'product'},{product_name:'Control Panel Assembly',qty:'1.00',uom:'Unit',price_unit:'3,000.00',subtotal:'3,000.00',line_type:'product'},{product_name:'Installation Service',qty:'1.00',uom:'Job',price_unit:'2,000.00',subtotal:'2,000.00',line_type:'product'}] },
+    'sale.order':     { document_title:'Sales Order', doc_number:'SO/2025/0001', doc_date:'01/03/2025', validity_date:'31/03/2025', amount_untaxed:'10,000.00', amount_tax:'600.00', amount_total:'10,600.00', lines:[{product_name:'Industrial Motor 5kW',qty:'2.00',uom:'Unit',price_unit:'2,500.00',subtotal:'5,000.00',line_type:'product'},{product_name:'Control Panel Assembly',qty:'1.00',uom:'Unit',price_unit:'3,000.00',subtotal:'3,000.00',line_type:'product'}] },
+    'purchase.order': { document_title:'Purchase Order', doc_number:'PO/2025/0001', doc_date:'01/03/2025', date_planned:'15/03/2025', amount_untaxed:'8,000.00', amount_tax:'480.00', amount_total:'8,480.00', lines:[{product_name:'Industrial Motor 5kW',qty:'2.00',uom:'Unit',price_unit:'2,000.00',subtotal:'4,000.00',line_type:'product'},{product_name:'Cable Set',qty:'10.00',uom:'Pcs',price_unit:'150.00',subtotal:'1,500.00',line_type:'product'}] },
+    'stock.picking':  { document_title:'Delivery Order', doc_number:'WH/OUT/2025/0001', doc_date:'01/03/2025', origin:'SO/2025/0001', source_location:'WH/Stock', dest_location:'Customers', lines:[{product_name:'Industrial Motor 5kW',demand:'2.00',done:'2.00',uom:'Unit'},{product_name:'Control Panel Assembly',demand:'1.00',done:'1.00',uom:'Unit'}] },
+};
+
+function dleRenderPreview(templateHtml, model) {
+    const d = { ...DLE_DUMMY.common, ...(DLE_DUMMY[model] || {}) };
+    let html = templateHtml.replace(/\{\{(\w+)\}\}/g, (_, k) => d[k] !== undefined ? d[k] : '');
+    html = html.replace(/\{\{#each lines\}\}([\s\S]*?)\{\{\/each\}\}/g, (_, tpl) =>
+        (d.lines || []).map(ln => tpl.replace(/\{\{(\w+)\}\}/g, (__, k) => ln[k] || '')).join('')
+    );
+    return html;
+}
+
+// ----------------------------------------------------------------
+// DocumentLayoutEditor — replaces ReportSettingsView
+// ----------------------------------------------------------------
+class DocumentLayoutEditor extends Component {
+    static template = xml`
+        <div class="dle-shell">
+            <!-- Top bar -->
+            <div class="dle-topbar">
+                <div class="dle-doc-tabs">
+                    <t t-foreach="state.docTypes" t-as="dt" t-key="dt.model">
+                        <button t-attf-class="dle-doc-tab{{ state.docModel===dt.model?' active':'' }}"
+                                t-on-click="()=>this.onDocTypeChange(dt.model)"
+                                t-esc="dt.label"/>
+                    </t>
+                </div>
+                <div class="dle-topbar-actions">
+                    <button class="btn" t-on-click="onRefreshPreview">&#8635; Refresh</button>
+                    <button class="btn btn-primary" t-on-click="onSave" t-att-disabled="state.saving">
+                        <t t-if="state.saving">Saving&#8230;</t><t t-else="">Save</t>
+                    </button>
+                    <span t-if="state.saved" class="dle-saved-msg">&#10003; Saved</span>
+                </div>
+            </div>
+
+            <!-- 3-panel main area -->
+            <div class="dle-main">
+                <!-- LEFT PANEL -->
+                <div class="dle-left">
+                    <div class="dle-left-tabs">
+                        <button t-attf-class="dle-ltab{{ state.leftTab==='blocks'?' active':'' }}"
+                                t-on-click="()=>this.setLeftTab('blocks')">Blocks</button>
+                        <button t-attf-class="dle-ltab{{ state.leftTab==='html'?' active':'' }}"
+                                t-on-click="()=>this.setLeftTab('html')">HTML</button>
+                        <t t-if="state.leftTab==='html'">
+                            <button class="dle-ltab dle-ltab-popout" title="Open in separate window"
+                                    t-on-click="onPopoutHtml">&#x2197;</button>
+                        </t>
+                    </div>
+
+                    <!-- Blocks mode -->
+                    <t t-if="state.leftTab==='blocks'">
+                        <div class="dle-blocks-list" t-on-dragover="onDragOver" t-on-drop="onDrop">
+                            <t t-foreach="state.blocks" t-as="blk" t-key="blk_index">
+                                <div t-attf-class="dle-block-row{{ state.selectedBlock===blk_index?' selected':'' }}"
+                                     draggable="true"
+                                     t-att-data-idx="blk_index"
+                                     t-on-dragstart="onDragStart"
+                                     t-on-click="()=>this.selectBlock(blk_index)">
+                                    <span class="dle-drag-handle">&#10783;</span>
+                                    <span class="dle-block-icon" t-esc="getBlockDef(blk.type).icon"/>
+                                    <span class="dle-block-label" t-esc="getBlockDef(blk.type).label"/>
+                                    <span t-attf-class="dle-block-vis{{ blk.visible?' on':' off' }}"
+                                          t-on-click.stop="()=>this.toggleBlock(blk_index)">
+                                        <t t-if="blk.visible">&#128065;</t><t t-else="">&#9675;</t>
+                                    </span>
+                                    <span class="dle-block-del" title="Remove block"
+                                          t-on-click.stop="()=>this.removeBlock(blk_index)">&#x2715;</span>
+                                </div>
+                            </t>
+                        </div>
+                    </t>
+
+                    <!-- HTML mode -->
+                    <t t-if="state.leftTab==='html'">
+                        <textarea class="dle-html-editor"
+                                  t-att-value="state.templateHtml"
+                                  t-on-input="onHtmlInput"/>
+                    </t>
+                </div>
+
+                <!-- CENTER: preview iframe -->
+                <div class="dle-center">
+                    <div class="dle-preview-bar">
+                        <span class="dle-preview-label">Preview &#8212; dummy data</span>
+                        <t t-if="state.previewRecordId">
+                            <button class="btn" style="font-size:.75rem;padding:2px 8px;"
+                                    t-on-click="onOpenRealPreview">Open real record &#x2197;</button>
+                        </t>
+                    </div>
+                    <div class="dle-preview-wrap">
+                        <iframe class="dle-preview-frame"
+                                t-att-srcdoc="state.previewDoc"/>
+                    </div>
+                </div>
+
+                <!-- Sidebar resize handle -->
+                <div class="dle-sidebar-resizer" t-on-mousedown="onSidebarResizeStart"></div>
+
+                <!-- RIGHT: sidebar -->
+                <div class="dle-sidebar" t-att-style="'width:' + state.sidebarWidth + 'px'">
+                    <div class="dle-sidebar-tabs">
+                        <button t-attf-class="dle-stab{{ state.sidebarTab==='props'?' active':'' }}"
+                                t-on-click="()=>this.setSidebarTab('props')">Properties</button>
+                        <button t-attf-class="dle-stab{{ state.sidebarTab==='objects'?' active':'' }}"
+                                t-on-click="()=>this.setSidebarTab('objects')">Objects</button>
+                    </div>
+
+                    <!-- Properties tab -->
+                    <t t-if="state.sidebarTab==='props'">
+                        <div class="dle-props-panel">
+                            <t t-if="state.selectedBlock !== null">
+                                <div class="dle-props-title" t-esc="'Block: ' + getBlockDef(state.blocks[state.selectedBlock].type).label"/>
+                                <!-- Visible toggle always shown -->
+                                <div class="dle-prop-row">
+                                    <label>Visible</label>
+                                    <input type="checkbox"
+                                           t-att-checked="state.blocks[state.selectedBlock].visible"
+                                           t-on-change="()=>this.toggleBlock(state.selectedBlock)"/>
+                                </div>
+                                <!-- Data-driven property list for selected block type -->
+                                <t t-foreach="getBlockPropDefs(state.blocks[state.selectedBlock].type)" t-as="pd" t-key="pd.key || pd.label">
+                                    <!-- Section divider -->
+                                    <t t-if="pd.type === 'divider'">
+                                        <div class="dle-prop-divider" t-esc="pd.label"/>
+                                    </t>
+                                    <!-- Property row -->
+                                    <t t-else="">
+                                        <div class="dle-prop-row">
+                                            <label t-esc="pd.label"/>
+                                            <!-- number -->
+                                            <t t-if="pd.type === 'number'">
+                                                <div class="dle-prop-num-row">
+                                                    <input type="number" class="dle-prop-input"
+                                                           t-att-min="pd.min" t-att-max="pd.max"
+                                                           t-att-value="state.blocks[state.selectedBlock].props[pd.key] ?? ''"
+                                                           t-on-input="onPropInput"
+                                                           t-att-data-prop="pd.key" data-numtype="1"/>
+                                                    <span t-if="pd.unit" class="dle-prop-unit" t-esc="pd.unit"/>
+                                                </div>
+                                            </t>
+                                            <!-- color -->
+                                            <t t-if="pd.type === 'color'">
+                                                <div class="dle-color-row">
+                                                    <input type="color" class="dle-color-pick"
+                                                           t-att-value="state.blocks[state.selectedBlock].props[pd.key] || '#000000'"
+                                                           t-on-input="onPropInput"
+                                                           t-att-data-prop="pd.key"/>
+                                                    <input type="text" class="dle-prop-input dle-color-text"
+                                                           t-att-value="state.blocks[state.selectedBlock].props[pd.key] || ''"
+                                                           t-on-input="onPropInput"
+                                                           t-att-data-prop="pd.key"/>
+                                                </div>
+                                            </t>
+                                            <!-- select -->
+                                            <t t-if="pd.type === 'select'">
+                                                <select class="dle-prop-input" t-on-change="onPropInput" t-att-data-prop="pd.key">
+                                                    <t t-foreach="pd.options" t-as="opt" t-key="opt.v">
+                                                        <option t-att-value="opt.v"
+                                                                t-att-selected="(state.blocks[state.selectedBlock].props[pd.key] || '') === opt.v"
+                                                                t-esc="opt.l"/>
+                                                    </t>
+                                                </select>
+                                            </t>
+                                            <!-- boolean -->
+                                            <t t-if="pd.type === 'boolean'">
+                                                <input type="checkbox"
+                                                       t-att-checked="!!state.blocks[state.selectedBlock].props[pd.key]"
+                                                       t-on-change="onPropCheck"
+                                                       t-att-data-prop="pd.key"/>
+                                            </t>
+                                            <!-- text -->
+                                            <t t-if="pd.type === 'text'">
+                                                <input type="text" class="dle-prop-input"
+                                                       t-att-value="state.blocks[state.selectedBlock].props[pd.key] || ''"
+                                                       t-on-input="onPropInput"
+                                                       t-att-data-prop="pd.key"/>
+                                            </t>
+                                            <!-- textarea -->
+                                            <t t-if="pd.type === 'textarea'">
+                                                <textarea class="dle-prop-input dle-prop-textarea" rows="4"
+                                                          t-att-value="state.blocks[state.selectedBlock].props[pd.key] || ''"
+                                                          t-on-input="onPropInput"
+                                                          t-att-data-prop="pd.key"/>
+                                            </t>
+                                        </div>
+                                    </t>
+                                </t>
+                            </t>
+                            <t t-else="">
+                                <div class="dle-props-title">Document Settings</div>
+                                <div class="dle-prop-row">
+                                    <label>Paper Format</label>
+                                    <select class="dle-prop-input" t-model="state.docSettings.paper_format">
+                                        <option value="A4">A4</option>
+                                        <option value="Letter">Letter</option>
+                                        <option value="A3">A3</option>
+                                        <option value="Legal">Legal</option>
+                                    </select>
+                                </div>
+                                <div class="dle-prop-row">
+                                    <label>Orientation</label>
+                                    <select class="dle-prop-input" t-model="state.docSettings.orientation">
+                                        <option value="portrait">Portrait</option>
+                                        <option value="landscape">Landscape</option>
+                                    </select>
+                                </div>
+                                <div class="dle-prop-row">
+                                    <label>Font Family</label>
+                                    <select class="dle-prop-input" t-model="state.docSettings.font_family">
+                                        <option value="Arial, sans-serif">Arial</option>
+                                        <option value="'Times New Roman', serif">Times New Roman</option>
+                                        <option value="Helvetica, sans-serif">Helvetica</option>
+                                        <option value="Georgia, serif">Georgia</option>
+                                        <option value="'Courier New', monospace">Courier New</option>
+                                    </select>
+                                </div>
+                                <div class="dle-prop-row">
+                                    <label>Accent Color</label>
+                                    <div class="dle-color-row">
+                                        <input type="color" class="dle-color-pick"
+                                               t-att-value="state.docSettings.accent_color"
+                                               t-on-input="onAccentColorInput"/>
+                                        <input type="text" class="dle-prop-input dle-color-text"
+                                               t-att-value="state.docSettings.accent_color"
+                                               t-on-input="onAccentColorInput"/>
+                                    </div>
+                                </div>
+                                <div class="dle-prop-row">
+                                    <label>Preview Record ID</label>
+                                    <input type="text" class="dle-prop-input" placeholder="optional — opens in new tab"
+                                           t-att-value="state.previewRecordId"
+                                           t-on-input="ev=>this.state.previewRecordId=ev.target.value"/>
+                                </div>
+                            </t>
+                        </div>
+                    </t>
+
+                    <!-- Objects tab: block palette -->
+                    <t t-if="state.sidebarTab==='objects'">
+                        <div class="dle-objects-panel">
+                            <div class="dle-objects-hint">Click to add block to document</div>
+                            <div class="dle-obj-group-label">Content Blocks</div>
+                            <t t-foreach="state.blockDefs.filter(d=>d.group==='content')" t-as="def" t-key="def.type">
+                                <div class="dle-object-item"
+                                     t-on-click="()=>this.addBlock(def.type)"
+                                     draggable="true"
+                                     t-att-data-type="def.type">
+                                    <span class="dle-obj-icon" t-esc="def.icon"/>
+                                    <span class="dle-obj-label" t-esc="def.label"/>
+                                    <span class="dle-obj-add">+</span>
+                                </div>
+                            </t>
+                            <div class="dle-obj-group-label" style="margin-top:8px;">Layout Blocks</div>
+                            <t t-foreach="state.blockDefs.filter(d=>d.group==='layout')" t-as="def" t-key="def.type">
+                                <div class="dle-object-item dle-object-layout"
+                                     t-on-click="()=>this.addBlock(def.type)"
+                                     draggable="true"
+                                     t-att-data-type="def.type">
+                                    <span class="dle-obj-icon" t-esc="def.icon"/>
+                                    <span class="dle-obj-label" t-esc="def.label"/>
+                                    <span class="dle-obj-add">+</span>
+                                </div>
+                            </t>
+                        </div>
+                    </t>
+                </div>
+            </div>
+        </div>
+    `;
+
+    static components = {};
+
+    setup() {
+        this.state = useState({
+            docModel:        'account.move',
+            leftTab:         'blocks',
+            sidebarTab:      'props',
+            blocks:          [],
+            selectedBlock:   null,
+            templateHtml:    '',
+            templateId:      null,
+            previewDoc:      '',
+            previewRecordId: '',
+            saving:          false,
+            saved:           false,
+            docSettings:     { paper_format:'A4', orientation:'portrait', font_family:'Arial, sans-serif', accent_color:'#4a4a4a' },
+            loadingTemplate: false,
+            docTypes:        DLE_DOC_TYPES,
+            blockDefs:       DLE_BLOCK_DEFS,
+            sidebarWidth:    260,
+        });
+        onMounted(() => {
+            this.onDocTypeChange('account.move');
+            this._onMsgFromPopout = (ev) => {
+                if (ev.data && ev.data.type === 'dle-html-update') {
+                    this.state.templateHtml = ev.data.html;
+                    this.state.previewDoc   = dleRenderPreview(ev.data.html, this.state.docModel);
+                }
+            };
+            window.addEventListener('message', this._onMsgFromPopout);
+        });
+    }
+
+    onSidebarResizeStart(ev) {
+        ev.preventDefault();
+        const startX     = ev.clientX;
+        const startWidth = this.state.sidebarWidth;
+        document.body.style.userSelect = 'none';
+        const onMove = (e) => {
+            const delta = startX - e.clientX;          // dragging left → widens sidebar
+            this.state.sidebarWidth = Math.max(180, Math.min(600, startWidth + delta));
+        };
+        const onUp = () => {
+            document.body.style.userSelect = '';
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup',   onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup',   onUp);
+    }
+
+    onPopoutHtml() {
+        const win = window.open('', '_blank', 'width=980,height=740,menubar=no,toolbar=no');
+        if (!win) return;
+        const initJson = JSON.stringify(this.state.templateHtml || '');
+        win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>HTML Editor \u2014 Document Template</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { display: flex; flex-direction: column; height: 100vh; font-family: sans-serif; }
+  #toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #2a2a3c; border-bottom: 1px solid #555; flex-shrink: 0; height: 38px; }
+  #toolbar span { color: #aaa; font-size: 12px; flex: 1; }
+  button { padding: 3px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  #btn-apply { background: #4c8af4; color: #fff; }
+  #btn-apply:hover { background: #3a72d8; }
+  #btn-close { background: #555; color: #eee; }
+  #btn-close:hover { background: #333; }
+  /* Make CodeMirror fill the remaining height */
+  .CodeMirror { height: calc(100vh - 38px) !important; font-family: 'Consolas','Cascadia Code','Courier New',monospace !important; font-size: 13px; line-height: 1.55; }
+  .CodeMirror-scroll { height: 100%; }
+</style>
+</head><body>
+<div id="toolbar">
+  <span>HTML Editor \u2014 Ctrl+S or Apply to push changes back</span>
+  <button id="btn-apply">\u2713 Apply</button>
+  <button id="btn-close">\u2715 Close</button>
+</div>
+<textarea id="ed"></textarea>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"><\/script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"><\/script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"><\/script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/css/css.min.js"><\/script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/htmlmixed/htmlmixed.min.js"><\/script>
+<script>
+  let ready = false;
+  function apply() {
+    if (!ready) return;
+    if (window.opener && !window.opener.closed)
+      window.opener.postMessage({ type: 'dle-html-update', html: cm.getValue() }, '*');
+  }
+
+  const cm = CodeMirror.fromTextArea(document.getElementById('ed'), {
+    mode:           'htmlmixed',
+    theme:          'dracula',
+    indentUnit:     2,
+    tabSize:        2,
+    indentWithTabs: false,
+    lineNumbers:    true,
+    lineWrapping:   false,
+    autofocus:      true,
+    extraKeys: {
+      'Ctrl-S': () => { ready = true; apply(); },
+      'Tab':    (c) => c.execCommand('insertSoftTab'),
+    },
+  });
+  cm.setValue(${initJson});
+  cm.refresh();
+
+  cm.on('focus', () => { ready = true; });
+  // Auto-apply when user switches back to the main window
+  window.addEventListener('blur', apply);
+
+  document.getElementById('btn-apply').addEventListener('click', () => { ready = true; apply(); });
+  document.getElementById('btn-close').addEventListener('click', () => window.close());
+<\/script>
+</body></html>`);
+        win.document.close();
+    }
+
+    getBlockDef(type) {
+        return DLE_BLOCK_DEFS.find(d => d.type === type) || { icon: '?', label: type };
+    }
+
+    setLeftTab(tab) { this.state.leftTab = tab; }
+
+    setSidebarTab(tab) {
+        this.state.sidebarTab = tab;
+        if (tab !== 'props') this.state.selectedBlock = null;
+    }
+
+    selectBlock(idx) {
+        this.state.selectedBlock = idx;
+        this.state.sidebarTab = 'props';
+    }
+
+    addBlock(type) {
+        this.state.blocks.push({ type, visible: true, props: {} });
+        this.state.leftTab = 'blocks';
+        this.rebuildHtml();
+    }
+
+    removeBlock(idx) {
+        this.state.blocks.splice(idx, 1);
+        if (this.state.selectedBlock === idx) this.state.selectedBlock = null;
+        else if (this.state.selectedBlock > idx) this.state.selectedBlock--;
+        this.rebuildHtml();
+    }
+
+    toggleBlock(idx) {
+        this.state.blocks[idx].visible = !this.state.blocks[idx].visible;
+        this.rebuildHtml();
+    }
+
+    rebuildHtml() {
+        this.state.templateHtml = dleBuildHtml(this.state.blocks, this.state.docModel);
+        this.state.previewDoc   = dleRenderPreview(this.state.templateHtml, this.state.docModel);
+    }
+
+    onDragStart(ev) {
+        ev.dataTransfer.setData('text/plain', ev.currentTarget.dataset.idx);
+    }
+
+    onDragOver(ev) { ev.preventDefault(); }
+
+    onDrop(ev) {
+        ev.preventDefault();
+        const fromIdx = parseInt(ev.dataTransfer.getData('text/plain'));
+        if (isNaN(fromIdx)) return;
+        const toRow = ev.target.closest('.dle-block-row');
+        const toIdx = toRow ? parseInt(toRow.dataset.idx) : this.state.blocks.length - 1;
+        if (fromIdx === toIdx) return;
+        const blocks = [...this.state.blocks];
+        const [moved] = blocks.splice(fromIdx, 1);
+        blocks.splice(toIdx, 0, moved);
+        this.state.blocks = blocks;
+        this.state.selectedBlock = null;
+        this.rebuildHtml();
+    }
+
+    onHtmlInput(ev) {
+        this.state.templateHtml = ev.target.value;
+        this.state.previewDoc   = dleRenderPreview(this.state.templateHtml, this.state.docModel);
+    }
+
+    getBlockPropDefs(type) {
+        return DLE_PROP_DEFS[type] || [];
+    }
+
+    onPropInput(ev) {
+        const idx = this.state.selectedBlock;
+        if (idx === null || idx === undefined) return;
+        const prop = ev.target.dataset.prop;
+        const val  = ev.target.dataset.numtype ? (parseFloat(ev.target.value) || 0) : ev.target.value;
+        this.state.blocks[idx].props = { ...this.state.blocks[idx].props, [prop]: val };
+        this.rebuildHtml();
+    }
+
+    onPropCheck(ev) {
+        const idx = this.state.selectedBlock;
+        if (idx === null || idx === undefined) return;
+        const prop = ev.target.dataset.prop;
+        this.state.blocks[idx].props = { ...this.state.blocks[idx].props, [prop]: ev.target.checked };
+        this.rebuildHtml();
+    }
+
+    onAccentColorInput(ev) { this.state.docSettings.accent_color = ev.target.value; }
+
+    onRefreshPreview() { this.rebuildHtml(); }
+
+    onOpenRealPreview() {
+        const id = parseInt(this.state.previewRecordId);
+        if (id > 0) window.open(`/report/html/${this.state.docModel}/${id}`, '_blank');
+    }
+
+    async onDocTypeChange(model) {
+        this.state.docModel      = model;
+        this.state.selectedBlock = null;
+        this.state.saving        = false;
+        this.state.saved         = false;
+        this.state.templateId    = null;
+        this.state.templateHtml  = '';
+        this.state.previewDoc    = '';
+        // Load template record (for paper_format, orientation, and templateId)
+        try {
+            const tpls = await RpcService.call('ir.report.template', 'search_read',
+                [[['model', '=', model]]],
+                { fields: ['id', 'paper_format', 'orientation'], limit: 1 });
+            if (tpls && tpls.length > 0) {
+                this.state.templateId = tpls[0].id;
+                this.state.docSettings.paper_format = tpls[0].paper_format || 'A4';
+                this.state.docSettings.orientation  = tpls[0].orientation  || 'portrait';
+            }
+        } catch (e) { console.error(e); }
+        // Load block config
+        try {
+            const cfgKey = 'layout.blocks.' + model;
+            const cfgRows = await RpcService.call('ir.config.parameter', 'search_read',
+                [[['key', '=', cfgKey]]], { fields: ['id', 'value'], limit: 1 });
+            if (cfgRows && cfgRows.length > 0 && cfgRows[0].value) {
+                this.state.blocks = JSON.parse(cfgRows[0].value);
+            } else {
+                const defaults = DLE_DEFAULT_BLOCKS[model] || [];
+                this.state.blocks = defaults.map(t => ({ type: t, visible: true, props: {} }));
+            }
+        } catch (e) {
+            const defaults = DLE_DEFAULT_BLOCKS[model] || [];
+            this.state.blocks = defaults.map(t => ({ type: t, visible: true, props: {} }));
+        }
+        // Load design settings
+        try {
+            const designRows = await RpcService.call('ir.config.parameter', 'search_read',
+                [[['key', 'in', ['report.design.accent_color', 'report.design.font_family']]]],
+                { fields: ['key', 'value'], limit: 10 });
+            for (const row of (Array.isArray(designRows) ? designRows : [])) {
+                if (row.key === 'report.design.accent_color' && row.value) this.state.docSettings.accent_color = row.value;
+                if (row.key === 'report.design.font_family'  && row.value) this.state.docSettings.font_family  = row.value;
+            }
+        } catch (e) {}
+        // Generate template HTML from blocks and refresh preview
+        this.rebuildHtml();
+    }
+
+    async onSave() {
+        this.state.saving = true;
+        this.state.saved  = false;
+        try {
+            // In blocks mode: regenerate HTML from current block arrangement before saving
+            if (this.state.leftTab !== 'html') {
+                this.state.templateHtml = dleBuildHtml(this.state.blocks, this.state.docModel);
+            }
+            // Save template HTML + settings
+            if (this.state.templateId) {
+                await RpcService.call('ir.report.template', 'write',
+                    [[this.state.templateId], {
+                        template_html: this.state.templateHtml,
+                        paper_format:  this.state.docSettings.paper_format,
+                        orientation:   this.state.docSettings.orientation,
+                    }], {});
+            }
+            // Save block config
+            const cfgKey   = 'layout.blocks.' + this.state.docModel;
+            const cfgValue = JSON.stringify(this.state.blocks);
+            const existRows = await RpcService.call('ir.config.parameter', 'search_read',
+                [[['key', '=', cfgKey]]], { fields: ['id'], limit: 1 });
+            if (existRows && existRows.length > 0) {
+                await RpcService.call('ir.config.parameter', 'write', [[existRows[0].id], { value: cfgValue }], {});
+            } else {
+                await RpcService.call('ir.config.parameter', 'create', [{ key: cfgKey, value: cfgValue }], {});
+            }
+            // Save design settings
+            const designSaves = [
+                ['report.design.accent_color', this.state.docSettings.accent_color],
+                ['report.design.font_family',  this.state.docSettings.font_family],
+            ];
+            for (const [key, value] of designSaves) {
+                const rows = await RpcService.call('ir.config.parameter', 'search_read',
+                    [[['key', '=', key]]], { fields: ['id'], limit: 1 });
+                if (rows && rows.length > 0) {
+                    await RpcService.call('ir.config.parameter', 'write', [[rows[0].id], { value }], {});
+                } else {
+                    await RpcService.call('ir.config.parameter', 'create', [{ key, value }], {});
+                }
+            }
+            this.state.saved = true;
+            setTimeout(() => { if (this.state) this.state.saved = false; }, 3000);
+        } catch (e) { console.error(e); }
+        finally { this.state.saving = false; }
+    }
+}
+
+// ----------------------------------------------------------------
 // ReportSettingsView — editor for ir.report.template records + report config settings
 // ----------------------------------------------------------------
 class ReportSettingsView extends Component {
@@ -3812,8 +5278,11 @@ class ActionView extends Component {
             <t t-if="state.loading">
                 <div class="loading">Loading views…</div>
             </t>
+            <t t-elif="isERPSettingsModel">
+                <ERPSettingsView/>
+            </t>
             <t t-elif="isReportTemplateModel">
-                <ReportSettingsView/>
+                <DocumentLayoutEditor/>
             </t>
             <t t-elif="state.mode === 'list'">
                 <ListView action="currentAction"
@@ -3855,7 +5324,7 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, ProductFormView, ReportSettingsView };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, ProductFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor };
 
     // Use overrideAction when navigateTo() has been called, else fall back to props.action
     get currentAction()          { return this.state.overrideAction || this.props.action; }
@@ -3866,6 +5335,7 @@ class ActionView extends Component {
     get isStockPickingModel()    { return this.currentAction.res_model === 'stock.picking'; }
     get isProductModel()         { return this.currentAction.res_model === 'product.product'; }
     get isReportTemplateModel()  { return this.currentAction.res_model === 'ir.report.template'; }
+    get isERPSettingsModel()     { return this.currentAction.res_model === 'ir.erp.settings'; }
 
     setup() {
         this.state = useState({

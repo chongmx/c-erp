@@ -536,9 +536,12 @@ public:
     explicit SaleOrderViewModel(std::shared_ptr<DbConnection> db)
         : SaleViewModel<SaleOrder>(std::move(db))
     {
-        REGISTER_METHOD("action_confirm",         handleActionConfirm)
-        REGISTER_METHOD("action_cancel",          handleActionCancel)
-        REGISTER_METHOD("action_create_invoices", handleActionCreateInvoices)
+        REGISTER_METHOD("action_confirm",                  handleActionConfirm)
+        REGISTER_METHOD("action_cancel",                   handleActionCancel)
+        REGISTER_METHOD("action_create_invoices",          handleActionCreateInvoices)
+        REGISTER_METHOD("action_create_down_payment",      handleActionCreateDownPayment)
+        REGISTER_METHOD("action_create_progress_payment",  handleActionCreateDownPayment)  // same logic, different label
+        REGISTER_METHOD("action_create_final_invoice",     handleActionCreateFinalInvoice)
     }
 
     std::string modelName() const override { return "sale.order"; }
@@ -729,14 +732,15 @@ private:
             mp.append(amtTotal);  // amount_residual
             mp.append(orderName); // ref
             mp.append(orderName); // invoice_origin
+            mp.append(ordId);     // sale_id
 
             auto mvRow = txn.exec(
                 "INSERT INTO account_move "
                 "(move_type, state, date, journal_id, partner_id, "
                 " payment_term_id, company_id, currency_id, invoice_date, "
-                " amount_untaxed, amount_tax, amount_total, amount_residual, ref, invoice_origin) "
+                " amount_untaxed, amount_tax, amount_total, amount_residual, ref, invoice_origin, sale_id) "
                 "VALUES ('out_invoice','draft',$6,$1,$2,$3,$4,$5,$6,"
-                "        $7,$8,$9,$10,$11,$12) "
+                "        $7,$8,$9,$10,$11,$12,$13) "
                 "RETURNING id",
                 mp);
             int moveId = mvRow[0][0].as<int>();
@@ -817,11 +821,287 @@ private:
                 "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
                 rl);
 
-            // Mark order as invoiced
+            // Mark order as invoiced (full invoice — disables further Create Invoice)
             txn.exec(
                 "UPDATE sale_order SET invoice_status = 'invoiced', write_date = now() "
                 "WHERE id = $1",
                 pqxx::params{ordId});
+        }
+
+        txn.commit();
+        return true;
+    }
+
+    // ----------------------------------------------------------
+    // action_create_down_payment — partial / advance invoice
+    // kwargs: amount (numeric), note (optional string)
+    // ----------------------------------------------------------
+    nlohmann::json handleActionCreateDownPayment(const CallKwArgs& call) {
+        const auto ids = call.ids();
+        if (ids.empty()) return true;
+
+        double dpAmount = 0.0;
+        if (call.kwargs.contains("amount") && call.kwargs["amount"].is_number())
+            dpAmount = call.kwargs["amount"].get<double>();
+        if (dpAmount <= 0.0)
+            throw std::runtime_error("Invoice amount must be greater than zero");
+
+        std::string dpNote = "Down Payment";
+        if (call.kwargs.contains("note") && call.kwargs["note"].is_string())
+            dpNote = call.kwargs["note"].get<std::string>();
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        for (int ordId : ids) {
+            auto r = txn.exec(
+                "SELECT state, partner_id, payment_term_id, company_id, "
+                "       currency_id, amount_total, name "
+                "FROM sale_order WHERE id = $1",
+                pqxx::params{ordId});
+            if (r.empty()) throw std::runtime_error("Sale order not found");
+
+            std::string state      = r[0][0].c_str();
+            int         partnerId  = r[0][1].is_null() ? 0 : r[0][1].as<int>();
+            int         payTermId  = r[0][2].is_null() ? 0 : r[0][2].as<int>();
+            int         companyId  = r[0][3].as<int>();
+            int         currencyId = r[0][4].is_null() ? 0 : r[0][4].as<int>();
+            std::string orderName  = r[0][6].c_str();
+
+            if (state != "sale")
+                throw std::runtime_error("Only confirmed orders can be invoiced");
+
+            auto jrow = txn.exec(
+                "SELECT id FROM account_journal "
+                "WHERE type = 'sale' AND company_id = $1 AND active = TRUE "
+                "ORDER BY id LIMIT 1", pqxx::params{companyId});
+            if (jrow.empty()) throw std::runtime_error("No sale journal found");
+            int journalId = jrow[0][0].as<int>();
+
+            auto incRow = txn.exec(
+                "SELECT id FROM account_account "
+                "WHERE account_type IN ('income','income_other') "
+                "  AND company_id = $1 AND active = TRUE ORDER BY code LIMIT 1",
+                pqxx::params{companyId});
+            if (incRow.empty()) throw std::runtime_error("No income account found");
+            int incomeAccId = incRow[0][0].as<int>();
+
+            auto arRow = txn.exec(
+                "SELECT id FROM account_account "
+                "WHERE account_type = 'asset_receivable' "
+                "  AND company_id = $1 AND active = TRUE ORDER BY code LIMIT 1",
+                pqxx::params{companyId});
+            if (arRow.empty()) throw std::runtime_error("No receivable account found");
+            int arAccId = arRow[0][0].as<int>();
+
+            std::string today = saleCurrentDate();
+            std::string ref   = dpNote + " - " + orderName;
+
+            pqxx::params mp;
+            mp.append(journalId);
+            if (partnerId  > 0) mp.append(partnerId);  else mp.append(nullptr);
+            if (payTermId  > 0) mp.append(payTermId);  else mp.append(nullptr);
+            mp.append(companyId);
+            if (currencyId > 0) mp.append(currencyId); else mp.append(nullptr);
+            mp.append(today);      // $6
+            mp.append(dpAmount);   // $7 amount_untaxed
+            mp.append(0.0);        // $8 amount_tax
+            mp.append(dpAmount);   // $9 amount_total
+            mp.append(dpAmount);   // $10 amount_residual
+            mp.append(ref);        // $11 ref
+            mp.append(orderName);  // $12 invoice_origin
+            mp.append(ordId);      // $13 sale_id
+
+            auto mvRow = txn.exec(
+                "INSERT INTO account_move "
+                "(move_type, state, date, journal_id, partner_id, "
+                " payment_term_id, company_id, currency_id, invoice_date, "
+                " amount_untaxed, amount_tax, amount_total, amount_residual, ref, invoice_origin, sale_id) "
+                "VALUES ('out_invoice','draft',$6,$1,$2,$3,$4,$5,$6,"
+                "        $7,$8,$9,$10,$11,$12,$13) "
+                "RETURNING id",
+                mp);
+            int moveId = mvRow[0][0].as<int>();
+
+            // Income (credit) line
+            pqxx::params il;
+            il.append(moveId);
+            il.append(incomeAccId);
+            il.append(journalId);
+            il.append(companyId);
+            il.append(today);
+            il.append(ref);
+            if (partnerId > 0) il.append(partnerId); else il.append(nullptr);
+            il.append(1.0);
+            il.append(dpAmount);  // price_unit
+            il.append(0.0);       // debit
+            il.append(dpAmount);  // credit
+            txn.exec(
+                "INSERT INTO account_move_line "
+                "(move_id, account_id, journal_id, company_id, date, "
+                " name, partner_id, quantity, price_unit, debit, credit) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+                il);
+
+            // Receivable (debit) line
+            pqxx::params rl;
+            rl.append(moveId);
+            rl.append(arAccId);
+            rl.append(journalId);
+            rl.append(companyId);
+            rl.append(today);
+            rl.append(ref);
+            if (partnerId > 0) rl.append(partnerId); else rl.append(nullptr);
+            rl.append(1.0);
+            rl.append(dpAmount);  // debit
+            rl.append(0.0);       // credit
+            txn.exec(
+                "INSERT INTO account_move_line "
+                "(move_id, account_id, journal_id, company_id, date, "
+                " name, partner_id, quantity, debit, credit) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                rl);
+
+            // Mark as partially invoiced only if not already invoiced
+            txn.exec(
+                "UPDATE sale_order SET invoice_status = 'to invoice', write_date = now() "
+                "WHERE id = $1 AND invoice_status = 'nothing'",
+                pqxx::params{ordId});
+
+            odoo::modules::mail::postLog(txn, "sale.order", ordId, 0,
+                "Partial invoice created: " + ref, "log_note");
+        }
+
+        txn.commit();
+        return true;
+    }
+
+    // ----------------------------------------------------------
+    // action_create_final_invoice
+    // Calculates remaining = SO.total - SUM(posted invoices)
+    // Creates one invoice for that amount, marks SO 'invoiced'
+    // ----------------------------------------------------------
+    nlohmann::json handleActionCreateFinalInvoice(const CallKwArgs& call) {
+        const auto ids = call.ids();
+        if (ids.empty()) return true;
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        for (int ordId : ids) {
+            auto r = txn.exec(
+                "SELECT state, partner_id, payment_term_id, company_id, "
+                "       currency_id, amount_total, name "
+                "FROM sale_order WHERE id = $1",
+                pqxx::params{ordId});
+            if (r.empty()) throw std::runtime_error("Sale order not found");
+
+            std::string state      = r[0][0].c_str();
+            int         partnerId  = r[0][1].is_null() ? 0 : r[0][1].as<int>();
+            int         payTermId  = r[0][2].is_null() ? 0 : r[0][2].as<int>();
+            int         companyId  = r[0][3].as<int>();
+            int         currencyId = r[0][4].is_null() ? 0 : r[0][4].as<int>();
+            double      soTotal    = r[0][5].as<double>();
+            std::string orderName  = r[0][6].c_str();
+
+            if (state != "sale")
+                throw std::runtime_error("Only confirmed orders can be invoiced");
+
+            // Sum all posted invoices already linked to this SO
+            auto invSum = txn.exec(
+                "SELECT COALESCE(SUM(amount_total),0) AS invoiced "
+                "FROM account_move "
+                "WHERE sale_id = $1 AND state = 'posted' AND move_type = 'out_invoice'",
+                pqxx::params{ordId});
+            double alreadyInvoiced = invSum[0]["invoiced"].as<double>();
+            double remaining = soTotal - alreadyInvoiced;
+
+            if (remaining <= 0.001)
+                throw std::runtime_error("No remaining balance — order is fully invoiced");
+
+            auto jrow = txn.exec(
+                "SELECT id FROM account_journal "
+                "WHERE type = 'sale' AND company_id = $1 AND active = TRUE ORDER BY id LIMIT 1",
+                pqxx::params{companyId});
+            if (jrow.empty()) throw std::runtime_error("No sale journal found");
+            int journalId = jrow[0][0].as<int>();
+
+            auto incRow = txn.exec(
+                "SELECT id FROM account_account "
+                "WHERE account_type IN ('income','income_other') "
+                "  AND company_id = $1 AND active = TRUE ORDER BY code LIMIT 1",
+                pqxx::params{companyId});
+            if (incRow.empty()) throw std::runtime_error("No income account found");
+            int incomeAccId = incRow[0][0].as<int>();
+
+            auto arRow = txn.exec(
+                "SELECT id FROM account_account "
+                "WHERE account_type = 'asset_receivable' "
+                "  AND company_id = $1 AND active = TRUE ORDER BY code LIMIT 1",
+                pqxx::params{companyId});
+            if (arRow.empty()) throw std::runtime_error("No receivable account found");
+            int arAccId = arRow[0][0].as<int>();
+
+            std::string today = saleCurrentDate();
+            std::string ref   = "Final Payment - " + orderName;
+
+            pqxx::params mp;
+            mp.append(journalId);
+            if (partnerId  > 0) mp.append(partnerId);  else mp.append(nullptr);
+            if (payTermId  > 0) mp.append(payTermId);  else mp.append(nullptr);
+            mp.append(companyId);
+            if (currencyId > 0) mp.append(currencyId); else mp.append(nullptr);
+            mp.append(today);
+            mp.append(remaining);  // amount_untaxed
+            mp.append(0.0);        // amount_tax
+            mp.append(remaining);  // amount_total
+            mp.append(remaining);  // amount_residual
+            mp.append(ref);
+            mp.append(orderName);  // invoice_origin
+            mp.append(ordId);      // sale_id
+
+            auto mvRow = txn.exec(
+                "INSERT INTO account_move "
+                "(move_type, state, date, journal_id, partner_id, "
+                " payment_term_id, company_id, currency_id, invoice_date, "
+                " amount_untaxed, amount_tax, amount_total, amount_residual, ref, invoice_origin, sale_id) "
+                "VALUES ('out_invoice','draft',$6,$1,$2,$3,$4,$5,$6,"
+                "        $7,$8,$9,$10,$11,$12,$13) RETURNING id",
+                mp);
+            int moveId = mvRow[0][0].as<int>();
+
+            // Income (credit) line
+            pqxx::params il;
+            il.append(moveId); il.append(incomeAccId); il.append(journalId);
+            il.append(companyId); il.append(today); il.append(ref);
+            if (partnerId > 0) il.append(partnerId); else il.append(nullptr);
+            il.append(1.0); il.append(remaining); il.append(0.0); il.append(remaining);
+            txn.exec(
+                "INSERT INTO account_move_line "
+                "(move_id, account_id, journal_id, company_id, date, "
+                " name, partner_id, quantity, price_unit, debit, credit) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)", il);
+
+            // Receivable (debit) line
+            pqxx::params rl;
+            rl.append(moveId); rl.append(arAccId); rl.append(journalId);
+            rl.append(companyId); rl.append(today); rl.append(ref);
+            if (partnerId > 0) rl.append(partnerId); else rl.append(nullptr);
+            rl.append(1.0); rl.append(remaining); rl.append(0.0);
+            txn.exec(
+                "INSERT INTO account_move_line "
+                "(move_id, account_id, journal_id, company_id, date, "
+                " name, partner_id, quantity, debit, credit) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", rl);
+
+            // Mark order as fully invoiced
+            txn.exec(
+                "UPDATE sale_order SET invoice_status = 'invoiced', write_date = now() "
+                "WHERE id = $1",
+                pqxx::params{ordId});
+
+            odoo::modules::mail::postLog(txn, "sale.order", ordId, 0,
+                "Final invoice created: " + ref, "log_note");
         }
 
         txn.commit();
@@ -1036,6 +1316,11 @@ private:
     void ensureSchema_() {
         auto conn = services_.db()->acquire();
         pqxx::work txn{conn.get()};
+
+        // Add sale_id FK to account_move if not already present
+        txn.exec(
+            "ALTER TABLE account_move "
+            "ADD COLUMN IF NOT EXISTS sale_id INTEGER REFERENCES sale_order(id)");
 
         // Sequence for SO/YYYY/NNNN
         txn.exec("CREATE SEQUENCE IF NOT EXISTS sale_order_seq START 1");
