@@ -85,6 +85,21 @@ public:
         for (const auto& [k, v] : vars)
             tmpl = replaceAll(tmpl, "{{" + k + "}}", v);
 
+        // Blank out any remaining unresolved {{placeholders}}
+        {
+            std::string out;
+            out.reserve(tmpl.size());
+            std::size_t i = 0;
+            while (i < tmpl.size()) {
+                if (tmpl[i] == '{' && i + 1 < tmpl.size() && tmpl[i+1] == '{') {
+                    std::size_t end = tmpl.find("}}", i + 2);
+                    if (end != std::string::npos) { i = end + 2; continue; }
+                }
+                out += tmpl[i++];
+            }
+            tmpl = std::move(out);
+        }
+
         return tmpl;
     }
 };
@@ -221,6 +236,7 @@ static const std::string INVOICE_TEMPLATE = R"HTML(<!DOCTYPE html><html><head><m
     <div>{{partner_street}}</div>
     <div>{{partner_city}}</div>
     <div>{{partner_phone}}</div>
+    <div class="attn">Attn: {{attn_name}}</div>
   </div>
   <div class="meta-col">
     <div class="doc-title">{{document_title}}</div>
@@ -296,6 +312,7 @@ static const std::string SALE_ORDER_TEMPLATE = R"HTML(<!DOCTYPE html><html><head
     <div>{{partner_street}}</div>
     <div>{{partner_city}}</div>
     <div>{{partner_phone}}</div>
+    <div class="attn">Attn: {{attn_name}}</div>
   </div>
   <div class="meta-col">
     <div class="doc-title">{{document_title}}</div>
@@ -373,6 +390,7 @@ static const std::string PURCHASE_ORDER_TEMPLATE = R"HTML(<!DOCTYPE html><html><
     <div>{{partner_street}}</div>
     <div>{{partner_city}}</div>
     <div>{{partner_phone}}</div>
+    <div class="attn">Attn: {{attn_name}}</div>
   </div>
   <div class="meta-col">
     <div class="doc-title">{{document_title}}</div>
@@ -450,6 +468,7 @@ static const std::string STOCK_PICKING_TEMPLATE = R"HTML(<!DOCTYPE html><html><h
     <div>{{partner_street}}</div>
     <div>{{partner_city}}</div>
     <div>{{partner_phone}}</div>
+    <div class="attn">Attn: {{attn_name}}</div>
   </div>
   <div class="meta-col">
     <div class="doc-title">{{document_title}}</div>
@@ -855,6 +874,7 @@ public:
                             line["price_unit"]   = safeStr(lr["price_unit"]);
                             line["subtotal"]     = safeStr(lr["subtotal"]);
                             line["line_type"]    = safeStr(lr["line_type"]);
+                            line["uom"]          = "Unit";
                             lines.push_back(line);
                         }
 
@@ -1025,20 +1045,37 @@ public:
                     if (partnerId > 0) {
                         auto prows = txn.exec(
                             "SELECT COALESCE(name,'') AS name, COALESCE(street,'') AS street, "
-                            "COALESCE(city,'') AS city, COALESCE(phone,'') AS phone "
+                            "COALESCE(city,'') AS city, COALESCE(phone,'') AS phone, "
+                            "COALESCE(company_name,'') AS company_name, "
+                            "COALESCE(is_company,false) AS is_company "
                             "FROM res_partner WHERE id=$1",
                             pqxx::params{partnerId});
                         if (!prows.empty()) {
-                            vars["partner_name"]   = safeStr(prows[0]["name"]);
+                            std::string pName    = safeStr(prows[0]["name"]);
+                            std::string compName = safeStr(prows[0]["company_name"]);
+                            bool isCompany = prows[0]["is_company"].as<bool>(false);
+
                             vars["partner_street"] = safeStr(prows[0]["street"]);
                             vars["partner_city"]   = safeStr(prows[0]["city"]);
                             vars["partner_phone"]  = safeStr(prows[0]["phone"]);
+
+                            if (isCompany) {
+                                // Company contact: header = company name, attn = same
+                                vars["partner_name"] = pName;
+                                vars["attn_name"]    = pName;
+                            } else {
+                                // Individual: header = their company/org name,
+                                // attn = personal name
+                                vars["partner_name"] = compName.empty() ? pName : compName;
+                                vars["attn_name"]    = pName;
+                            }
                         }
                     } else {
                         vars["partner_name"]   = "";
                         vars["partner_street"] = "";
                         vars["partner_city"]   = "";
                         vars["partner_phone"]  = "";
+                        vars["attn_name"]      = "";
                     }
 
                     std::string rendered = TemplateRenderer::render(tplHtml, vars, lines);
@@ -1129,6 +1166,7 @@ public:
                     vars["partner_street"] = "Level 3, Menara KL";
                     vars["partner_city"]   = "50088 Kuala Lumpur, Malaysia";
                     vars["partner_phone"]  = "+603-2181 9000";
+                    vars["attn_name"]      = "Mr. John Doe";
 
                     // ---- Model-specific dummy data ----
                     if (model == "account.move") {

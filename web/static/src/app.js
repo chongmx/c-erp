@@ -63,8 +63,7 @@ class ListView extends Component {
             const na = np.action;
             if (na?.res_model !== oa?.res_model ||
                 JSON.stringify(na?.domain) !== JSON.stringify(oa?.domain)) {
-                // Props will be updated by OWL before the microtask fires
-                Promise.resolve().then(() => this.load());
+                this.load(na);
             }
         });
     }
@@ -78,11 +77,11 @@ class ListView extends Component {
         }));
     }
 
-    async load() {
+    async load(action) {
+        action = action || this.props.action;
         this.state.loading = true;
         this.state.error   = '';
         try {
-            const action = this.props.action;
             const cols   = this.columns.map(c => c.name);
             let domain   = action.domain || [];
             if (typeof domain === 'string') {
@@ -3564,8 +3563,51 @@ class ProductFormView extends Component {
                     <!-- ── Sales tab ─────────────────────────────────── -->
                     <t t-if="state.activeTab === 'sales'">
                         <div class="so-info-grid" style="margin-top:12px;">
-                            <div class="so-info-col" style="grid-column:span 2">
-                                <div class="so-field-row" style="flex-direction:column;align-items:flex-start;gap:6px;">
+                            <!-- Left column: sales policy & warnings -->
+                            <div class="so-info-col">
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Invoicing Policy</label>
+                                    <select class="form-input" data-field="invoice_policy">
+                                        <option value="order"
+                                                t-att-selected="(state.record.invoice_policy||'order')==='order'?true:undefined">
+                                            Ordered Quantities
+                                        </option>
+                                        <option value="delivery"
+                                                t-att-selected="state.record.invoice_policy==='delivery'?true:undefined">
+                                            Delivered Quantities
+                                        </option>
+                                    </select>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Sales Warning</label>
+                                    <select class="form-input" data-field="sale_line_warn">
+                                        <option value="no-message"
+                                                t-att-selected="(state.record.sale_line_warn||'no-message')==='no-message'?true:undefined">
+                                            No Warning
+                                        </option>
+                                        <option value="warning"
+                                                t-att-selected="state.record.sale_line_warn==='warning'?true:undefined">
+                                            Warning
+                                        </option>
+                                        <option value="block"
+                                                t-att-selected="state.record.sale_line_warn==='block'?true:undefined">
+                                            Blocking Message
+                                        </option>
+                                    </select>
+                                </div>
+                                <t t-if="state.record.sale_line_warn &amp;&amp; state.record.sale_line_warn !== 'no-message'">
+                                    <div class="so-field-row" style="flex-direction:column;align-items:flex-start;gap:4px;">
+                                        <label class="so-field-lbl">Warning Message</label>
+                                        <textarea class="form-input prd-notes-area" data-field="sale_line_warn_msg"
+                                                  style="min-height:60px"
+                                                  placeholder="Message shown when this product is added to a sale order…"
+                                                  t-att-value="strVal(state.record.sale_line_warn_msg)"/>
+                                    </div>
+                                </t>
+                            </div>
+                            <!-- Right column: sales description -->
+                            <div class="so-info-col">
+                                <div class="so-field-row" style="flex-direction:column;align-items:flex-start;gap:4px;">
                                     <label class="so-field-lbl">Sales Description</label>
                                     <textarea class="form-input prd-notes-area" data-field="description_sale"
                                               placeholder="Description shown to customers on quotations and sales orders…"
@@ -3578,8 +3620,57 @@ class ProductFormView extends Component {
                     <!-- ── Purchase tab ──────────────────────────────── -->
                     <t t-elif="state.activeTab === 'purchase'">
                         <div class="so-info-grid" style="margin-top:12px;">
-                            <div class="so-info-col" style="grid-column:span 2">
-                                <div class="so-field-row" style="flex-direction:column;align-items:flex-start;gap:6px;">
+                            <!-- Left column: purchase policy & warnings -->
+                            <div class="so-info-col">
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Control Policy</label>
+                                    <select class="form-input" data-field="purchase_method">
+                                        <option value="purchase"
+                                                t-att-selected="(state.record.purchase_method||'purchase')==='purchase'?true:undefined">
+                                            Based on Ordered Quantities
+                                        </option>
+                                        <option value="receive"
+                                                t-att-selected="state.record.purchase_method==='receive'?true:undefined">
+                                            Based on Received Quantities
+                                        </option>
+                                    </select>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Purchase Lead Time (days)</label>
+                                    <input class="form-input" type="number" step="0.5" min="0"
+                                           data-field="purchase_lead_time"
+                                           t-att-value="state.record.purchase_lead_time ?? 0"/>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Purchase Warning</label>
+                                    <select class="form-input" data-field="purchase_line_warn">
+                                        <option value="no-message"
+                                                t-att-selected="(state.record.purchase_line_warn||'no-message')==='no-message'?true:undefined">
+                                            No Warning
+                                        </option>
+                                        <option value="warning"
+                                                t-att-selected="state.record.purchase_line_warn==='warning'?true:undefined">
+                                            Warning
+                                        </option>
+                                        <option value="block"
+                                                t-att-selected="state.record.purchase_line_warn==='block'?true:undefined">
+                                            Blocking Message
+                                        </option>
+                                    </select>
+                                </div>
+                                <t t-if="state.record.purchase_line_warn &amp;&amp; state.record.purchase_line_warn !== 'no-message'">
+                                    <div class="so-field-row" style="flex-direction:column;align-items:flex-start;gap:4px;">
+                                        <label class="so-field-lbl">Warning Message</label>
+                                        <textarea class="form-input prd-notes-area" data-field="purchase_line_warn_msg"
+                                                  style="min-height:60px"
+                                                  placeholder="Message shown when this product is added to a purchase order…"
+                                                  t-att-value="strVal(state.record.purchase_line_warn_msg)"/>
+                                    </div>
+                                </t>
+                            </div>
+                            <!-- Right column: purchase description -->
+                            <div class="so-info-col">
+                                <div class="so-field-row" style="flex-direction:column;align-items:flex-start;gap:4px;">
                                     <label class="so-field-lbl">Purchase Description</label>
                                     <textarea class="form-input prd-notes-area" data-field="description_purchase"
                                               placeholder="Description shown to vendors on purchase orders…"
@@ -3623,7 +3714,9 @@ class ProductFormView extends Component {
                     <!-- ── Accounting tab ────────────────────────────── -->
                     <t t-elif="state.activeTab === 'accounting'">
                         <div class="so-info-grid" style="margin-top:12px;">
+                            <!-- Left column: receivable / income -->
                             <div class="so-info-col">
+                                <div class="prd-tab-section-title">Receivables</div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Income Account</label>
                                     <select class="form-input" data-field="income_account_id">
@@ -3635,8 +3728,16 @@ class ProductFormView extends Component {
                                         </t>
                                     </select>
                                 </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Customer Taxes</label>
+                                    <span class="prd-stub-note" title="Tax management via account.tax — configured in Accounting module">
+                                        Managed in Accounting
+                                    </span>
+                                </div>
                             </div>
+                            <!-- Right column: payable / expense -->
                             <div class="so-info-col">
+                                <div class="prd-tab-section-title">Payables</div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Expense Account</label>
                                     <select class="form-input" data-field="expense_account_id">
@@ -3647,6 +3748,12 @@ class ProductFormView extends Component {
                                                     t-esc="acc.code + ' ' + acc.name"/>
                                         </t>
                                     </select>
+                                </div>
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Vendor Taxes</label>
+                                    <span class="prd-stub-note" title="Tax management via account.tax — configured in Accounting module">
+                                        Managed in Accounting
+                                    </span>
                                 </div>
                             </div>
                         </div>
@@ -3721,7 +3828,10 @@ class ProductFormView extends Component {
                                'standard_price','sale_ok','purchase_ok','expense_ok',
                                'volume','weight','image_1920','active',
                                'description_sale','description_purchase',
-                               'income_account_id','expense_account_id'] });
+                               'income_account_id','expense_account_id',
+                               'invoice_policy','sale_line_warn','sale_line_warn_msg',
+                               'purchase_method','purchase_lead_time',
+                               'purchase_line_warn','purchase_line_warn_msg'] });
                 if (!recs || recs.length === 0) throw new Error('Product not found');
                 this.state.record = { ...recs[0] };
                 this._orig        = { ...recs[0] };
@@ -3745,6 +3855,9 @@ class ProductFormView extends Component {
                     image_1920: false, active: true,
                     description_sale: false, description_purchase: false,
                     income_account_id: false, expense_account_id: false,
+                    invoice_policy: 'order', sale_line_warn: 'no-message', sale_line_warn_msg: false,
+                    purchase_method: 'purchase', purchase_lead_time: 0,
+                    purchase_line_warn: 'no-message', purchase_line_warn_msg: false,
                 };
                 this._orig = { ...this.state.record };
             }
@@ -3820,6 +3933,13 @@ class ProductFormView extends Component {
             description_purchase: r.description_purchase || false,
             income_account_id:    this.m2oId(r.income_account_id)  || false,
             expense_account_id:   this.m2oId(r.expense_account_id) || false,
+            invoice_policy:       r.invoice_policy     || 'order',
+            sale_line_warn:       r.sale_line_warn     || 'no-message',
+            sale_line_warn_msg:   r.sale_line_warn_msg || false,
+            purchase_method:      r.purchase_method    || 'purchase',
+            purchase_lead_time:   r.purchase_lead_time ?? 0,
+            purchase_line_warn:   r.purchase_line_warn || 'no-message',
+            purchase_line_warn_msg: r.purchase_line_warn_msg || false,
         };
         try {
             if (this.props.recordId) {
@@ -3859,6 +3979,376 @@ class ProductFormView extends Component {
         if (this.props.onNavigate) {
             this.props.onNavigate('mrp.bom', [['product_id','=',this.props.recordId]]);
         }
+    }
+
+    onBack() { this.props.onBack(); }
+}
+
+// ----------------------------------------------------------------
+// ContactFormView — res.partner detail
+// ----------------------------------------------------------------
+class ContactFormView extends Component {
+    static components = { ChatterPanel };
+    static template = xml`
+        <div class="so-shell"
+             t-on-change="onFormChange"
+             t-on-input="onFormInput">
+
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Contacts</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="pageTitle"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                        <button class="btn" t-on-click.stop="onDiscard">Discard</button>
+                    </div>
+                </div>
+            </div>
+
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="so-card">
+
+                    <!-- Name row -->
+                    <div class="contact-name-row">
+                        <input class="prd-name-input form-input" type="text"
+                               data-field="name" placeholder="Contact Name"
+                               t-att-value="state.record.name || ''"/>
+                    </div>
+
+                    <!-- All type tags as independent badges (any or none can be active) -->
+                    <div class="contact-badges">
+                        <span t-attf-class="contact-badge{{state.record.is_company ? ' active' : ''}}"
+                              t-on-click.stop="toggleCompany">Company</span>
+                        <span t-attf-class="contact-badge{{state.record.is_individual ? ' active' : ''}}"
+                              t-on-click.stop="toggleIndividual">Individual</span>
+                        <span t-attf-class="contact-badge{{isCustomer ? ' active' : ''}}"
+                              t-on-click.stop="toggleCustomer">Customer</span>
+                        <span t-attf-class="contact-badge{{isVendor ? ' active' : ''}}"
+                              t-on-click.stop="toggleVendor">Vendor</span>
+                        <span t-attf-class="contact-badge{{state.record.is_contractor ? ' active' : ''}}"
+                              t-on-click.stop="toggleContractor">Contractor</span>
+                    </div>
+
+                    <!-- Two-column info grid -->
+                    <div class="so-info-grid" style="margin-top:16px;">
+                        <!-- Left: contact fields -->
+                        <div class="so-info-col">
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Company Name</label>
+                                <t t-if="state.record.is_company">
+                                    <!-- Company contacts: name IS company name, read-only here -->
+                                    <input class="form-input" type="text" readonly="true"
+                                           t-att-value="strVal(state.record.company_name)"
+                                           placeholder="Set via Name field above"/>
+                                </t>
+                                <t t-else="">
+                                    <t t-if="state.newCompanyMode">
+                                        <!-- Free-text entry for a new company -->
+                                        <input class="form-input" type="text" data-field="company_name"
+                                               t-att-value="strVal(state.record.company_name)"
+                                               placeholder="Enter new company name…"/>
+                                        <span class="form-link" style="font-size:12px;cursor:pointer;margin-left:4px;"
+                                              t-on-click.stop="()=>{ this.state.newCompanyMode=false; this.state.record.company_name=''; }">
+                                            ✕ Cancel
+                                        </span>
+                                    </t>
+                                    <t t-else="">
+                                        <select class="form-input" t-on-change="onCompanyNameSelect">
+                                            <option value="">—</option>
+                                            <t t-foreach="state.companies" t-as="co" t-key="co.id">
+                                                <option t-att-value="co.name"
+                                                        t-att-selected="strVal(state.record.company_name)===co.name?true:undefined"
+                                                        t-esc="co.name"/>
+                                            </t>
+                                            <option value="__new__">— New Company —</option>
+                                        </select>
+                                    </t>
+                                </t>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Job Position</label>
+                                <input class="form-input" type="text" data-field="job_position"
+                                       t-att-value="strVal(state.record.job_position)"
+                                       placeholder="e.g. Manager, Contractor, Staff"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Email</label>
+                                <input class="form-input" type="email" data-field="email"
+                                       t-att-value="strVal(state.record.email)"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Phone</label>
+                                <input class="form-input" type="tel" data-field="phone"
+                                       t-att-value="strVal(state.record.phone)"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Mobile</label>
+                                <input class="form-input" type="tel" data-field="mobile"
+                                       t-att-value="strVal(state.record.mobile)"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Website</label>
+                                <input class="form-input" type="text" data-field="website"
+                                       t-att-value="strVal(state.record.website)"
+                                       placeholder="https://"/>
+                            </div>
+                        </div>
+                        <!-- Right: address -->
+                        <div class="so-info-col">
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Street</label>
+                                <input class="form-input" type="text" data-field="street"
+                                       t-att-value="strVal(state.record.street)"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">City</label>
+                                <input class="form-input" type="text" data-field="city"
+                                       t-att-value="strVal(state.record.city)"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">ZIP</label>
+                                <input class="form-input" type="text" data-field="zip"
+                                       t-att-value="strVal(state.record.zip)"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Country</label>
+                                <select class="form-input" data-field="country_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.countries" t-as="co" t-key="co.id">
+                                        <option t-att-value="co.id"
+                                                t-att-selected="m2oId(state.record.country_id)===co.id?true:undefined"
+                                                t-esc="co.name"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">State / Province</label>
+                                <select class="form-input" data-field="state_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="filteredStates" t-as="st" t-key="st.id">
+                                        <option t-att-value="st.id"
+                                                t-att-selected="m2oId(state.record.state_id)===st.id?true:undefined"
+                                                t-esc="st.name"/>
+                                    </t>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Notes -->
+                    <div class="prd-notes-section">
+                        <div class="prd-notes-header">
+                            <span class="prd-notes-lbl">Notes</span>
+                            <span class="prd-notes-sub">Internal notes about this contact.</span>
+                        </div>
+                        <textarea class="form-input prd-notes-area"
+                                  data-field="comment"
+                                  t-att-value="strVal(state.record.comment)"
+                                  placeholder="Internal notes…"/>
+                    </div>
+
+                </div><!-- /.so-card -->
+
+                <!-- Chatter -->
+                <t t-if="!isNew">
+                    <ChatterPanel model="'res.partner'"
+                                  recordId="props.recordId"
+                                  refreshKey="state.chatRefreshKey"/>
+                </t>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({
+            loading:        true,
+            error:          null,
+            record:         {},
+            countries:      [],
+            states:         [],
+            companies:      [],   // company contacts for Company Name select
+            newCompanyMode: false,
+            chatRefreshKey: 0,
+        });
+        this._orig = {};
+        onMounted(() => this.load());
+    }
+
+    get isNew()      { return !this.props.recordId; }
+    get pageTitle()  { return this.state.record.name || (this.isNew ? 'New Contact' : '…'); }
+    get isCustomer() { return (this.state.record.customer_rank || 0) > 0; }
+    get isVendor()   { return (this.state.record.vendor_rank   || 0) > 0; }
+
+    get filteredStates() {
+        const cid = this.m2oId(this.state.record.country_id);
+        if (!cid) return this.state.states;
+        return this.state.states.filter(s => {
+            const sid = Array.isArray(s.country_id) ? s.country_id[0] : s.country_id;
+            return sid === cid;
+        });
+    }
+
+    async load() {
+        this.state.loading = true;
+        this.state.error   = null;
+        try {
+            const [countries, states, companies] = await Promise.all([
+                RpcService.call('res.country', 'search_read', [[]], { fields: ['id','name'], limit: 300 }),
+                RpcService.call('res.country.state', 'search_read', [[]], { fields: ['id','name','country_id'], limit: 500 }),
+                RpcService.call('res.partner', 'search_read', [[['is_company','=',true]]], { fields: ['id','name'], limit: 500 }),
+            ]);
+            this.state.countries = Array.isArray(countries) ? countries : [];
+            this.state.states    = Array.isArray(states)    ? states    : [];
+            this.state.companies = Array.isArray(companies) ? companies : [];
+
+            if (this.props.recordId) {
+                const recs = await RpcService.call('res.partner', 'read',
+                    [[this.props.recordId]],
+                    { fields: ['id','name','company_name','email','phone','mobile','website',
+                               'street','city','zip','lang','comment','job_position',
+                               'is_company','is_individual','is_contractor',
+                               'country_id','state_id',
+                               'customer_rank','vendor_rank','active'] });
+                if (!recs || recs.length === 0) throw new Error('Contact not found');
+                this.state.record = { ...recs[0] };
+                this._orig        = { ...recs[0] };
+            } else {
+                this.state.record = {
+                    name: '', company_name: '', email: '', phone: '', mobile: '', website: '',
+                    street: '', city: '', zip: '', lang: '',
+                    is_company: false, is_individual: false, is_contractor: false,
+                    country_id: false, state_id: false,
+                    customer_rank: 0, vendor_rank: 0,
+                    comment: false, job_position: false, active: true,
+                };
+                this._orig = { ...this.state.record };
+            }
+        } catch (e) {
+            this.state.error = e.message || 'Failed to load contact';
+        } finally {
+            this.state.loading = false;
+        }
+    }
+
+    m2oId(val) {
+        if (!val && val !== 0) return 0;
+        if (typeof val === 'number') return val;
+        if (Array.isArray(val) && val.length > 0) return typeof val[0] === 'number' ? val[0] : 0;
+        if (typeof val === 'string') return parseInt(val) || 0;
+        return 0;
+    }
+    strVal(val) { return (!val || val === false) ? '' : String(val); }
+
+    toggleCompany() {
+        this.state.record.is_company = !this.state.record.is_company;
+        if (this.state.record.is_company) {
+            this.state.record.company_name = this.state.record.name || '';
+            this.state.newCompanyMode = false;
+        }
+    }
+    toggleIndividual() { this.state.record.is_individual = !this.state.record.is_individual; }
+
+    onCompanyNameSelect(e) {
+        const val = e.target.value;
+        if (val === '__new__') {
+            this.state.newCompanyMode = true;
+            this.state.record.company_name = '';
+        } else {
+            this.state.record.company_name = val;
+        }
+    }
+    toggleCustomer()   { this.state.record.customer_rank = this.isCustomer ? 0 : 1; }
+    toggleVendor()     { this.state.record.vendor_rank   = this.isVendor   ? 0 : 1; }
+    toggleContractor() { this.state.record.is_contractor = !this.state.record.is_contractor; }
+
+    onFormChange(e) {
+        const field = e.target.dataset.field;
+        if (!field) return;
+        if (e.target.type === 'checkbox') {
+            this.state.record[field] = e.target.checked;
+        } else if (e.target.tagName === 'SELECT') {
+            const raw = e.target.value;
+            this.state.record[field] = isNaN(raw) || raw === '' ? raw : (parseInt(raw) || 0);
+        }
+    }
+
+    onFormInput(e) {
+        const field = e.target.dataset.field;
+        if (!field || e.target.tagName === 'SELECT') return;
+        this.state.record[field] = e.target.value;
+        // Keep company_name in sync with name for company-type contacts
+        if (field === 'name' && this.state.record.is_company)
+            this.state.record.company_name = e.target.value;
+    }
+
+    async onSave() {
+        const r = this.state.record;
+        if (!r.name || !r.name.trim()) { alert('Name is required.'); return; }
+
+        // For company contacts, company_name always mirrors name
+        if (r.is_company) r.company_name = r.name.trim();
+
+        // Auto-create a company contact if company_name is typed but not in DB
+        const companyNameVal = (r.company_name || '').trim();
+        if (companyNameVal && !r.is_company) {
+            const exists = this.state.companies.some(
+                c => c.name.toLowerCase() === companyNameVal.toLowerCase());
+            if (!exists) {
+                try {
+                    await RpcService.call('res.partner', 'create', [{
+                        name: companyNameVal,
+                        is_company: true,
+                        company_name: companyNameVal,
+                    }]);
+                    // Refresh companies list so the new one shows up next time
+                    const cos = await RpcService.call('res.partner', 'search_read',
+                        [[['is_company','=',true]]], { fields: ['id','name'], limit: 500 });
+                    this.state.companies = Array.isArray(cos) ? cos : [];
+                } catch (e) {
+                    console.warn('[contact] Auto-create company failed:', e.message || e);
+                }
+            }
+        }
+
+        const vals = {
+            name:          r.name.trim(),
+            company_name:  r.company_name   || false,
+            email:         r.email         || false,
+            phone:         r.phone         || false,
+            mobile:        r.mobile        || false,
+            website:       r.website       || false,
+            street:        r.street        || false,
+            city:          r.city          || false,
+            zip:           r.zip           || false,
+            is_company:    !!r.is_company,
+            is_individual: !!r.is_individual,
+            is_contractor: !!r.is_contractor,
+            country_id:    this.m2oId(r.country_id)  || false,
+            state_id:      this.m2oId(r.state_id)    || false,
+            customer_rank: r.customer_rank  || 0,
+            vendor_rank:   r.vendor_rank    || 0,
+            comment:       r.comment        || false,
+            job_position:  r.job_position   || false,
+        };
+        try {
+            if (this.props.recordId) {
+                await RpcService.call('res.partner', 'write', [[this.props.recordId], vals]);
+                await this.load();
+            } else {
+                await RpcService.call('res.partner', 'create', [vals]);
+                this.props.onBack();
+            }
+        } catch (e) { alert('Save failed: ' + (e.message || e)); }
+    }
+
+    onDiscard() {
+        if (this.isNew) { this.props.onBack(); return; }
+        this.state.record = { ...this._orig };
     }
 
     onBack() { this.props.onBack(); }
@@ -4212,6 +4702,8 @@ class ERPSettingsView extends Component {
                         t-on-click="()=>this.setTab('documents')">Documents</button>
                 <button t-attf-class="erp-tab{{ state.activeTab==='email'?' active':'' }}"
                         t-on-click="()=>this.setTab('email')">Email</button>
+                <button t-attf-class="erp-tab{{ state.activeTab==='countries'?' active':'' }}"
+                        t-on-click="()=>this.loadCountriesTab()">Countries</button>
             </div>
             <div class="erp-settings-body">
                 <t t-if="state.loading">
@@ -4368,6 +4860,38 @@ class ERPSettingsView extends Component {
                         </div>
                     </t>
 
+                    <!-- Countries Tab -->
+                    <t t-if="state.activeTab==='countries'">
+                        <div class="erp-section">
+                            <div class="erp-section-title">Supported Countries</div>
+                            <div class="erp-field-row" style="margin-bottom:8px;">
+                                <input class="erp-field-input" type="text"
+                                       placeholder="Search countries…"
+                                       t-model="state.countrySearch"/>
+                            </div>
+                            <t t-if="state.countriesLoading">
+                                <div class="loading">Loading countries…</div>
+                            </t>
+                            <t t-else="">
+                                <div class="erp-countries-list">
+                                    <t t-foreach="filteredCountries" t-as="co" t-key="co.id">
+                                        <label class="erp-country-item">
+                                            <input type="checkbox"
+                                                   t-att-checked="co.active ? true : undefined"
+                                                   t-on-change="(ev) => this.onCountryToggle(co.id, ev.target.checked)"/>
+                                            <span t-esc="co.name"/>
+                                            <span class="erp-country-code" t-esc="' (' + co.code + ')'"/>
+                                        </label>
+                                    </t>
+                                </div>
+                            </t>
+                        </div>
+                        <div class="erp-save-row">
+                            <t t-if="state.countrySaved"><span class="erp-saved-ok">Saved!</span></t>
+                            <t t-if="state.countrySaveError"><span class="erp-save-err" t-esc="state.countrySaveError"/></t>
+                        </div>
+                    </t>
+
                     <!-- Email Tab -->
                     <t t-if="state.activeTab==='email'">
                         <div class="erp-section">
@@ -4427,19 +4951,64 @@ class ERPSettingsView extends Component {
 
     setup() {
         this.state = useState({
-            activeTab: 'general',
-            loading:   true,
-            error:     '',
-            saving:    false,
-            saved:     false,
-            saveError: '',
-            cfg:       {},
-            cfgIds:    {},
+            activeTab:         'general',
+            loading:           true,
+            error:             '',
+            saving:            false,
+            saved:             false,
+            saveError:         '',
+            cfg:               {},
+            cfgIds:            {},
+            // Countries tab
+            countries:         [],
+            countriesLoading:  false,
+            countrySearch:     '',
+            countrySaved:      false,
+            countrySaveError:  '',
         });
         onMounted(() => this.loadCfg());
     }
 
+    get filteredCountries() {
+        const q = (this.state.countrySearch || '').toLowerCase();
+        if (!q) return this.state.countries;
+        return this.state.countries.filter(c =>
+            c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q));
+    }
+
     setTab(tab) { this.state.activeTab = tab; }
+
+    async loadCountriesTab() {
+        this.state.activeTab = 'countries';
+        if (this.state.countries.length > 0) return; // already loaded
+        this.state.countriesLoading = true;
+        try {
+            const list = await RpcService.call('res.country', 'search_read', [[]], {
+                fields: ['id', 'name', 'code', 'active'], limit: 300, order: 'name ASC'
+            });
+            this.state.countries = Array.isArray(list) ? list : [];
+        } catch (e) {
+            this.state.countrySaveError = e.message || 'Failed to load countries';
+        } finally {
+            this.state.countriesLoading = false;
+        }
+    }
+
+    async onCountryToggle(id, active) {
+        // Optimistic UI update
+        const co = this.state.countries.find(c => c.id === id);
+        if (co) co.active = active;
+        this.state.countrySaved      = false;
+        this.state.countrySaveError  = '';
+        try {
+            await RpcService.call('res.country', 'write', [[id], { active }], {});
+            this.state.countrySaved = true;
+            setTimeout(() => { if (this.state) this.state.countrySaved = false; }, 1500);
+        } catch (e) {
+            if (co) co.active = !active; // revert
+            this.state.countrySaveError = e.message || 'Save failed';
+        }
+    }
 
     async loadCfg() {
         this.state.loading = true;
@@ -4732,6 +5301,7 @@ function dleBlockHtml(type, model, props) {
   <div>{{partner_street}}</div>
   <div>{{partner_city}}</div>
   <div>{{partner_phone}}</div>
+  <div>Attn: {{attn_name}}</div>
 </div>`;
 
         case 'doc_details': {
@@ -4953,6 +5523,7 @@ const DLE_DUMMY = {
         bank_name:'Maybank Berhad', bank_address:'Jalan Tun Perak, KL', bank_swift:'MBBEMYKL',
         partner_name:'ABC Technology Sdn. Bhd.', partner_street:'Level 3, Menara KL',
         partner_city:'50088 Kuala Lumpur, Malaysia', partner_phone:'+603-2181 9000',
+        attn_name:'Mr. John Doe',
         notes:'Thank you for your business.', text_content:'Additional information.',
     },
     'account.move':   { document_title:'Sales Invoice', doc_number:'INV/2025/0001', doc_date:'01/03/2025', doc_date_due:'31/03/2025', amount_untaxed:'10,000.00', amount_tax:'600.00', amount_total:'10,600.00', lines:[
@@ -6075,9 +6646,32 @@ class ActionView extends Component {
                 <DocumentLayoutEditor/>
             </t>
             <t t-elif="state.mode === 'list'">
-                <ListView action="currentAction"
-                          viewDef="state.listView"
-                          onOpenForm.bind="openForm"/>
+                <t t-if="isPartnerModel">
+                    <div class="contact-filter-bar">
+                        <button t-attf-class="btn{{state.contactFilter==='all'?' btn-primary':''}}"
+                                t-on-click.stop="()=>this.setContactFilter('all')">All</button>
+                        <button t-attf-class="btn{{state.contactFilter==='customers'?' btn-primary':''}}"
+                                t-on-click.stop="()=>this.setContactFilter('customers')">Customers</button>
+                        <button t-attf-class="btn{{state.contactFilter==='vendors'?' btn-primary':''}}"
+                                t-on-click.stop="()=>this.setContactFilter('vendors')">Vendors</button>
+                        <button t-attf-class="btn{{state.contactFilter==='contractors'?' btn-primary':''}}"
+                                t-on-click.stop="()=>this.setContactFilter('contractors')">Contractors</button>
+                        <button t-attf-class="btn{{state.contactFilter==='companies'?' btn-primary':''}}"
+                                t-on-click.stop="()=>this.setContactFilter('companies')">Companies</button>
+                        <button t-attf-class="btn{{state.contactFilter==='individuals'?' btn-primary':''}}"
+                                t-on-click.stop="()=>this.setContactFilter('individuals')">Individuals</button>
+                        <button t-attf-class="btn{{state.contactFilter==='none'?' btn-primary':''}}"
+                                t-on-click.stop="()=>this.setContactFilter('none')">None</button>
+                    </div>
+                    <ListView action="partnerFilteredAction"
+                              viewDef="state.listView"
+                              onOpenForm.bind="openForm"/>
+                </t>
+                <t t-else="">
+                    <ListView action="currentAction"
+                              viewDef="state.listView"
+                              onOpenForm.bind="openForm"/>
+                </t>
             </t>
             <t t-elif="state.mode === 'form'">
                 <t t-if="isSaleOrderModel">
@@ -6108,6 +6702,10 @@ class ActionView extends Component {
                     <BomFormView recordId="state.recordId"
                                  onBack.bind="backToList"/>
                 </t>
+                <t t-elif="isPartnerModel">
+                    <ContactFormView recordId="state.recordId"
+                                     onBack.bind="backToList"/>
+                </t>
                 <t t-else="">
                     <FormView action="currentAction"
                               viewDef="state.formView"
@@ -6118,7 +6716,7 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, ProductFormView, BomFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor };
 
     // Use overrideAction when navigateTo() has been called, else fall back to props.action
     get currentAction()          { return this.state.overrideAction || this.props.action; }
@@ -6131,6 +6729,22 @@ class ActionView extends Component {
     get isBomModel()             { return this.currentAction.res_model === 'mrp.bom'; }
     get isReportTemplateModel()  { return this.currentAction.res_model === 'ir.report.template'; }
     get isERPSettingsModel()     { return this.currentAction.res_model === 'ir.erp.settings'; }
+    get isPartnerModel()         { return this.currentAction.res_model === 'res.partner'; }
+
+    setContactFilter(f) { this.state.contactFilter = f; }
+
+    get partnerFilteredAction() {
+        let domain = [];
+        switch (this.state.contactFilter) {
+            case 'customers':   domain = [['customer_rank','>',0]];        break;
+            case 'vendors':     domain = [['vendor_rank','>',0]];          break;
+            case 'contractors': domain = [['is_contractor','=',true]];     break;
+            case 'companies':   domain = [['is_company','=',true]];        break;
+            case 'individuals': domain = [['is_company','=',false]];       break;
+            case 'none':        domain = [['is_company','=',false],['is_individual','=',false],['is_contractor','=',false],['customer_rank','=',0],['vendor_rank','=',0]]; break;
+        }
+        return { ...this.currentAction, domain };
+    }
 
     setup() {
         this.state = useState({
@@ -6140,6 +6754,7 @@ class ActionView extends Component {
             listView:       null,
             formView:       null,
             overrideAction: null,   // set by navigateTo() to browse a different model
+            contactFilter:  'all',
         });
         onMounted(() => this.loadViews());
     }

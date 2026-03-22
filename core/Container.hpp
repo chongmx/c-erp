@@ -5,9 +5,12 @@
 #include "infrastructure/JsonRpcDispatcher.hpp"
 #include "infrastructure/SessionManager.hpp"
 #include "infrastructure/WebSocketServer.hpp"
+#include <cctype>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace odoo::infrastructure {
@@ -31,6 +34,25 @@ namespace odoo::infrastructure {
 struct AppConfig {
     DbConfig   db;
     HttpConfig http;
+
+    /**
+     * @brief Build AppConfig from an INI-style config file (Odoo format).
+     *
+     * Recognised keys under [options]:
+     *   db_host, db_port, db_name, db_user, db_password, db_maxconn
+     *   http_interface, http_port, workers, http_doc_root, http_index
+     *   log_level, logfile, smtp_server, smtp_port, smtp_ssl, smtp_user,
+     *   smtp_password, email_from
+     *
+     * Throws std::runtime_error if the file cannot be opened.
+     */
+    static AppConfig fromFile(const std::string& path);
+
+    /**
+     * @brief Load config from file if it exists, otherwise fall back to
+     *        environment variables.
+     */
+    static AppConfig fromFileOrEnv(const std::string& path = "config/system.cfg");
 
     /**
      * @brief Build AppConfig from environment variables.
@@ -341,6 +363,101 @@ private:
 // ============================================================
 // AppConfig::fromEnv() — inline implementation
 // ============================================================
+// ── INI parser helpers ────────────────────────────────────────────────────────
+
+static std::string cfgTrim_(const std::string& s) {
+    std::size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    std::size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+// Parse [options]-style INI file into a flat key→value map.
+static std::unordered_map<std::string,std::string> parseCfgFile_(const std::string& path) {
+    std::unordered_map<std::string,std::string> kv;
+    std::ifstream f(path);
+    if (!f.is_open())
+        throw std::runtime_error("Cannot open config file: " + path);
+
+    std::string line;
+    bool inOptions = false;
+    while (std::getline(f, line)) {
+        // Strip inline comments (# or ;)
+        for (std::size_t i = 0; i < line.size(); ++i) {
+            if ((line[i] == '#' || line[i] == ';') &&
+                (i == 0 || line[i-1] == ' ' || line[i-1] == '\t')) {
+                line = line.substr(0, i);
+                break;
+            }
+        }
+        std::string t = cfgTrim_(line);
+        if (t.empty()) continue;
+
+        // Section header
+        if (t.front() == '[') {
+            inOptions = (t == "[options]");
+            continue;
+        }
+        if (!inOptions) continue;
+
+        auto eq = t.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = cfgTrim_(t.substr(0, eq));
+        std::string val = cfgTrim_(t.substr(eq + 1));
+        kv[key] = val;
+    }
+    return kv;
+}
+
+// ── AppConfig::fromFile ───────────────────────────────────────────────────────
+
+inline AppConfig AppConfig::fromFile(const std::string& path) {
+    auto kv = parseCfgFile_(path);
+
+    auto get = [&](const std::string& key, const std::string& def) -> std::string {
+        auto it = kv.find(key);
+        if (it == kv.end() || it->second.empty() ||
+            it->second == "False" || it->second == "false") return def;
+        return it->second;
+    };
+    auto getInt = [&](const std::string& key, int def) -> int {
+        auto it = kv.find(key);
+        if (it == kv.end() || it->second.empty()) return def;
+        try { return std::stoi(it->second); } catch (...) { return def; }
+    };
+
+    AppConfig cfg;
+    cfg.db.host     = get("db_host",     "localhost");
+    cfg.db.port     = getInt("db_port",  5432);
+    cfg.db.name     = get("db_name",     "odoo");
+    cfg.db.user     = get("db_user",     "odoo");
+    cfg.db.password = get("db_password", "");
+    cfg.db.poolSize = getInt("db_maxconn", 10);
+
+    cfg.http.host      = get("http_interface", "0.0.0.0");
+    cfg.http.port      = getInt("http_port",   8069);
+    cfg.http.threads   = getInt("workers",     4);
+    cfg.http.docRoot   = get("http_doc_root",  "web/static");
+    cfg.http.indexFile = get("http_index",     "index.html");
+
+    return cfg;
+}
+
+// ── AppConfig::fromFileOrEnv ──────────────────────────────────────────────────
+
+inline AppConfig AppConfig::fromFileOrEnv(const std::string& path) {
+    std::ifstream probe(path);
+    if (probe.is_open()) {
+        probe.close();
+        std::cout << "[odoo-cpp] Loading config from " << path << "\n";
+        return fromFile(path);
+    }
+    std::cout << "[odoo-cpp] Config file not found (" << path << "), using environment variables.\n";
+    return fromEnv();
+}
+
+// ── AppConfig::fromEnv ────────────────────────────────────────────────────────
+
 inline AppConfig AppConfig::fromEnv() {
     AppConfig cfg;
 
@@ -362,11 +479,11 @@ inline AppConfig AppConfig::fromEnv() {
     cfg.db.poolSize = envInt("DB_POOL_SIZE", 10);
 
     // HTTP
-    cfg.http.host    = env("HTTP_HOST",    "0.0.0.0");
-    cfg.http.port    = envInt("HTTP_PORT", 8069);
-    cfg.http.threads = envInt("HTTP_THREADS", 4);
-    cfg.http.docRoot  = env("HTTP_DOC_ROOT",  "web/static");
-    cfg.http.indexFile = env("HTTP_INDEX",    "index.html");
+    cfg.http.host      = env("HTTP_HOST",    "0.0.0.0");
+    cfg.http.port      = envInt("HTTP_PORT", 8069);
+    cfg.http.threads   = envInt("HTTP_THREADS", 4);
+    cfg.http.docRoot   = env("HTTP_DOC_ROOT",  "web/static");
+    cfg.http.indexFile = env("HTTP_INDEX",     "index.html");
 
     return cfg;
 }

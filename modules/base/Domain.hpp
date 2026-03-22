@@ -152,8 +152,9 @@ private:
         };
 
         if (op == "=" || op == "=?") {
-            if (leaf.value.is_null() || (leaf.value.is_boolean() && !leaf.value.get<bool>()))
+            if (leaf.value.is_null())
                 return col + " IS NULL";
+            // Boolean false is a real value (NOT NULL columns), not "IS NULL"
             return col + " = " + placeholder();
         }
         if (op == "!=") {

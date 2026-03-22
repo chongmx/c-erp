@@ -18,6 +18,7 @@
 #include "Factories.hpp"
 #include "Domain.hpp"
 #include "FieldRegistry.hpp"
+#include "WorldData.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <memory>
@@ -161,6 +162,7 @@ public:
     std::string name, code;
     int         currencyId = 0;
     int         phoneCode  = 0;
+    bool        active     = true;
 
     explicit ResCountry(std::shared_ptr<infrastructure::DbConnection> db)
         : core::BaseModel<ResCountry>(std::move(db)) {}
@@ -171,6 +173,7 @@ public:
         fieldRegistry_.add({"currency_id", core::FieldType::Many2one,"Currency",
                              false, false, true, false, "res.currency"});
         fieldRegistry_.add({"phone_code",  core::FieldType::Integer, "Phone Code"});
+        fieldRegistry_.add({"active",      core::FieldType::Boolean, "Active"});
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -180,6 +183,7 @@ public:
                            ? nlohmann::json{currencyId, "Currency"}
                            : nlohmann::json(false);
         j["phone_code"]  = phoneCode;
+        j["active"]      = active;
     }
 
     void deserializeFields(const nlohmann::json& j) override {
@@ -191,6 +195,8 @@ public:
             currencyId = j["currency_id"].get<int>();
         if (j.contains("phone_code")  && j["phone_code"].is_number_integer())
             phoneCode  = j["phone_code"].get<int>();
+        if (j.contains("active")      && j["active"].is_boolean())
+            active     = j["active"].get<bool>();
     }
 
     std::vector<std::string> validate() const override {
@@ -253,18 +259,23 @@ class ResPartner : public core::BaseModel<ResPartner> {
 public:
     ODOO_MODEL("res.partner", "res_partner")
 
-    std::string name, email, phone, street, city, zip, lang;
-    bool        isCompany = false;
-    int         companyId = 0;
-    int         countryId = 0;
-    int         stateId   = 0;
+    std::string name, companyName, email, phone, mobile, website, street, city, zip, lang, comment, jobPosition;
+    bool        isCompany    = false;
+    bool        isIndividual = false;
+    bool        isContractor = false;
+    int         companyId    = 0;
+    int         countryId    = 0;
+    int         stateId      = 0;
+    int         customerRank = 0;
+    int         vendorRank   = 0;
 
     explicit ResPartner(std::shared_ptr<infrastructure::DbConnection> db)
         : core::BaseModel<ResPartner>(std::move(db)) {}
 
     void registerFields() override {
-        fieldRegistry_.add({"name",       core::FieldType::Char,    "Name",       true});
-        fieldRegistry_.add({"email",      core::FieldType::Char,    "Email"});
+        fieldRegistry_.add({"name",         core::FieldType::Char,    "Name",         true});
+        fieldRegistry_.add({"company_name", core::FieldType::Char,    "Company Name"});
+        fieldRegistry_.add({"email",        core::FieldType::Char,    "Email"});
         fieldRegistry_.add({"phone",      core::FieldType::Char,    "Phone"});
         fieldRegistry_.add({"street",     core::FieldType::Char,    "Street"});
         fieldRegistry_.add({"city",       core::FieldType::Char,    "City"});
@@ -275,53 +286,77 @@ public:
                              false, false, true, false, "res.company"});
         fieldRegistry_.add({"country_id", core::FieldType::Many2one,"Country",
                              false, false, true, false, "res.country"});
-        fieldRegistry_.add({"state_id",   core::FieldType::Many2one,"State",
+        fieldRegistry_.add({"state_id",    core::FieldType::Many2one,"State",
                              false, false, true, false, "res.country.state"});
+        fieldRegistry_.add({"customer_rank",core::FieldType::Integer, "Customer Rank"});
+        fieldRegistry_.add({"vendor_rank",  core::FieldType::Integer, "Vendor Rank"});
+        fieldRegistry_.add({"is_contractor", core::FieldType::Boolean, "Is Contractor"});
+        fieldRegistry_.add({"is_individual", core::FieldType::Boolean, "Is Individual"});
+        fieldRegistry_.add({"mobile",        core::FieldType::Char,    "Mobile"});
+        fieldRegistry_.add({"website",      core::FieldType::Char,    "Website"});
+        fieldRegistry_.add({"comment",      core::FieldType::Text,    "Notes"});
+        fieldRegistry_.add({"job_position", core::FieldType::Char,    "Job Position"});
     }
 
     void serializeFields(nlohmann::json& j) const override {
-        j["name"]       = name;
-        j["email"]      = email;
-        j["phone"]      = phone;
-        j["street"]     = street;
-        j["city"]       = city;
-        j["zip"]        = zip;
-        j["lang"]       = lang;
-        j["is_company"] = isCompany;
-        j["company_id"] = companyId > 0
-                          ? nlohmann::json{companyId, "Company"}
-                          : nlohmann::json(false);
-        j["country_id"] = countryId > 0
-                          ? nlohmann::json{countryId, "Country"}
-                          : nlohmann::json(false);
-        j["state_id"]   = stateId > 0
-                          ? nlohmann::json{stateId, "State"}
-                          : nlohmann::json(false);
+        j["name"]         = name;
+        j["company_name"] = companyName.empty() ? nlohmann::json(false) : nlohmann::json(companyName);
+        j["email"]        = email.empty()       ? nlohmann::json(false) : nlohmann::json(email);
+        j["phone"]         = phone.empty()       ? nlohmann::json(false) : nlohmann::json(phone);
+        j["mobile"]        = mobile.empty()      ? nlohmann::json(false) : nlohmann::json(mobile);
+        j["website"]       = website.empty()     ? nlohmann::json(false) : nlohmann::json(website);
+        j["street"]        = street.empty()      ? nlohmann::json(false) : nlohmann::json(street);
+        j["city"]          = city.empty()        ? nlohmann::json(false) : nlohmann::json(city);
+        j["zip"]           = zip.empty()         ? nlohmann::json(false) : nlohmann::json(zip);
+        j["lang"]          = lang.empty()        ? nlohmann::json(false) : nlohmann::json(lang);
+        j["comment"]       = comment.empty()     ? nlohmann::json(false) : nlohmann::json(comment);
+        j["job_position"]  = jobPosition.empty() ? nlohmann::json(false) : nlohmann::json(jobPosition);
+        j["is_company"]    = isCompany;
+        j["is_individual"] = isIndividual;
+        j["is_contractor"] = isContractor;
+        j["customer_rank"] = customerRank;
+        j["vendor_rank"]   = vendorRank;
+        j["company_id"]    = companyId > 0
+                             ? nlohmann::json{companyId, "Company"}
+                             : nlohmann::json(false);
+        j["country_id"]    = countryId > 0
+                             ? nlohmann::json{countryId, "Country"}
+                             : nlohmann::json(false);
+        j["state_id"]      = stateId > 0
+                             ? nlohmann::json{stateId, "State"}
+                             : nlohmann::json(false);
     }
 
     void deserializeFields(const nlohmann::json& j) override {
-        if (j.contains("name")       && j["name"].is_string())
-            name       = j["name"].get<std::string>();
-        if (j.contains("email")      && j["email"].is_string())
-            email      = j["email"].get<std::string>();
-        if (j.contains("phone")      && j["phone"].is_string())
-            phone      = j["phone"].get<std::string>();
-        if (j.contains("street")     && j["street"].is_string())
-            street     = j["street"].get<std::string>();
-        if (j.contains("city")       && j["city"].is_string())
-            city       = j["city"].get<std::string>();
-        if (j.contains("zip")        && j["zip"].is_string())
-            zip        = j["zip"].get<std::string>();
-        if (j.contains("lang")       && j["lang"].is_string())
-            lang       = j["lang"].get<std::string>();
-        if (j.contains("is_company") && j["is_company"].is_boolean())
-            isCompany  = j["is_company"].get<bool>();
-        if (j.contains("company_id") && j["company_id"].is_number_integer())
-            companyId  = j["company_id"].get<int>();
-        if (j.contains("country_id") && j["country_id"].is_number_integer())
-            countryId  = j["country_id"].get<int>();
-        if (j.contains("state_id")   && j["state_id"].is_number_integer())
-            stateId    = j["state_id"].get<int>();
+        auto str = [](const nlohmann::json& v) -> std::string {
+            if (v.is_string()) return v.get<std::string>();
+            return "";
+        };
+        auto m2o = [](const nlohmann::json& v) -> int {
+            if (v.is_number_integer()) return v.get<int>();
+            if (v.is_array() && v.size() >= 1 && v[0].is_number_integer()) return v[0].get<int>();
+            return 0;
+        };
+        if (j.contains("name"))         name        = str(j["name"]);
+        if (j.contains("company_name")) companyName = str(j["company_name"]);
+        if (j.contains("email"))        email       = str(j["email"]);
+        if (j.contains("phone"))       phone       = str(j["phone"]);
+        if (j.contains("mobile"))      mobile      = str(j["mobile"]);
+        if (j.contains("website"))     website     = str(j["website"]);
+        if (j.contains("street"))      street      = str(j["street"]);
+        if (j.contains("city"))        city        = str(j["city"]);
+        if (j.contains("zip"))         zip         = str(j["zip"]);
+        if (j.contains("lang"))        lang        = str(j["lang"]);
+        if (j.contains("comment"))     comment     = str(j["comment"]);
+        if (j.contains("job_position"))jobPosition = str(j["job_position"]);
+        if (j.contains("is_company")   && j["is_company"].is_boolean())    isCompany    = j["is_company"].get<bool>();
+        if (j.contains("is_individual")&& j["is_individual"].is_boolean()) isIndividual = j["is_individual"].get<bool>();
+        if (j.contains("is_contractor")&& j["is_contractor"].is_boolean()) isContractor = j["is_contractor"].get<bool>();
+        if (j.contains("customer_rank")&& j["customer_rank"].is_number_integer()) customerRank = j["customer_rank"].get<int>();
+        if (j.contains("vendor_rank")  && j["vendor_rank"].is_number_integer())   vendorRank   = j["vendor_rank"].get<int>();
+        if (j.contains("company_id"))  companyId  = m2o(j["company_id"]);
+        if (j.contains("country_id"))  countryId  = m2o(j["country_id"]);
+        if (j.contains("state_id"))    stateId    = m2o(j["state_id"]);
     }
 
     std::vector<std::string> validate() const override {
@@ -377,18 +412,18 @@ public:
     std::string arch() const override {
         return "<list>"
                "<field name=\"name\"/>"
+               "<field name=\"company_name\"/>"
                "<field name=\"email\"/>"
                "<field name=\"phone\"/>"
-               "<field name=\"is_company\"/>"
                "</list>";
     }
 
     nlohmann::json fields() const override {
         return {
-            {"name",       {{"type","char"},    {"string","Name"},       {"required",true}}},
-            {"email",      {{"type","char"},    {"string","Email"}}},
-            {"phone",      {{"type","char"},    {"string","Phone"}}},
-            {"is_company", {{"type","boolean"}, {"string","Is Company"}}},
+            {"name",         {{"type","char"}, {"string","Name"},         {"required",true}}},
+            {"company_name", {{"type","char"}, {"string","Company Name"}}},
+            {"email",        {{"type","char"}, {"string","Email"}}},
+            {"phone",        {{"type","char"}, {"string","Phone"}}},
         };
     }
 
@@ -598,7 +633,41 @@ public:
             return std::make_shared<LookupViewModel<ResCurrency>>(db);
         });
         viewModels_.registerCreator("res.country", [db]{
-            return std::make_shared<LookupViewModel<ResCountry>>(db);
+            // ResCountry needs write support for the Settings → Countries tab
+            struct ResCountryViewModel : public core::BaseViewModel {
+                std::shared_ptr<infrastructure::DbConnection> db_;
+                explicit ResCountryViewModel(std::shared_ptr<infrastructure::DbConnection> d) : db_(d) {
+                    REGISTER_METHOD("search_read",  handleSearchRead)
+                    REGISTER_METHOD("read",         handleRead)
+                    REGISTER_METHOD("web_read",     handleRead)
+                    REGISTER_METHOD("fields_get",   handleFieldsGet)
+                    REGISTER_METHOD("search_count", handleSearchCount)
+                    REGISTER_METHOD("write",        handleWrite)
+                }
+                std::string modelName() const override { return "res.country"; }
+                nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
+                    ResCountry m(db_);
+                    return m.searchRead(call.domain(), call.fields(),
+                                        call.limit() > 0 ? call.limit() : 300,
+                                        call.offset(),
+                                        call.order().empty() ? "name ASC" : call.order());
+                }
+                nlohmann::json handleRead(const core::CallKwArgs& call) {
+                    ResCountry m(db_); return m.read(call.ids(), call.fields());
+                }
+                nlohmann::json handleFieldsGet(const core::CallKwArgs& call) {
+                    ResCountry m(db_); return m.fieldsGet(call.fields());
+                }
+                nlohmann::json handleSearchCount(const core::CallKwArgs& call) {
+                    ResCountry m(db_); return m.searchCount(call.domain());
+                }
+                nlohmann::json handleWrite(const core::CallKwArgs& call) {
+                    const auto v = call.arg(1);
+                    if (!v.is_object()) throw std::runtime_error("write: args[1] must be a dict");
+                    ResCountry m(db_); return m.write(call.ids(), v);
+                }
+            };
+            return std::make_shared<ResCountryViewModel>(db);
         });
         viewModels_.registerCreator("res.country.state", [db]{
             return std::make_shared<LookupViewModel<ResCountryState>>(db);
@@ -664,10 +733,12 @@ private:
                 code        VARCHAR(2) NOT NULL UNIQUE,
                 currency_id INTEGER    REFERENCES res_currency(id) ON DELETE SET NULL,
                 phone_code  INTEGER,
+                active      BOOLEAN    NOT NULL DEFAULT TRUE,
                 create_date TIMESTAMP  DEFAULT now(),
                 write_date  TIMESTAMP  DEFAULT now()
             )
         )");
+        txn.exec("ALTER TABLE res_country ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE");
 
         txn.exec(R"(
             CREATE TABLE IF NOT EXISTS res_country_state (
@@ -679,6 +750,14 @@ private:
                 write_date  TIMESTAMP DEFAULT now()
             )
         )");
+        // Add unique constraint so ON CONFLICT (country_id, code) DO NOTHING works in seedWorldData_
+        txn.exec(R"(DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                           WHERE conname='res_country_state_country_id_code_key') THEN
+                ALTER TABLE res_country_state ADD CONSTRAINT res_country_state_country_id_code_key
+                    UNIQUE (country_id, code);
+            END IF;
+        END $$)");
 
         // Base partner table — also extended below with new columns
         txn.exec(R"(
@@ -696,12 +775,28 @@ private:
         )");
 
         // Address + localisation columns — idempotent on existing installs
-        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS street     VARCHAR");
-        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS city       VARCHAR");
-        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS zip        VARCHAR");
-        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS lang       VARCHAR");
-        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS country_id INTEGER REFERENCES res_country(id)");
-        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS state_id   INTEGER REFERENCES res_country_state(id)");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS street        VARCHAR");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS city          VARCHAR");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS zip           VARCHAR");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS lang          VARCHAR");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS country_id    INTEGER REFERENCES res_country(id)");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS state_id      INTEGER REFERENCES res_country_state(id)");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS mobile        VARCHAR");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS website       VARCHAR");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS comment       TEXT");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS job_position  VARCHAR");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS customer_rank INTEGER NOT NULL DEFAULT 0");
+        // Rename supplier_rank → vendor_rank (idempotent: skip if already renamed)
+        txn.exec(R"(DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='res_partner' AND column_name='supplier_rank') THEN
+                ALTER TABLE res_partner RENAME COLUMN supplier_rank TO vendor_rank;
+            END IF;
+        END $$)");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS vendor_rank INTEGER NOT NULL DEFAULT 0");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS is_contractor BOOLEAN NOT NULL DEFAULT FALSE");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS is_individual BOOLEAN NOT NULL DEFAULT FALSE");
+        txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS company_name  VARCHAR");
 
         txn.commit();
     }
@@ -744,27 +839,8 @@ private:
     void seedCountries_() {
         auto conn = services_.db()->acquire();
         pqxx::work txn{conn.get()};
-        if (txn.exec("SELECT COUNT(*) FROM res_country")[0][0].as<int>() > 0) return;
-        txn.exec(R"(
-            INSERT INTO res_country (id, name, code, currency_id, phone_code) VALUES
-                ( 1, 'United States',   'US',  1,    1),
-                ( 2, 'United Kingdom',  'GB',  3,   44),
-                ( 3, 'Germany',         'DE',  2,   49),
-                ( 4, 'France',          'FR',  2,   33),
-                ( 5, 'Japan',           'JP',  4,   81),
-                ( 6, 'China',           'CN',  5,   86),
-                ( 7, 'Canada',          'CA',  1,    1),
-                ( 8, 'Australia',       'AU',  1,   61),
-                ( 9, 'Netherlands',     'NL',  2,   31),
-                (10, 'Singapore',       'SG',  1,   65),
-                (11, 'Switzerland',     'CH',  3,   41),
-                (12, 'Sweden',          'SE',  2,   46),
-                (13, 'Spain',           'ES',  2,   34),
-                (14, 'Italy',           'IT',  2,   39),
-                (15, 'Brazil',          'BR',  NULL, 55)
-            ON CONFLICT (id) DO NOTHING
-        )");
-        txn.exec("SELECT setval('res_country_id_seq', 15, true)");
+        // seedWorldData_ is idempotent: ON CONFLICT DO NOTHING on all inserts
+        seedWorldData_(txn);
         txn.commit();
     }
 };

@@ -109,6 +109,15 @@ public:
 
     std::string name, defaultCode, barcode, description, type;
     std::string descriptionSale, descriptionPurchase;
+    // Sales tab
+    std::string invoicePolicy    = "order";   // 'order' | 'delivery'
+    std::string saleLineWarn     = "no-message"; // 'no-message' | 'warning' | 'block'
+    std::string saleLineWarnMsg;
+    // Purchase tab
+    std::string purchaseMethod   = "purchase"; // 'purchase' | 'receive'
+    std::string purchaseLineWarn = "no-message";
+    std::string purchaseLineWarnMsg;
+    double      purchaseLeadTime = 0.0;
     int         categId         = 0;
     int         uomId           = 1;
     int         uomPoId         = 1;
@@ -148,12 +157,21 @@ public:
         fieldRegistry_.add({"expense_ok",          FieldType::Boolean, "Can be Expensed"});
         fieldRegistry_.add({"image_1920",          FieldType::Text,    "Image"});
         fieldRegistry_.add({"active",              FieldType::Boolean, "Active"});
-        fieldRegistry_.add({"description_sale",    FieldType::Text,    "Sales Description"});
-        fieldRegistry_.add({"description_purchase",FieldType::Text,    "Purchase Description"});
-        fieldRegistry_.add({"income_account_id",   FieldType::Many2one,"Income Account",
+        fieldRegistry_.add({"description_sale",     FieldType::Text,    "Sales Description"});
+        fieldRegistry_.add({"description_purchase", FieldType::Text,    "Purchase Description"});
+        fieldRegistry_.add({"income_account_id",    FieldType::Many2one,"Income Account",
                             false, false, true, true, "account.account"});
-        fieldRegistry_.add({"expense_account_id",  FieldType::Many2one,"Expense Account",
+        fieldRegistry_.add({"expense_account_id",   FieldType::Many2one,"Expense Account",
                             false, false, true, true, "account.account"});
+        // Sales tab
+        fieldRegistry_.add({"invoice_policy",     FieldType::Char, "Invoicing Policy"});
+        fieldRegistry_.add({"sale_line_warn",     FieldType::Char, "Sales Warning"});
+        fieldRegistry_.add({"sale_line_warn_msg", FieldType::Text, "Sales Warning Message"});
+        // Purchase tab
+        fieldRegistry_.add({"purchase_method",       FieldType::Char,  "Control Policy"});
+        fieldRegistry_.add({"purchase_lead_time",    FieldType::Float, "Purchase Lead Time"});
+        fieldRegistry_.add({"purchase_line_warn",    FieldType::Char,  "Purchase Warning"});
+        fieldRegistry_.add({"purchase_line_warn_msg",FieldType::Text,  "Purchase Warning Message"});
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -179,6 +197,13 @@ public:
         j["description_purchase"] = descriptionPurchase.empty() ? nlohmann::json(false) : nlohmann::json(descriptionPurchase);
         j["income_account_id"]    = incomeAccountId  > 0 ? nlohmann::json::array({incomeAccountId,  ""}) : nlohmann::json(false);
         j["expense_account_id"]   = expenseAccountId > 0 ? nlohmann::json::array({expenseAccountId, ""}) : nlohmann::json(false);
+        j["invoice_policy"]       = invoicePolicy.empty()    ? "order"      : invoicePolicy;
+        j["sale_line_warn"]       = saleLineWarn.empty()     ? "no-message" : saleLineWarn;
+        j["sale_line_warn_msg"]   = saleLineWarnMsg.empty()  ? nlohmann::json(false) : nlohmann::json(saleLineWarnMsg);
+        j["purchase_method"]      = purchaseMethod.empty()   ? "purchase"   : purchaseMethod;
+        j["purchase_lead_time"]   = purchaseLeadTime;
+        j["purchase_line_warn"]   = purchaseLineWarn.empty() ? "no-message" : purchaseLineWarn;
+        j["purchase_line_warn_msg"] = purchaseLineWarnMsg.empty() ? nlohmann::json(false) : nlohmann::json(purchaseLineWarnMsg);
     }
 
     void deserializeFields(const nlohmann::json& j) override {
@@ -211,6 +236,13 @@ public:
             descriptionPurchase = j["description_purchase"].get<std::string>();
         if (j.contains("income_account_id"))  incomeAccountId  = m2o(j["income_account_id"]);
         if (j.contains("expense_account_id")) expenseAccountId = m2o(j["expense_account_id"]);
+        if (j.contains("invoice_policy")       && j["invoice_policy"].is_string())      invoicePolicy    = j["invoice_policy"].get<std::string>();
+        if (j.contains("sale_line_warn")       && j["sale_line_warn"].is_string())      saleLineWarn     = j["sale_line_warn"].get<std::string>();
+        if (j.contains("sale_line_warn_msg")   && j["sale_line_warn_msg"].is_string())  saleLineWarnMsg  = j["sale_line_warn_msg"].get<std::string>();
+        if (j.contains("purchase_method")      && j["purchase_method"].is_string())     purchaseMethod   = j["purchase_method"].get<std::string>();
+        if (j.contains("purchase_lead_time")   && j["purchase_lead_time"].is_number())  purchaseLeadTime = j["purchase_lead_time"].get<double>();
+        if (j.contains("purchase_line_warn")   && j["purchase_line_warn"].is_string())  purchaseLineWarn = j["purchase_line_warn"].get<std::string>();
+        if (j.contains("purchase_line_warn_msg")&& j["purchase_line_warn_msg"].is_string()) purchaseLineWarnMsg = j["purchase_line_warn_msg"].get<std::string>();
     }
 
     nlohmann::json toJson() const override {
@@ -459,6 +491,15 @@ private:
         txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS description_purchase TEXT");
         txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS income_account_id INTEGER REFERENCES account_account(id) ON DELETE SET NULL");
         txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS expense_account_id INTEGER REFERENCES account_account(id) ON DELETE SET NULL");
+        // Sales tab fields
+        txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS invoice_policy     VARCHAR NOT NULL DEFAULT 'order'");
+        txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS sale_line_warn     VARCHAR NOT NULL DEFAULT 'no-message'");
+        txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS sale_line_warn_msg TEXT");
+        // Purchase tab fields
+        txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS purchase_method       VARCHAR NOT NULL DEFAULT 'purchase'");
+        txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS purchase_lead_time    NUMERIC(8,2) NOT NULL DEFAULT 0");
+        txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS purchase_line_warn    VARCHAR NOT NULL DEFAULT 'no-message'");
+        txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS purchase_line_warn_msg TEXT");
 
         txn.commit();
     }

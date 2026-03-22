@@ -40,7 +40,7 @@ int main(int, char**) {
     std::signal(SIGINT,  handleSignal);
     std::signal(SIGTERM, handleSignal);
 
-    auto cfg = odoo::infrastructure::AppConfig::fromEnv();
+    auto cfg = odoo::infrastructure::AppConfig::fromFileOrEnv("config/system.cfg");
 
     g_container = std::make_shared<odoo::infrastructure::Container>(cfg);
 
