@@ -11,6 +11,7 @@
 #include "modules/auth/AuthSignupModule.hpp"
 #include "modules/stock/StockModule.hpp"
 #include "modules/mail/MailModule.hpp"
+#include "modules/mrp/MrpModule.hpp"
 #include "modules/report/ReportModule.hpp"
 #include <csignal>
 #include <iostream>
@@ -56,6 +57,7 @@ int main(int, char**) {
     g_container->addModule<odoo::modules::hr::HrModule>();
     g_container->addModule<odoo::modules::auth::AuthSignupModule>();
     g_container->addModule<odoo::modules::stock::StockModule>();
+    g_container->addModule<odoo::modules::mrp::MrpModule>();
     g_container->addModule<odoo::modules::report::ReportModule>();
 
     try {

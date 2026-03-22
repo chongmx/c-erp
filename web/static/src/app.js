@@ -3408,9 +3408,10 @@ class ProductFormView extends Component {
                             <span class="prd-stat-icon">🔄</span>
                             <span class="prd-stat-lbl">Reordering Rules</span>
                         </div>
-                        <div class="prd-stat-widget prd-stat-disabled"
-                             title="Bill of Materials — requires MRP module (Phase 26)">
+                        <div class="prd-stat-widget" t-on-click.stop="onViewBom"
+                             title="Bills of Materials for this product">
                             <span class="prd-stat-icon">⚗</span>
+                            <span class="prd-stat-num" t-esc="state.bomCount"/>
                             <span class="prd-stat-lbl">Bill of Materials</span>
                         </div>
                         <div class="prd-stat-widget prd-stat-disabled"
@@ -3622,6 +3623,7 @@ class ProductFormView extends Component {
             uoms:           [],
             currencySymbol: 'RM',
             moveCount:      0,
+            bomCount:       0,
             activeTab:      'general',
             chatRefreshKey: 0,
         });
@@ -3655,9 +3657,14 @@ class ProductFormView extends Component {
                 this.state.record = { ...recs[0] };
                 this._orig        = { ...recs[0] };
 
-                const mc = await RpcService.call('stock.move', 'search_count',
-                    [[['product_id','=',this.props.recordId]]]);
+                const [mc, bc] = await Promise.all([
+                    RpcService.call('stock.move', 'search_count',
+                        [[['product_id','=',this.props.recordId]]]),
+                    RpcService.call('mrp.bom', 'search_count',
+                        [[['product_id','=',this.props.recordId]]]),
+                ]);
                 this.state.moveCount = typeof mc === 'number' ? mc : 0;
+                this.state.bomCount  = typeof bc === 'number' ? bc : 0;
             } else {
                 this.state.record = {
                     name: '', default_code: '', barcode: false,
@@ -3771,6 +3778,342 @@ class ProductFormView extends Component {
         if (this.props.onNavigate) {
             this.props.onNavigate('stock.move', [['product_id','=',this.props.recordId]]);
         }
+    }
+
+    onViewBom() {
+        if (this.props.onNavigate) {
+            this.props.onNavigate('mrp.bom', [['product_id','=',this.props.recordId]]);
+        }
+    }
+
+    onBack() { this.props.onBack(); }
+}
+
+// ----------------------------------------------------------------
+// BomFormView — mrp.bom detail (Bill of Materials)
+// ----------------------------------------------------------------
+class BomFormView extends Component {
+    static components = { DatePicker };
+    static template = xml`
+        <div class="so-shell"
+             t-on-change="onAnyChange"
+             t-on-input="onAnyInput">
+
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Bills of Materials</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="pageTitle"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <t t-if="state.isNew">
+                            <button class="btn btn-primary" t-on-click.stop="onCreate">Create</button>
+                        </t>
+                        <t t-else="">
+                            <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                            <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
+                        </t>
+                        <button class="btn" t-on-click.stop="onBack">Discard</button>
+                    </div>
+                </div>
+            </div>
+
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="so-card">
+                    <div class="so-card-head">
+                        <h1 class="so-doc-id" t-esc="pageTitle"/>
+                    </div>
+
+                    <!-- Header fields -->
+                    <div class="so-info-grid">
+                        <div class="so-info-col">
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Product</label>
+                                <select class="form-input" data-field="product_id">
+                                    <option value="0">— select product —</option>
+                                    <t t-foreach="state.products" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.product_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Reference</label>
+                                <input class="form-input" type="text" data-field="code"
+                                       t-att-value="state.record.code || ''"/>
+                            </div>
+                        </div>
+                        <div class="so-info-col">
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">BOM Type</label>
+                                <select class="form-input" data-field="bom_type">
+                                    <option value="normal"  t-att-selected="state.record.bom_type === 'normal'  ? true : undefined">Manufacture this Product</option>
+                                    <option value="phantom" t-att-selected="state.record.bom_type === 'phantom' ? true : undefined">Kit</option>
+                                </select>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Quantity</label>
+                                <input class="form-input" type="number" step="0.001" min="0.001"
+                                       data-field="product_qty"
+                                       t-att-value="state.record.product_qty ?? 1"/>
+                            </div>
+                            <div class="so-field-row">
+                                <label class="so-field-lbl">Unit of Measure</label>
+                                <select class="form-input" data-field="product_uom_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.uoms" t-as="opt" t-key="opt.id">
+                                        <option t-att-value="opt.id"
+                                                t-att-selected="getM2oId(state.record.product_uom_id) === opt.id ? true : undefined"
+                                                t-esc="opt.display"/>
+                                    </t>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Components tab -->
+                <div class="so-card" style="margin-top:12px">
+                    <div class="so-card-head">
+                        <h2 style="font-size:1rem;font-weight:600;margin:0">Components</h2>
+                    </div>
+                    <table class="so-line-table" style="width:100%">
+                        <thead>
+                            <tr>
+                                <th>Component</th>
+                                <th style="width:120px;text-align:right">Quantity</th>
+                                <th style="width:130px">Unit of Measure</th>
+                                <th style="width:40px"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <t t-foreach="state.lines" t-as="line" t-key="line._key">
+                                <tr>
+                                    <td>
+                                        <select class="form-input" style="width:100%"
+                                                t-att-data-key="line._key" data-line-field="product_id">
+                                            <option value="0">— select product —</option>
+                                            <t t-foreach="state.products" t-as="opt" t-key="opt.id">
+                                                <option t-att-value="opt.id"
+                                                        t-att-selected="getM2oId(line.product_id) === opt.id ? true : undefined"
+                                                        t-esc="opt.display"/>
+                                            </t>
+                                        </select>
+                                    </td>
+                                    <td style="text-align:right">
+                                        <input class="form-input" type="number" step="0.001" min="0.001"
+                                               style="width:100%;text-align:right"
+                                               t-att-data-key="line._key" data-line-field="product_qty"
+                                               t-att-value="line.product_qty ?? 1"/>
+                                    </td>
+                                    <td>
+                                        <select class="form-input" style="width:100%"
+                                                t-att-data-key="line._key" data-line-field="product_uom_id">
+                                            <option value="0">—</option>
+                                            <t t-foreach="state.uoms" t-as="opt" t-key="opt.id">
+                                                <option t-att-value="opt.id"
+                                                        t-att-selected="getM2oId(line.product_uom_id) === opt.id ? true : undefined"
+                                                        t-esc="opt.display"/>
+                                            </t>
+                                        </select>
+                                    </td>
+                                    <td style="text-align:center">
+                                        <button class="btn btn-danger"
+                                                style="padding:2px 8px;font-size:11px"
+                                                t-att-data-key="line._key"
+                                                t-on-click.stop="onRemoveLine">✕</button>
+                                    </td>
+                                </tr>
+                            </t>
+                        </tbody>
+                    </table>
+                    <div style="padding:8px 0">
+                        <button class="btn" t-on-click.stop="onAddLine">Add a line</button>
+                    </div>
+                </div>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({
+            loading:  true,
+            error:    '',
+            isNew:    !this.props.recordId,
+            record:   { bom_type: 'normal', product_qty: 1 },
+            lines:    [],
+            deletedLineIds: [],
+            products: [],
+            uoms:     [],
+        });
+        this._nextKey = 1;
+        onMounted(() => this.load());
+    }
+
+    get pageTitle() {
+        if (this.state.isNew) return 'New Bill of Materials';
+        const p = this.state.products.find(o => o.id === this.getM2oId(this.state.record.product_id));
+        const name = p ? p.display : ('BOM #' + this.props.recordId);
+        const ref  = this.state.record.code ? ' [' + this.state.record.code + ']' : '';
+        return name + ref;
+    }
+
+    getM2oId(val) {
+        if (!val && val !== 0) return 0;
+        if (typeof val === 'number') return val;
+        if (Array.isArray(val) && val.length > 0) return typeof val[0] === 'number' ? val[0] : 0;
+        return 0;
+    }
+
+    async load() {
+        this.state.loading = true;
+        this.state.error   = '';
+        try {
+            const [recordData] = await Promise.all([
+                this.props.recordId
+                    ? RpcService.call('mrp.bom', 'read', [[this.props.recordId]],
+                            { fields: ['product_id','code','bom_type','product_qty','product_uom_id','active'] })
+                          .then(r => (Array.isArray(r) ? r[0] : r) || {})
+                    : Promise.resolve({ bom_type: 'normal', product_qty: 1 }),
+                this.loadOpts('product.product', 'products', ['id','name']),
+                this.loadOpts('uom.uom',         'uoms',     ['id','name']),
+            ]);
+            this.state.record = recordData;
+            this.state.deletedLineIds = [];
+            if (this.props.recordId) await this.loadLines();
+        } catch (e) {
+            this.state.error = e.message;
+        } finally {
+            this.state.loading = false;
+        }
+    }
+
+    async loadOpts(model, key, fields) {
+        try {
+            const recs = await RpcService.call(model, 'search_read', [[]], { fields, limit: 500 });
+            this.state[key] = (Array.isArray(recs) ? recs : []).map(r => ({
+                id: r.id, display: r.name || String(r.id),
+            }));
+        } catch (_) { this.state[key] = []; }
+    }
+
+    async loadLines() {
+        try {
+            const rows = await RpcService.call('mrp.bom.line', 'search_read',
+                [[['bom_id', '=', this.props.recordId]]],
+                { fields: ['id','bom_id','product_id','product_qty','product_uom_id','sequence'], limit: 500 });
+            this.state.lines = (Array.isArray(rows) ? rows : []).map(r => ({
+                _key: String(this._nextKey++), ...r,
+            }));
+        } catch (_) { this.state.lines = []; }
+    }
+
+    onAnyChange(e) {
+        const lineField = e.target.dataset.lineField;
+        if (lineField) {
+            const key = e.target.dataset.key;
+            const val = e.target.tagName === 'SELECT' ? (parseInt(e.target.value) || 0) : e.target.value;
+            const line = this.state.lines.find(l => l._key === key);
+            if (line) line[lineField] = val;
+            return;
+        }
+        const field = e.target.dataset.field;
+        if (!field) return;
+        if (e.target.tagName === 'SELECT') {
+            this.state.record[field] = parseInt(e.target.value) || 0;
+        }
+    }
+
+    onAnyInput(e) {
+        if (e.target.tagName === 'SELECT') return;
+        const lineField = e.target.dataset.lineField;
+        if (lineField) {
+            const key = e.target.dataset.key;
+            const line = this.state.lines.find(l => l._key === key);
+            if (line) line[lineField] = parseFloat(e.target.value) || e.target.value;
+            return;
+        }
+        const field = e.target.dataset.field;
+        if (field) this.state.record[field] = e.target.value;
+    }
+
+    onAddLine() {
+        this.state.lines.push({
+            _key:           String(this._nextKey++),
+            id:             null,
+            product_id:     0,
+            product_qty:    1,
+            product_uom_id: 0,
+            sequence:       (this.state.lines.length + 1) * 10,
+        });
+    }
+
+    onRemoveLine(e) {
+        const key = e.currentTarget.dataset.key;
+        const idx = this.state.lines.findIndex(l => l._key === key);
+        if (idx < 0) return;
+        const line = this.state.lines[idx];
+        if (line.id) this.state.deletedLineIds.push(line.id);
+        this.state.lines.splice(idx, 1);
+    }
+
+    collectRecord() {
+        const r = this.state.record;
+        return {
+            product_id:     this.getM2oId(r.product_id)     || false,
+            code:           r.code           || false,
+            bom_type:       r.bom_type       || 'normal',
+            product_qty:    parseFloat(r.product_qty) || 1,
+            product_uom_id: this.getM2oId(r.product_uom_id) || false,
+        };
+    }
+
+    async syncLines(bomId) {
+        if (this.state.deletedLineIds.length) {
+            await RpcService.call('mrp.bom.line', 'unlink', [this.state.deletedLineIds], {});
+            this.state.deletedLineIds = [];
+        }
+        for (const line of this.state.lines) {
+            const vals = {
+                bom_id:         bomId,
+                product_id:     this.getM2oId(line.product_id)     || false,
+                product_qty:    parseFloat(line.product_qty) || 1,
+                product_uom_id: this.getM2oId(line.product_uom_id) || false,
+                sequence:       line.sequence || 10,
+            };
+            if (line.id) {
+                await RpcService.call('mrp.bom.line', 'write', [[line.id], vals], {});
+            } else {
+                await RpcService.call('mrp.bom.line', 'create', [vals], {});
+            }
+        }
+    }
+
+    async onCreate() {
+        try {
+            const newId = await RpcService.call('mrp.bom', 'create', [this.collectRecord()], {});
+            await this.syncLines(newId);
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    async onSave() {
+        try {
+            await RpcService.call('mrp.bom', 'write', [[this.state.record.id], this.collectRecord()], {});
+            await this.syncLines(this.state.record.id);
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+
+    async onDelete() {
+        try {
+            await RpcService.call('mrp.bom', 'unlink', [[this.state.record.id]], {});
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
     }
 
     onBack() { this.props.onBack(); }
@@ -5686,6 +6029,10 @@ class ActionView extends Component {
                                      onBack.bind="backToList"
                                      onNavigate.bind="navigateTo"/>
                 </t>
+                <t t-elif="isBomModel">
+                    <BomFormView recordId="state.recordId"
+                                 onBack.bind="backToList"/>
+                </t>
                 <t t-else="">
                     <FormView action="currentAction"
                               viewDef="state.formView"
@@ -5696,7 +6043,7 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, ProductFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, ProductFormView, BomFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor };
 
     // Use overrideAction when navigateTo() has been called, else fall back to props.action
     get currentAction()          { return this.state.overrideAction || this.props.action; }
@@ -5706,6 +6053,7 @@ class ActionView extends Component {
     get isInvoiceModel()         { return this.currentAction.res_model === 'account.move'; }
     get isStockPickingModel()    { return this.currentAction.res_model === 'stock.picking'; }
     get isProductModel()         { return this.currentAction.res_model === 'product.product'; }
+    get isBomModel()             { return this.currentAction.res_model === 'mrp.bom'; }
     get isReportTemplateModel()  { return this.currentAction.res_model === 'ir.report.template'; }
     get isERPSettingsModel()     { return this.currentAction.res_model === 'ir.erp.settings'; }
 
