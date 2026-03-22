@@ -3465,11 +3465,14 @@ class ProductFormView extends Component {
                     <div class="so-tabs">
                         <div t-attf-class="so-tab{{state.activeTab==='general'?' active':''}}"
                              t-on-click.stop="()=>this.setTab('general')">General Information</div>
-                        <div class="so-tab prd-tab-disabled" title="Sales tab — coming soon">Sales</div>
-                        <div class="so-tab prd-tab-disabled" title="Purchase tab — coming soon">Purchase</div>
+                        <div t-attf-class="so-tab{{state.activeTab==='sales'?' active':''}}"
+                             t-on-click.stop="()=>this.setTab('sales')">Sales</div>
+                        <div t-attf-class="so-tab{{state.activeTab==='purchase'?' active':''}}"
+                             t-on-click.stop="()=>this.setTab('purchase')">Purchase</div>
                         <div t-attf-class="so-tab{{state.activeTab==='inventory'?' active':''}}"
                              t-on-click.stop="()=>this.setTab('inventory')">Inventory</div>
-                        <div class="so-tab prd-tab-disabled" title="Accounting tab — coming soon">Accounting</div>
+                        <div t-attf-class="so-tab{{state.activeTab==='accounting'?' active':''}}"
+                             t-on-click.stop="()=>this.setTab('accounting')">Accounting</div>
                     </div>
 
                     <!-- ── General Information tab ───────────────────── -->
@@ -3558,8 +3561,36 @@ class ProductFormView extends Component {
                         </div>
                     </t>
 
+                    <!-- ── Sales tab ─────────────────────────────────── -->
+                    <t t-if="state.activeTab === 'sales'">
+                        <div class="so-info-grid" style="margin-top:12px;">
+                            <div class="so-info-col" style="grid-column:span 2">
+                                <div class="so-field-row" style="flex-direction:column;align-items:flex-start;gap:6px;">
+                                    <label class="so-field-lbl">Sales Description</label>
+                                    <textarea class="form-input prd-notes-area" data-field="description_sale"
+                                              placeholder="Description shown to customers on quotations and sales orders…"
+                                              t-att-value="strVal(state.record.description_sale)"/>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+
+                    <!-- ── Purchase tab ──────────────────────────────── -->
+                    <t t-elif="state.activeTab === 'purchase'">
+                        <div class="so-info-grid" style="margin-top:12px;">
+                            <div class="so-info-col" style="grid-column:span 2">
+                                <div class="so-field-row" style="flex-direction:column;align-items:flex-start;gap:6px;">
+                                    <label class="so-field-lbl">Purchase Description</label>
+                                    <textarea class="form-input prd-notes-area" data-field="description_purchase"
+                                              placeholder="Description shown to vendors on purchase orders…"
+                                              t-att-value="strVal(state.record.description_purchase)"/>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+
                     <!-- ── Inventory tab ─────────────────────────────── -->
-                    <t t-if="state.activeTab === 'inventory'">
+                    <t t-elif="state.activeTab === 'inventory'">
                         <div class="so-info-grid" style="margin-top:12px;">
                             <div class="so-info-col">
                                 <div class="so-field-row">
@@ -3584,6 +3615,38 @@ class ProductFormView extends Component {
                                     <label class="so-field-lbl">Tracking</label>
                                     <span class="so-field-val prd-stub-note"
                                           title="Lot/serial tracking — coming soon">No Tracking</span>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+
+                    <!-- ── Accounting tab ────────────────────────────── -->
+                    <t t-elif="state.activeTab === 'accounting'">
+                        <div class="so-info-grid" style="margin-top:12px;">
+                            <div class="so-info-col">
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Income Account</label>
+                                    <select class="form-input" data-field="income_account_id">
+                                        <option value="0">—</option>
+                                        <t t-foreach="state.accounts" t-as="acc" t-key="acc.id">
+                                            <option t-att-value="acc.id"
+                                                    t-att-selected="m2oId(state.record.income_account_id)===acc.id?true:undefined"
+                                                    t-esc="acc.code + ' ' + acc.name"/>
+                                        </t>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="so-info-col">
+                                <div class="so-field-row">
+                                    <label class="so-field-lbl">Expense Account</label>
+                                    <select class="form-input" data-field="expense_account_id">
+                                        <option value="0">—</option>
+                                        <t t-foreach="state.accounts" t-as="acc" t-key="acc.id">
+                                            <option t-att-value="acc.id"
+                                                    t-att-selected="m2oId(state.record.expense_account_id)===acc.id?true:undefined"
+                                                    t-esc="acc.code + ' ' + acc.name"/>
+                                        </t>
+                                    </select>
                                 </div>
                             </div>
                         </div>
@@ -3621,6 +3684,7 @@ class ProductFormView extends Component {
             record:         {},
             categories:     [],
             uoms:           [],
+            accounts:       [],
             currencySymbol: 'RM',
             moveCount:      0,
             bomCount:       0,
@@ -3637,14 +3701,17 @@ class ProductFormView extends Component {
         this.state.loading = true;
         this.state.error   = null;
         try {
-            const [cats, uoms] = await Promise.all([
+            const [cats, uoms, accs] = await Promise.all([
                 RpcService.call('product.category', 'search_read',
                     [[]], { fields: ['id','name'], limit: 200 }),
                 RpcService.call('uom.uom', 'search_read',
                     [[]], { fields: ['id','name'], limit: 100 }),
+                RpcService.call('account.account', 'search_read',
+                    [[]], { fields: ['id','code','name'], limit: 500 }),
             ]);
             this.state.categories = Array.isArray(cats) ? cats : [];
             this.state.uoms       = Array.isArray(uoms) ? uoms : [];
+            this.state.accounts   = Array.isArray(accs) ? accs : [];
 
             if (this.props.recordId) {
                 const recs = await RpcService.call('product.product', 'read',
@@ -3652,7 +3719,9 @@ class ProductFormView extends Component {
                     { fields: ['id','name','default_code','barcode','description','type',
                                'categ_id','uom_id','uom_po_id','list_price',
                                'standard_price','sale_ok','purchase_ok','expense_ok',
-                               'volume','weight','image_1920','active'] });
+                               'volume','weight','image_1920','active',
+                               'description_sale','description_purchase',
+                               'income_account_id','expense_account_id'] });
                 if (!recs || recs.length === 0) throw new Error('Product not found');
                 this.state.record = { ...recs[0] };
                 this._orig        = { ...recs[0] };
@@ -3674,6 +3743,8 @@ class ProductFormView extends Component {
                     volume: 0, weight: 0,
                     sale_ok: true, purchase_ok: true, expense_ok: false,
                     image_1920: false, active: true,
+                    description_sale: false, description_purchase: false,
+                    income_account_id: false, expense_account_id: false,
                 };
                 this._orig = { ...this.state.record };
             }
@@ -3741,10 +3812,14 @@ class ProductFormView extends Component {
             standard_price: r.standard_price ?? 0,
             volume:         r.volume         ?? 0,
             weight:         r.weight         ?? 0,
-            sale_ok:        !!r.sale_ok,
-            purchase_ok:    !!r.purchase_ok,
-            expense_ok:     !!r.expense_ok,
-            image_1920:     r.image_1920    || false,
+            sale_ok:              !!r.sale_ok,
+            purchase_ok:          !!r.purchase_ok,
+            expense_ok:           !!r.expense_ok,
+            image_1920:           r.image_1920           || false,
+            description_sale:     r.description_sale     || false,
+            description_purchase: r.description_purchase || false,
+            income_account_id:    this.m2oId(r.income_account_id)  || false,
+            expense_account_id:   this.m2oId(r.expense_account_id) || false,
         };
         try {
             if (this.props.recordId) {
@@ -6142,7 +6217,17 @@ class HomeScreen extends Component {
     appColor(index) { return APP_COLORS[index % APP_COLORS.length]; }
 
     appIcon(webIcon) {
-        const icons = { accounting: '📒', contacts: '👥', settings: '⚙', sales: '💰', purchase: '🛒' };
+        const icons = {
+            accounting:    '📒',
+            contacts:      '👥',
+            settings:      '⚙',
+            sales:         '💰',
+            purchase:      '🛒',
+            hr:            '🧑‍💼',
+            inventory:     '📋',
+            products:      '🏷️',
+            manufacturing: '🏭',
+        };
         return icons[webIcon] || '◉';
     }
 }

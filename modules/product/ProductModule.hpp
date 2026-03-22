@@ -108,10 +108,13 @@ public:
     {}
 
     std::string name, defaultCode, barcode, description, type;
-    int         categId   = 0;
-    int         uomId     = 1;
-    int         uomPoId   = 1;
-    int         companyId = 0;
+    std::string descriptionSale, descriptionPurchase;
+    int         categId         = 0;
+    int         uomId           = 1;
+    int         uomPoId         = 1;
+    int         companyId       = 0;
+    int         incomeAccountId = 0;
+    int         expenseAccountId= 0;
     double      listPrice     = 0.0;
     double      standardPrice = 0.0;
     double      volume        = 0.0;
@@ -142,9 +145,15 @@ public:
         fieldRegistry_.add({"purchase_ok",    FieldType::Boolean, "Can be Purchased"});
         fieldRegistry_.add({"company_id",     FieldType::Many2one,"Company",
                             false, false, true, true, "res.company"});
-        fieldRegistry_.add({"expense_ok",     FieldType::Boolean, "Can be Expensed"});
-        fieldRegistry_.add({"image_1920",     FieldType::Text,    "Image"});
-        fieldRegistry_.add({"active",         FieldType::Boolean, "Active"});
+        fieldRegistry_.add({"expense_ok",          FieldType::Boolean, "Can be Expensed"});
+        fieldRegistry_.add({"image_1920",          FieldType::Text,    "Image"});
+        fieldRegistry_.add({"active",              FieldType::Boolean, "Active"});
+        fieldRegistry_.add({"description_sale",    FieldType::Text,    "Sales Description"});
+        fieldRegistry_.add({"description_purchase",FieldType::Text,    "Purchase Description"});
+        fieldRegistry_.add({"income_account_id",   FieldType::Many2one,"Income Account",
+                            false, false, true, true, "account.account"});
+        fieldRegistry_.add({"expense_account_id",  FieldType::Many2one,"Expense Account",
+                            false, false, true, true, "account.account"});
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -163,9 +172,13 @@ public:
         j["weight"]         = weight;
         j["sale_ok"]        = saleOk;
         j["purchase_ok"]    = purchaseOk;
-        j["expense_ok"]     = expenseOk;
-        j["image_1920"]     = image1920.empty() ? nlohmann::json(false) : nlohmann::json(image1920);
-        j["active"]         = active;
+        j["expense_ok"]           = expenseOk;
+        j["image_1920"]           = image1920.empty() ? nlohmann::json(false) : nlohmann::json(image1920);
+        j["active"]               = active;
+        j["description_sale"]     = descriptionSale.empty()     ? nlohmann::json(false) : nlohmann::json(descriptionSale);
+        j["description_purchase"] = descriptionPurchase.empty() ? nlohmann::json(false) : nlohmann::json(descriptionPurchase);
+        j["income_account_id"]    = incomeAccountId  > 0 ? nlohmann::json::array({incomeAccountId,  ""}) : nlohmann::json(false);
+        j["expense_account_id"]   = expenseAccountId > 0 ? nlohmann::json::array({expenseAccountId, ""}) : nlohmann::json(false);
     }
 
     void deserializeFields(const nlohmann::json& j) override {
@@ -192,6 +205,12 @@ public:
         if (j.contains("expense_ok")  && j["expense_ok"].is_boolean())  expenseOk  = j["expense_ok"].get<bool>();
         if (j.contains("image_1920")  && j["image_1920"].is_string())   image1920  = j["image_1920"].get<std::string>();
         if (j.contains("active")      && j["active"].is_boolean())      active     = j["active"].get<bool>();
+        if (j.contains("description_sale")     && j["description_sale"].is_string())
+            descriptionSale     = j["description_sale"].get<std::string>();
+        if (j.contains("description_purchase") && j["description_purchase"].is_string())
+            descriptionPurchase = j["description_purchase"].get<std::string>();
+        if (j.contains("income_account_id"))  incomeAccountId  = m2o(j["income_account_id"]);
+        if (j.contains("expense_account_id")) expenseAccountId = m2o(j["expense_account_id"]);
     }
 
     nlohmann::json toJson() const override {
@@ -436,6 +455,10 @@ private:
         // Migrations for new columns
         txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS expense_ok BOOLEAN NOT NULL DEFAULT FALSE");
         txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS image_1920 TEXT");
+        txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS description_sale TEXT");
+        txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS description_purchase TEXT");
+        txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS income_account_id INTEGER REFERENCES account_account(id) ON DELETE SET NULL");
+        txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS expense_account_id INTEGER REFERENCES account_account(id) ON DELETE SET NULL");
 
         txn.commit();
     }
