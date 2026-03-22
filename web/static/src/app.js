@@ -6,7 +6,7 @@
  *   Top nav section → click direct link → load action
  *   Top nav section (with children) → dropdown → click leaf → load action
  */
-const { Component, useState, xml, mount, onMounted } = owl;
+const { Component, useState, xml, mount, onMounted, useRef, onWillUnmount } = owl;
 
 // App tile background colors (cycled by index)
 const APP_COLORS = [
@@ -4313,7 +4313,7 @@ function dleRenderPreview(templateHtml, model) {
 // ----------------------------------------------------------------
 class DocumentLayoutEditor extends Component {
     static template = xml`
-        <div class="dle-shell">
+        <div class="dle-shell" t-ref="shell">
             <!-- Top bar -->
             <div class="dle-topbar">
                 <div class="dle-doc-tabs">
@@ -4334,7 +4334,7 @@ class DocumentLayoutEditor extends Component {
 
             <!-- 3-panel main area -->
             <div class="dle-main">
-                <!-- LEFT PANEL -->
+                <!-- LEFT PANEL — tabs -->
                 <div class="dle-left">
                     <div class="dle-left-tabs">
                         <button t-attf-class="dle-ltab{{ state.leftTab==='blocks'?' active':'' }}"
@@ -4342,14 +4342,13 @@ class DocumentLayoutEditor extends Component {
                         <button t-attf-class="dle-ltab{{ state.leftTab==='html'?' active':'' }}"
                                 t-on-click="()=>this.setLeftTab('html')">HTML</button>
                         <t t-if="state.leftTab==='html'">
-                            <button class="dle-ltab dle-ltab-popout" title="Open in separate window"
+                            <button class="dle-ltab-popout" title="Open in separate window"
                                     t-on-click="onPopoutHtml">&#x2197;</button>
                         </t>
                     </div>
-
-                    <!-- Blocks mode -->
+                    <!-- Blocks tab -->
                     <t t-if="state.leftTab==='blocks'">
-                        <div class="dle-blocks-list" t-on-dragover="onDragOver" t-on-drop="onDrop">
+                        <div class="dle-acc-body dle-blocks-list" t-on-dragover="onDragOver" t-on-drop="onDrop">
                             <t t-foreach="state.blocks" t-as="blk" t-key="blk_index">
                                 <div t-attf-class="dle-block-row{{ state.selectedBlock===blk_index?' selected':'' }}"
                                      draggable="true"
@@ -4369,16 +4368,17 @@ class DocumentLayoutEditor extends Component {
                             </t>
                         </div>
                     </t>
-
-                    <!-- HTML mode -->
+                    <!-- HTML Source tab -->
                     <t t-if="state.leftTab==='html'">
-                        <textarea class="dle-html-editor"
-                                  t-att-value="state.templateHtml"
-                                  t-on-input="onHtmlInput"/>
+                        <div class="dle-acc-body">
+                            <textarea class="dle-html-editor"
+                                      t-att-value="state.templateHtml"
+                                      t-on-input="onHtmlInput"/>
+                        </div>
                     </t>
                 </div>
 
-                <!-- CENTER: preview iframe -->
+                <!-- CENTER: preview iframe + log -->
                 <div class="dle-center">
                     <div class="dle-preview-bar">
                         <span class="dle-preview-label">Preview &#8212; dummy data</span>
@@ -4390,6 +4390,23 @@ class DocumentLayoutEditor extends Component {
                     <div class="dle-preview-wrap">
                         <iframe class="dle-preview-frame"
                                 t-att-srcdoc="state.previewDoc"/>
+                    </div>
+                    <!-- Foldable log panel -->
+                    <div class="dle-log-panel">
+                        <div class="dle-log-bar" t-on-click="toggleLog">
+                            <span>&#x1F4CB; Log</span>
+                            <span t-if="state.logLines.length" style="font-size:.7rem;color:var(--muted);"
+                                  t-esc="state.logLines.length + ' entries'"/>
+                            <span class="dle-acc-icon" t-esc="state.logOpen ? '\u25BE' : '\u25B8'"/>
+                        </div>
+                        <t t-if="state.logOpen">
+                            <div class="dle-log-body">
+                                <div class="dle-log-empty" t-if="!state.logLines.length">No log entries yet.</div>
+                                <t t-foreach="state.logLines" t-as="ln" t-key="ln_index">
+                                    <div class="dle-log-line" t-esc="ln"/>
+                                </t>
+                            </div>
+                        </t>
                     </div>
                 </div>
 
@@ -4417,72 +4434,74 @@ class DocumentLayoutEditor extends Component {
                                            t-att-checked="state.blocks[state.selectedBlock].visible"
                                            t-on-change="()=>this.toggleBlock(state.selectedBlock)"/>
                                 </div>
-                                <!-- Data-driven property list for selected block type -->
-                                <t t-foreach="getBlockPropDefs(state.blocks[state.selectedBlock].type)" t-as="pd" t-key="pd.key || pd.label">
-                                    <!-- Section divider -->
-                                    <t t-if="pd.type === 'divider'">
-                                        <div class="dle-prop-divider" t-esc="pd.label"/>
-                                    </t>
-                                    <!-- Property row -->
-                                    <t t-else="">
-                                        <div class="dle-prop-row">
-                                            <label t-esc="pd.label"/>
-                                            <!-- number -->
-                                            <t t-if="pd.type === 'number'">
-                                                <div class="dle-prop-num-row">
-                                                    <input type="number" class="dle-prop-input"
-                                                           t-att-min="pd.min" t-att-max="pd.max"
-                                                           t-att-value="state.blocks[state.selectedBlock].props[pd.key] ?? ''"
-                                                           t-on-input="onPropInput"
-                                                           t-att-data-prop="pd.key" data-numtype="1"/>
-                                                    <span t-if="pd.unit" class="dle-prop-unit" t-esc="pd.unit"/>
-                                                </div>
-                                            </t>
-                                            <!-- color -->
-                                            <t t-if="pd.type === 'color'">
-                                                <div class="dle-color-row">
-                                                    <input type="color" class="dle-color-pick"
-                                                           t-att-value="state.blocks[state.selectedBlock].props[pd.key] || '#000000'"
-                                                           t-on-input="onPropInput"
+                                <!-- Grouped property accordions -->
+                                <t t-foreach="getBlockPropGroups(state.blocks[state.selectedBlock].type)" t-as="grp" t-key="grp.label || grp_index">
+                                    <div class="dle-acc-hdr" style="font-size:.73rem;padding:5px 10px;"
+                                         t-on-click="()=>this.togglePropSect(grp.label)">
+                                        <span t-esc="grp.label"/>
+                                        <span class="dle-acc-icon" t-esc="isPropSectOpen(grp.label) ? '\u25BE' : '\u25B8'"/>
+                                    </div>
+                                    <t t-if="isPropSectOpen(grp.label)">
+                                        <t t-foreach="grp.items" t-as="pd" t-key="pd.key">
+                                            <div class="dle-prop-row">
+                                                <label t-esc="pd.label"/>
+                                                <!-- number -->
+                                                <t t-if="pd.type === 'number'">
+                                                    <div class="dle-prop-num-row">
+                                                        <input type="number" class="dle-prop-input"
+                                                               t-att-min="pd.min" t-att-max="pd.max"
+                                                               t-att-value="state.blocks[state.selectedBlock].props[pd.key] ?? ''"
+                                                               t-on-input="onPropInput"
+                                                               t-att-data-prop="pd.key" data-numtype="1"/>
+                                                        <span t-if="pd.unit" class="dle-prop-unit" t-esc="pd.unit"/>
+                                                    </div>
+                                                </t>
+                                                <!-- color -->
+                                                <t t-if="pd.type === 'color'">
+                                                    <div class="dle-color-row">
+                                                        <input type="color" class="dle-color-pick"
+                                                               t-att-value="state.blocks[state.selectedBlock].props[pd.key] || '#000000'"
+                                                               t-on-input="onPropInput"
+                                                               t-att-data-prop="pd.key"/>
+                                                        <input type="text" class="dle-prop-input dle-color-text"
+                                                               t-att-value="state.blocks[state.selectedBlock].props[pd.key] || ''"
+                                                               t-on-input="onPropInput"
+                                                               t-att-data-prop="pd.key"/>
+                                                    </div>
+                                                </t>
+                                                <!-- select -->
+                                                <t t-if="pd.type === 'select'">
+                                                    <select class="dle-prop-input" t-on-change="onPropInput" t-att-data-prop="pd.key">
+                                                        <t t-foreach="pd.options" t-as="opt" t-key="opt.v">
+                                                            <option t-att-value="opt.v"
+                                                                    t-att-selected="(state.blocks[state.selectedBlock].props[pd.key] || '') === opt.v"
+                                                                    t-esc="opt.l"/>
+                                                        </t>
+                                                    </select>
+                                                </t>
+                                                <!-- boolean -->
+                                                <t t-if="pd.type === 'boolean'">
+                                                    <input type="checkbox"
+                                                           t-att-checked="!!state.blocks[state.selectedBlock].props[pd.key]"
+                                                           t-on-change="onPropCheck"
                                                            t-att-data-prop="pd.key"/>
-                                                    <input type="text" class="dle-prop-input dle-color-text"
+                                                </t>
+                                                <!-- text -->
+                                                <t t-if="pd.type === 'text'">
+                                                    <input type="text" class="dle-prop-input"
                                                            t-att-value="state.blocks[state.selectedBlock].props[pd.key] || ''"
                                                            t-on-input="onPropInput"
                                                            t-att-data-prop="pd.key"/>
-                                                </div>
-                                            </t>
-                                            <!-- select -->
-                                            <t t-if="pd.type === 'select'">
-                                                <select class="dle-prop-input" t-on-change="onPropInput" t-att-data-prop="pd.key">
-                                                    <t t-foreach="pd.options" t-as="opt" t-key="opt.v">
-                                                        <option t-att-value="opt.v"
-                                                                t-att-selected="(state.blocks[state.selectedBlock].props[pd.key] || '') === opt.v"
-                                                                t-esc="opt.l"/>
-                                                    </t>
-                                                </select>
-                                            </t>
-                                            <!-- boolean -->
-                                            <t t-if="pd.type === 'boolean'">
-                                                <input type="checkbox"
-                                                       t-att-checked="!!state.blocks[state.selectedBlock].props[pd.key]"
-                                                       t-on-change="onPropCheck"
-                                                       t-att-data-prop="pd.key"/>
-                                            </t>
-                                            <!-- text -->
-                                            <t t-if="pd.type === 'text'">
-                                                <input type="text" class="dle-prop-input"
-                                                       t-att-value="state.blocks[state.selectedBlock].props[pd.key] || ''"
-                                                       t-on-input="onPropInput"
-                                                       t-att-data-prop="pd.key"/>
-                                            </t>
-                                            <!-- textarea -->
-                                            <t t-if="pd.type === 'textarea'">
-                                                <textarea class="dle-prop-input dle-prop-textarea" rows="4"
-                                                          t-att-value="state.blocks[state.selectedBlock].props[pd.key] || ''"
-                                                          t-on-input="onPropInput"
-                                                          t-att-data-prop="pd.key"/>
-                                            </t>
-                                        </div>
+                                                </t>
+                                                <!-- textarea -->
+                                                <t t-if="pd.type === 'textarea'">
+                                                    <textarea class="dle-prop-input dle-prop-textarea" rows="4"
+                                                              t-att-value="state.blocks[state.selectedBlock].props[pd.key] || ''"
+                                                              t-on-input="onPropInput"
+                                                              t-att-data-prop="pd.key"/>
+                                                </t>
+                                            </div>
+                                        </t>
                                     </t>
                                 </t>
                             </t>
@@ -4538,28 +4557,42 @@ class DocumentLayoutEditor extends Component {
                     <!-- Objects tab: block palette -->
                     <t t-if="state.sidebarTab==='objects'">
                         <div class="dle-objects-panel">
-                            <div class="dle-objects-hint">Click to add block to document</div>
-                            <div class="dle-obj-group-label">Content Blocks</div>
-                            <t t-foreach="state.blockDefs.filter(d=>d.group==='content')" t-as="def" t-key="def.type">
-                                <div class="dle-object-item"
-                                     t-on-click="()=>this.addBlock(def.type)"
-                                     draggable="true"
-                                     t-att-data-type="def.type">
-                                    <span class="dle-obj-icon" t-esc="def.icon"/>
-                                    <span class="dle-obj-label" t-esc="def.label"/>
-                                    <span class="dle-obj-add">+</span>
-                                </div>
+                            <div class="dle-objects-hint">Click a block to add it to the document</div>
+                            <!-- Content blocks accordion -->
+                            <div class="dle-acc-hdr" style="font-size:.73rem;padding:5px 10px;"
+                                 t-on-click="()=>this.toggleObjSect('content')">
+                                <span>Content Blocks</span>
+                                <span class="dle-acc-icon" t-esc="isObjSectOpen('content') ? '\u25BE' : '\u25B8'"/>
+                            </div>
+                            <t t-if="isObjSectOpen('content')">
+                                <t t-foreach="state.blockDefs.filter(d=>d.group==='content')" t-as="def" t-key="def.type">
+                                    <div class="dle-object-item"
+                                         t-on-click="()=>this.addBlock(def.type)"
+                                         draggable="true"
+                                         t-att-data-type="def.type">
+                                        <span class="dle-obj-icon" t-esc="def.icon"/>
+                                        <span class="dle-obj-label" t-esc="def.label"/>
+                                        <span class="dle-obj-add">+</span>
+                                    </div>
+                                </t>
                             </t>
-                            <div class="dle-obj-group-label" style="margin-top:8px;">Layout Blocks</div>
-                            <t t-foreach="state.blockDefs.filter(d=>d.group==='layout')" t-as="def" t-key="def.type">
-                                <div class="dle-object-item dle-object-layout"
-                                     t-on-click="()=>this.addBlock(def.type)"
-                                     draggable="true"
-                                     t-att-data-type="def.type">
-                                    <span class="dle-obj-icon" t-esc="def.icon"/>
-                                    <span class="dle-obj-label" t-esc="def.label"/>
-                                    <span class="dle-obj-add">+</span>
-                                </div>
+                            <!-- Layout blocks accordion -->
+                            <div class="dle-acc-hdr" style="font-size:.73rem;padding:5px 10px;"
+                                 t-on-click="()=>this.toggleObjSect('layout')">
+                                <span>Layout Blocks</span>
+                                <span class="dle-acc-icon" t-esc="isObjSectOpen('layout') ? '\u25BE' : '\u25B8'"/>
+                            </div>
+                            <t t-if="isObjSectOpen('layout')">
+                                <t t-foreach="state.blockDefs.filter(d=>d.group==='layout')" t-as="def" t-key="def.type">
+                                    <div class="dle-object-item dle-object-layout"
+                                         t-on-click="()=>this.addBlock(def.type)"
+                                         draggable="true"
+                                         t-att-data-type="def.type">
+                                        <span class="dle-obj-icon" t-esc="def.icon"/>
+                                        <span class="dle-obj-label" t-esc="def.label"/>
+                                        <span class="dle-obj-add">+</span>
+                                    </div>
+                                </t>
                             </t>
                         </div>
                     </t>
@@ -4588,8 +4621,24 @@ class DocumentLayoutEditor extends Component {
             docTypes:        DLE_DOC_TYPES,
             blockDefs:       DLE_BLOCK_DEFS,
             sidebarWidth:    260,
+            // Right panel prop-section collapsed state (key = section label)
+            propSectClosed:  {},
+            // Right panel objects collapsed state
+            objSectClosed:   {},
+            // Log window
+            logOpen:         false,
+            logLines:        [],
         });
+        this.shellRef = useRef('shell');
+        this._updateHeight = () => {
+            const el = this.shellRef.el;
+            if (!el) return;
+            const top = el.getBoundingClientRect().top;
+            el.style.height = (window.innerHeight - top) + 'px';
+        };
         onMounted(() => {
+            this._updateHeight();
+            window.addEventListener('resize', this._updateHeight);
             this.onDocTypeChange('account.move');
             this._onMsgFromPopout = (ev) => {
                 if (ev.data && ev.data.type === 'dle-html-update') {
@@ -4598,6 +4647,11 @@ class DocumentLayoutEditor extends Component {
                 }
             };
             window.addEventListener('message', this._onMsgFromPopout);
+        });
+        onWillUnmount(() => {
+            window.removeEventListener('resize', this._updateHeight);
+            if (this._onMsgFromPopout)
+                window.removeEventListener('message', this._onMsgFromPopout);
         });
     }
 
@@ -4693,7 +4747,39 @@ class DocumentLayoutEditor extends Component {
         return DLE_BLOCK_DEFS.find(d => d.type === type) || { icon: '?', label: type };
     }
 
+    // ---- Left tab ----
     setLeftTab(tab) { this.state.leftTab = tab; }
+
+    togglePropSect(label) {
+        this.state.propSectClosed = { ...this.state.propSectClosed, [label]: !this.state.propSectClosed[label] };
+    }
+    isPropSectOpen(label) { return !this.state.propSectClosed[label]; }
+
+    toggleObjSect(key) {
+        this.state.objSectClosed = { ...this.state.objSectClosed, [key]: !this.state.objSectClosed[key] };
+    }
+    isObjSectOpen(key) { return !this.state.objSectClosed[key]; }
+
+    // ---- Log ----
+    toggleLog() { this.state.logOpen = !this.state.logOpen; }
+
+    addLog(msg) {
+        const t = new Date().toLocaleTimeString('en-GB', { hour12: false });
+        this.state.logLines.unshift(`[${t}] ${msg}`);
+        if (this.state.logLines.length > 100) this.state.logLines.pop();
+    }
+
+    // ---- Prop groups for accordion ----
+    getBlockPropGroups(type) {
+        const defs = DLE_PROP_DEFS[type] || [];
+        const groups = [];
+        let cur = null;
+        for (const d of defs) {
+            if (d.type === 'divider') { cur = { label: d.label, items: [] }; groups.push(cur); }
+            else { if (!cur) { cur = { label: 'General', items: [] }; groups.push(cur); } cur.items.push(d); }
+        }
+        return groups;
+    }
 
     setSidebarTab(tab) {
         this.state.sidebarTab = tab;
@@ -4708,13 +4794,16 @@ class DocumentLayoutEditor extends Component {
     addBlock(type) {
         this.state.blocks.push({ type, visible: true, props: {} });
         this.state.leftTab = 'blocks';
+        this.addLog(`Added: ${this.getBlockDef(type).label}`);
         this.rebuildHtml();
     }
 
     removeBlock(idx) {
+        const label = this.getBlockDef(this.state.blocks[idx].type).label;
         this.state.blocks.splice(idx, 1);
         if (this.state.selectedBlock === idx) this.state.selectedBlock = null;
         else if (this.state.selectedBlock > idx) this.state.selectedBlock--;
+        this.addLog(`Removed: ${label}`);
         this.rebuildHtml();
     }
 
@@ -4830,6 +4919,8 @@ class DocumentLayoutEditor extends Component {
         } catch (e) {}
         // Generate template HTML from blocks and refresh preview
         this.rebuildHtml();
+        const docLabel = DLE_DOC_TYPES.find(d => d.model === model)?.label || model;
+        this.addLog(`Loaded template: ${docLabel} (${this.state.blocks.length} blocks)`);
     }
 
     async onSave() {
@@ -4874,8 +4965,13 @@ class DocumentLayoutEditor extends Component {
                 }
             }
             this.state.saved = true;
+            const docLabel = DLE_DOC_TYPES.find(d => d.model === this.state.docModel)?.label || this.state.docModel;
+            this.addLog(`Saved: ${docLabel} template (${this.state.blocks.length} blocks)`);
             setTimeout(() => { if (this.state) this.state.saved = false; }, 3000);
-        } catch (e) { console.error(e); }
+        } catch (e) {
+            this.addLog(`Error saving: ${e.message || e}`);
+            console.error(e);
+        }
         finally { this.state.saving = false; }
     }
 }
