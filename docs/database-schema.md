@@ -75,27 +75,16 @@ CREATE TABLE IF NOT EXISTS res_country (
     create_date TIMESTAMP  DEFAULT now(),
     write_date  TIMESTAMP  DEFAULT now()
 );
+
+-- Migration (idempotent)
+ALTER TABLE res_country ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
 ```
 
-**Seeds (idempotent — 15 rows):**
-
-| id | name           | code | currency_id | phone_code |
-|----|----------------|------|-------------|------------|
-| 1  | United States  | US   | 1 (USD)     | 1          |
-| 2  | United Kingdom | GB   | 3 (GBP)     | 44         |
-| 3  | Germany        | DE   | 2 (EUR)     | 49         |
-| 4  | France         | FR   | 2 (EUR)     | 33         |
-| 5  | Japan          | JP   | 4 (JPY)     | 81         |
-| 6  | China          | CN   | 5 (CNY)     | 86         |
-| 7  | Canada         | CA   | 1 (USD)     | 1          |
-| 8  | Australia      | AU   | 1 (USD)     | 61         |
-| 9  | Netherlands    | NL   | 2 (EUR)     | 31         |
-| 10 | Singapore      | SG   | 1 (USD)     | 65         |
-| 11 | Switzerland    | CH   | 3 (GBP)     | 41         |
-| 12 | Sweden         | SE   | 2 (EUR)     | 46         |
-| 13 | Spain          | ES   | 2 (EUR)     | 34         |
-| 14 | Italy          | IT   | 2 (EUR)     | 39         |
-| 15 | Brazil         | BR   | NULL        | 55         |
+**Seeds:** 250 world countries via `WorldData.hpp` → `seedWorldData_(txn)`, inserted as:
+```sql
+INSERT INTO res_country (name, code, phone_code) VALUES (...) ON CONFLICT (code) DO NOTHING;
+```
+Countries with states seeded: MY, US, CA, GB, AU, DE, FR, IN, JP, CN, ID, BR, MX, ZA, AE, SA, SG, NZ, NL, BE, CH, ES, IT, NG, EG, PK, BD, TH, VN, PH (~700 states total).
 
 ---
 
@@ -112,7 +101,18 @@ CREATE TABLE IF NOT EXISTS res_country_state (
 );
 ```
 
-**Seeds:** None — empty table (states added on demand).
+**Migration (idempotent):**
+```sql
+-- Required for WorldData ON CONFLICT (country_id, code) DO NOTHING seeding
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='res_country_state_country_id_code_key') THEN
+        ALTER TABLE res_country_state ADD CONSTRAINT res_country_state_country_id_code_key
+            UNIQUE (country_id, code);
+    END IF;
+END $$;
+```
+
+**Seeds:** ~700 state rows across 30+ countries, inserted by `WorldData.hpp`.
 
 ---
 
@@ -351,34 +351,6 @@ Sequence reset to `setval('ir_ui_menu_id_seq', 3, true)` after seed.
 
 ---
 
-## Table Inventory
-
-| # | Table | Module | Rows (seeded) | Notes |
-|---|-------|--------|---------------|-------|
-| 1 | res_lang | base | 1 | en_US |
-| 2 | res_currency | base | 5 | USD, EUR, GBP, JPY, CNY |
-| 3 | res_country | base | 15 | Major countries |
-| 4 | res_country_state | base | 0 | Empty, add on demand |
-| 5 | res_partner | base | 2 | Company + admin partners (from auth seed) |
-| 6 | res_company | auth | 1 | My Company |
-| 7 | res_groups | auth | 3 | Public, Internal, Admin |
-| 8 | res_users | auth | 1 | admin / admin |
-| 9 | res_groups_users_rel | auth | 1 | admin → Admin group |
-| 10 | ir_act_window | ir | 10 | actions 1-10 (base/account/uom/product) |
-| 11 | ir_ui_menu | ir | 17 | 3-level hierarchy: apps 10/20/30/50 + leaves |
-| 12 | account_account | account | 9 | Minimal chart of accounts |
-| 13 | account_journal | account | 4 | SAL, PUR, BNK, CSH |
-| 14 | account_tax | account | 2 | 15% Sales Tax, 15% Purchase Tax |
-| 15 | account_move | account | 0 | Journal entries (user-created) |
-| 16 | account_move_line | account | 0 | Journal entry lines |
-| 17 | account_payment | account | 0 | Payments (user-created) |
-| 18 | account_payment_term | account | 2 | Immediate Payment, 30 Days |
-| 19 | uom_uom | uom | 15 | Units, kg, L, Hours, m, etc. |
-| 20 | product_category | product | 3 | All, Goods, Services |
-| 21 | product_product | product | 0 | Products (user-created) |
-
-**Total: 21 tables**
-
 ---
 
 ## Module: account  (`modules/account/AccountModule.hpp`)
@@ -498,7 +470,13 @@ CREATE TABLE IF NOT EXISTS account_move (
 )
 ```
 
-**State machine:** `draft → [action_post()] → posted → [button_cancel()] → cancel`
+**Idempotent migrations:**
+```sql
+ALTER TABLE account_move ADD COLUMN IF NOT EXISTS payment_term_id INTEGER REFERENCES account_payment_term(id);
+ALTER TABLE account_move ADD COLUMN IF NOT EXISTS invoice_origin  VARCHAR;
+```
+
+**State machine:** `draft → [action_post()] → posted → [button_cancel()] → cancel → [button_draft()] → draft`
 
 Name format on post: `{JOURNAL_CODE}/{YEAR}/{4-digit-seq}` (e.g. `SAL/2026/0001`).
 
@@ -530,6 +508,12 @@ CREATE TABLE IF NOT EXISTS account_move_line (
 ```
 
 Note: `balance` is a PostgreSQL `GENERATED ALWAYS AS` column — never included in INSERT.
+
+**Idempotent migrations:**
+```sql
+ALTER TABLE account_move_line ADD COLUMN IF NOT EXISTS price_unit    NUMERIC(16,4) NOT NULL DEFAULT 0;
+ALTER TABLE account_move_line ADD COLUMN IF NOT EXISTS display_type  VARCHAR;
+```
 
 ---
 
@@ -686,3 +670,436 @@ CREATE TABLE IF NOT EXISTS product_product (
     write_date       TIMESTAMP DEFAULT now()
 )
 ```
+
+**Idempotent column migrations (applied at startup):**
+
+```sql
+-- Phase 17g additions
+ALTER TABLE product_product ADD COLUMN IF NOT EXISTS expense_ok   BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE product_product ADD COLUMN IF NOT EXISTS image_1920   TEXT;
+
+-- Phase A3 tab content
+ALTER TABLE product_product ADD COLUMN IF NOT EXISTS description_sale        TEXT;
+ALTER TABLE product_product ADD COLUMN IF NOT EXISTS description_purchase    TEXT;
+ALTER TABLE product_product ADD COLUMN IF NOT EXISTS income_account_id       INTEGER REFERENCES account_account(id);
+ALTER TABLE product_product ADD COLUMN IF NOT EXISTS expense_account_id      INTEGER REFERENCES account_account(id);
+
+-- Sales tab (Phase A3 extended)
+ALTER TABLE product_product ADD COLUMN IF NOT EXISTS invoice_policy          VARCHAR NOT NULL DEFAULT 'order';
+ALTER TABLE product_product ADD COLUMN IF NOT EXISTS sale_line_warn          VARCHAR NOT NULL DEFAULT 'no-message';
+ALTER TABLE product_product ADD COLUMN IF NOT EXISTS sale_line_warn_msg      TEXT;
+
+-- Purchase tab (Phase A3 extended)
+ALTER TABLE product_product ADD COLUMN IF NOT EXISTS purchase_method         VARCHAR NOT NULL DEFAULT 'purchase';
+ALTER TABLE product_product ADD COLUMN IF NOT EXISTS purchase_lead_time      NUMERIC(8,2) NOT NULL DEFAULT 0;
+ALTER TABLE product_product ADD COLUMN IF NOT EXISTS purchase_line_warn      VARCHAR NOT NULL DEFAULT 'no-message';
+ALTER TABLE product_product ADD COLUMN IF NOT EXISTS purchase_line_warn_msg  TEXT;
+```
+
+**Full extended column list:**
+
+| column | type | default | notes |
+|--------|------|---------|-------|
+| expense_ok | BOOLEAN | false | Can be Expensed |
+| image_1920 | TEXT | NULL | Base64 product image |
+| description_sale | TEXT | NULL | Sales tab description |
+| description_purchase | TEXT | NULL | Purchase tab description |
+| income_account_id | INTEGER | NULL | FK → account_account |
+| expense_account_id | INTEGER | NULL | FK → account_account |
+| invoice_policy | VARCHAR | 'order' | 'order' \| 'delivery' |
+| sale_line_warn | VARCHAR | 'no-message' | 'no-message' \| 'warning' \| 'block' |
+| sale_line_warn_msg | TEXT | NULL | shown when warn ≠ no-message |
+| purchase_method | VARCHAR | 'purchase' | 'purchase' \| 'receive' |
+| purchase_lead_time | NUMERIC(8,2) | 0 | days |
+| purchase_line_warn | VARCHAR | 'no-message' | same values as sale_line_warn |
+| purchase_line_warn_msg | TEXT | NULL | shown when warn ≠ no-message |
+
+---
+
+## Module: sale  (`modules/sale/SaleModule.hpp`)
+
+### sale_order
+
+```sql
+CREATE TABLE IF NOT EXISTS sale_order (
+    id              SERIAL PRIMARY KEY,
+    name            VARCHAR NOT NULL DEFAULT '/',
+    state           VARCHAR NOT NULL DEFAULT 'draft',
+    partner_id      INTEGER NOT NULL REFERENCES res_partner(id),
+    company_id      INTEGER NOT NULL REFERENCES res_company(id) DEFAULT 1,
+    currency_id     INTEGER REFERENCES res_currency(id),
+    payment_term_id INTEGER REFERENCES account_payment_term(id),
+    date_order      TIMESTAMP NOT NULL DEFAULT now(),
+    validity_date   DATE,
+    note            TEXT,
+    amount_untaxed  NUMERIC(16,2) NOT NULL DEFAULT 0,
+    amount_tax      NUMERIC(16,2) NOT NULL DEFAULT 0,
+    amount_total    NUMERIC(16,2) NOT NULL DEFAULT 0,
+    invoice_status  VARCHAR NOT NULL DEFAULT 'nothing',
+    create_date     TIMESTAMP DEFAULT now(),
+    write_date      TIMESTAMP DEFAULT now()
+)
+```
+
+**State machine:** `draft → [action_confirm()] → sale → [action_cancel()] → cancel`
+
+On confirm: auto-creates `stock_picking` (WH/OUT) with move lines for each SO line.
+
+### sale_order_line
+
+```sql
+CREATE TABLE IF NOT EXISTS sale_order_line (
+    id           SERIAL PRIMARY KEY,
+    order_id     INTEGER NOT NULL REFERENCES sale_order(id) ON DELETE CASCADE,
+    product_id   INTEGER REFERENCES product_product(id),
+    name         TEXT NOT NULL DEFAULT '',
+    product_uom  INTEGER REFERENCES uom_uom(id),
+    product_qty  NUMERIC(16,4) NOT NULL DEFAULT 1,
+    price_unit   NUMERIC(16,4) NOT NULL DEFAULT 0,
+    price_subtotal NUMERIC(16,4) NOT NULL DEFAULT 0,
+    qty_delivered  NUMERIC(16,4) NOT NULL DEFAULT 0,
+    qty_invoiced   NUMERIC(16,4) NOT NULL DEFAULT 0,
+    sequence     INTEGER NOT NULL DEFAULT 10,
+    create_date  TIMESTAMP DEFAULT now(),
+    write_date   TIMESTAMP DEFAULT now()
+)
+```
+
+---
+
+## Module: purchase  (`modules/purchase/PurchaseModule.hpp`)
+
+### purchase_order
+
+```sql
+CREATE TABLE IF NOT EXISTS purchase_order (
+    id              SERIAL PRIMARY KEY,
+    name            VARCHAR NOT NULL DEFAULT '/',
+    state           VARCHAR NOT NULL DEFAULT 'draft',
+    partner_id      INTEGER NOT NULL REFERENCES res_partner(id),
+    company_id      INTEGER NOT NULL REFERENCES res_company(id) DEFAULT 1,
+    currency_id     INTEGER REFERENCES res_currency(id),
+    payment_term_id INTEGER REFERENCES account_payment_term(id),
+    date_order      TIMESTAMP NOT NULL DEFAULT now(),
+    date_planned    TIMESTAMP,
+    note            TEXT,
+    amount_untaxed  NUMERIC(16,2) NOT NULL DEFAULT 0,
+    amount_tax      NUMERIC(16,2) NOT NULL DEFAULT 0,
+    amount_total    NUMERIC(16,2) NOT NULL DEFAULT 0,
+    invoice_status  VARCHAR NOT NULL DEFAULT 'nothing',
+    create_date     TIMESTAMP DEFAULT now(),
+    write_date      TIMESTAMP DEFAULT now()
+)
+```
+
+**State machine:** `draft → [button_confirm()] → purchase → [button_cancel()] → cancel`
+
+On confirm: auto-creates `stock_picking` (WH/IN).
+
+### purchase_order_line
+
+```sql
+CREATE TABLE IF NOT EXISTS purchase_order_line (
+    id           SERIAL PRIMARY KEY,
+    order_id     INTEGER NOT NULL REFERENCES purchase_order(id) ON DELETE CASCADE,
+    product_id   INTEGER REFERENCES product_product(id),
+    name         TEXT NOT NULL DEFAULT '',
+    product_uom  INTEGER REFERENCES uom_uom(id),
+    product_qty  NUMERIC(16,4) NOT NULL DEFAULT 1,
+    price_unit   NUMERIC(16,4) NOT NULL DEFAULT 0,
+    price_subtotal NUMERIC(16,4) NOT NULL DEFAULT 0,
+    qty_received   NUMERIC(16,4) NOT NULL DEFAULT 0,
+    qty_billed     NUMERIC(16,4) NOT NULL DEFAULT 0,
+    date_planned TIMESTAMP,
+    sequence     INTEGER NOT NULL DEFAULT 10,
+    create_date  TIMESTAMP DEFAULT now(),
+    write_date   TIMESTAMP DEFAULT now()
+)
+```
+
+---
+
+## Module: stock  (`modules/stock/StockModule.hpp`)
+
+### stock_location
+
+```sql
+CREATE TABLE IF NOT EXISTS stock_location (
+    id              SERIAL PRIMARY KEY,
+    name            VARCHAR NOT NULL,
+    complete_name   VARCHAR,
+    usage           VARCHAR NOT NULL DEFAULT 'internal',
+    location_id     INTEGER REFERENCES stock_location(id) ON DELETE SET NULL,
+    active          BOOLEAN NOT NULL DEFAULT TRUE,
+    company_id      INTEGER REFERENCES res_company(id),
+    create_date     TIMESTAMP DEFAULT now(),
+    write_date      TIMESTAMP DEFAULT now()
+)
+```
+
+**Seeds (7 rows):**
+
+| id | name | usage | parent |
+|----|------|-------|--------|
+| 1  | Physical Locations | view | NULL |
+| 2  | My Company | view | 1 |
+| 3  | WH | view | 2 |
+| 4  | Stock | internal | 3 |
+| 5  | Vendors | supplier | NULL |
+| 6  | Customers | customer | NULL |
+| 7  | Inventory Adjustments | inventory | NULL |
+
+### stock_picking_type
+
+```sql
+CREATE TABLE IF NOT EXISTS stock_picking_type (
+    id               SERIAL PRIMARY KEY,
+    name             VARCHAR NOT NULL,
+    code             VARCHAR NOT NULL DEFAULT 'internal',
+    sequence_code    VARCHAR NOT NULL DEFAULT 'WH',
+    warehouse_id     INTEGER REFERENCES stock_warehouse(id) ON DELETE SET NULL,
+    default_location_id      INTEGER REFERENCES stock_location(id),
+    default_location_dest_id INTEGER REFERENCES stock_location(id),
+    active           BOOLEAN NOT NULL DEFAULT TRUE,
+    create_date      TIMESTAMP DEFAULT now(),
+    write_date       TIMESTAMP DEFAULT now()
+)
+```
+
+**Seeds (3 rows):**
+
+| id | name | code | sequence_code |
+|----|------|------|---------------|
+| 1  | Receipts | incoming | WH/IN |
+| 2  | Delivery Orders | outgoing | WH/OUT |
+| 3  | Internal Transfers | internal | WH/INT |
+
+### stock_warehouse
+
+```sql
+CREATE TABLE IF NOT EXISTS stock_warehouse (
+    id               SERIAL PRIMARY KEY,
+    name             VARCHAR NOT NULL,
+    code             VARCHAR(5) NOT NULL UNIQUE,
+    company_id       INTEGER REFERENCES res_company(id)        ON DELETE SET NULL,
+    lot_stock_id     INTEGER REFERENCES stock_location(id)     ON DELETE SET NULL,
+    view_location_id INTEGER REFERENCES stock_location(id)     ON DELETE SET NULL,
+    in_type_id       INTEGER REFERENCES stock_picking_type(id) ON DELETE SET NULL,
+    out_type_id      INTEGER REFERENCES stock_picking_type(id) ON DELETE SET NULL,
+    int_type_id      INTEGER REFERENCES stock_picking_type(id) ON DELETE SET NULL,
+    active           BOOLEAN NOT NULL DEFAULT TRUE,
+    create_date      TIMESTAMP DEFAULT now(),
+    write_date       TIMESTAMP DEFAULT now()
+)
+```
+
+**Seeds (1 row):**
+
+| id | name | code | company_id | lot_stock_id | view_location_id | in_type_id | out_type_id | int_type_id |
+|----|------|------|------------|--------------|------------------|------------|-------------|-------------|
+| 1  | Main Warehouse | WH | 1 | 4 (Stock) | 3 (WH view) | 1 | 2 | 3 |
+
+### stock_picking
+
+```sql
+CREATE TABLE IF NOT EXISTS stock_picking (
+    id               SERIAL PRIMARY KEY,
+    name             VARCHAR NOT NULL DEFAULT '/',
+    state            VARCHAR NOT NULL DEFAULT 'draft',
+    picking_type_id  INTEGER NOT NULL REFERENCES stock_picking_type(id),
+    partner_id       INTEGER REFERENCES res_partner(id),
+    location_id      INTEGER NOT NULL REFERENCES stock_location(id),
+    location_dest_id INTEGER NOT NULL REFERENCES stock_location(id),
+    scheduled_date   TIMESTAMP,
+    date_done        TIMESTAMP,
+    origin           VARCHAR,
+    note             TEXT,
+    company_id       INTEGER REFERENCES res_company(id),
+    create_date      TIMESTAMP DEFAULT now(),
+    write_date       TIMESTAMP DEFAULT now()
+)
+```
+
+**State machine:** `draft → [action_confirm()] → confirmed → [button_validate()] → done`
+
+Also adds `user_id INTEGER REFERENCES res_users(id)` via migration.
+
+### stock_move
+
+```sql
+CREATE TABLE IF NOT EXISTS stock_move (
+    id               SERIAL PRIMARY KEY,
+    name             VARCHAR NOT NULL DEFAULT '/',
+    state            VARCHAR NOT NULL DEFAULT 'draft',
+    picking_id       INTEGER REFERENCES stock_picking(id) ON DELETE CASCADE,
+    product_id       INTEGER NOT NULL REFERENCES product_product(id),
+    product_uom_qty  NUMERIC(16,4) NOT NULL DEFAULT 0,
+    quantity_done    NUMERIC(16,4) NOT NULL DEFAULT 0,
+    location_id      INTEGER NOT NULL REFERENCES stock_location(id),
+    location_dest_id INTEGER NOT NULL REFERENCES stock_location(id),
+    origin           VARCHAR,
+    company_id       INTEGER REFERENCES res_company(id),
+    create_date      TIMESTAMP DEFAULT now(),
+    write_date       TIMESTAMP DEFAULT now()
+)
+```
+
+---
+
+## Module: mrp  (`modules/mrp/MrpModule.hpp`)
+
+### mrp_bom
+
+```sql
+CREATE TABLE IF NOT EXISTS mrp_bom (
+    id          SERIAL PRIMARY KEY,
+    product_id  INTEGER NOT NULL REFERENCES product_product(id),
+    product_qty NUMERIC(16,4) NOT NULL DEFAULT 1,
+    type        VARCHAR NOT NULL DEFAULT 'normal',
+    active      BOOLEAN NOT NULL DEFAULT TRUE,
+    company_id  INTEGER REFERENCES res_company(id),
+    create_date TIMESTAMP DEFAULT now(),
+    write_date  TIMESTAMP DEFAULT now()
+)
+```
+
+### mrp_bom_line
+
+```sql
+CREATE TABLE IF NOT EXISTS mrp_bom_line (
+    id          SERIAL PRIMARY KEY,
+    bom_id      INTEGER NOT NULL REFERENCES mrp_bom(id) ON DELETE CASCADE,
+    product_id  INTEGER NOT NULL REFERENCES product_product(id),
+    product_qty NUMERIC(16,4) NOT NULL DEFAULT 1,
+    sequence    INTEGER NOT NULL DEFAULT 10
+)
+```
+
+---
+
+## Module: mail  (`modules/mail/MailModule.hpp`)
+
+### mail_message
+
+```sql
+CREATE TABLE IF NOT EXISTS mail_message (
+    id        SERIAL PRIMARY KEY,
+    res_model VARCHAR NOT NULL,
+    res_id    INTEGER NOT NULL,
+    author_id INTEGER REFERENCES res_users(id),
+    body      TEXT NOT NULL DEFAULT '',
+    subtype   VARCHAR NOT NULL DEFAULT 'note',
+    date      TIMESTAMP NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS mail_message_res_idx ON mail_message(res_model, res_id);
+```
+
+---
+
+## Module: hr  (`modules/hr/HrModule.hpp`)
+
+### resource_calendar
+
+```sql
+CREATE TABLE IF NOT EXISTS resource_calendar (
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR NOT NULL,
+    hours_per_day NUMERIC(4,2) NOT NULL DEFAULT 8,
+    company_id  INTEGER REFERENCES res_company(id),
+    active      BOOLEAN NOT NULL DEFAULT TRUE,
+    create_date TIMESTAMP DEFAULT now(),
+    write_date  TIMESTAMP DEFAULT now()
+)
+```
+
+### hr_department
+
+```sql
+CREATE TABLE IF NOT EXISTS hr_department (
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR NOT NULL,
+    company_id  INTEGER REFERENCES res_company(id),
+    active      BOOLEAN NOT NULL DEFAULT TRUE,
+    create_date TIMESTAMP DEFAULT now(),
+    write_date  TIMESTAMP DEFAULT now()
+)
+```
+
+### hr_job
+
+```sql
+CREATE TABLE IF NOT EXISTS hr_job (
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR NOT NULL,
+    department_id INTEGER REFERENCES hr_department(id),
+    company_id  INTEGER REFERENCES res_company(id),
+    active      BOOLEAN NOT NULL DEFAULT TRUE,
+    create_date TIMESTAMP DEFAULT now(),
+    write_date  TIMESTAMP DEFAULT now()
+)
+```
+
+### hr_employee
+
+```sql
+CREATE TABLE IF NOT EXISTS hr_employee (
+    id                SERIAL PRIMARY KEY,
+    name              VARCHAR NOT NULL,
+    job_id            INTEGER REFERENCES hr_job(id),
+    department_id     INTEGER REFERENCES hr_department(id),
+    resource_calendar_id INTEGER REFERENCES resource_calendar(id),
+    work_email        VARCHAR,
+    work_phone        VARCHAR,
+    company_id        INTEGER REFERENCES res_company(id),
+    active            BOOLEAN NOT NULL DEFAULT TRUE,
+    create_date       TIMESTAMP DEFAULT now(),
+    write_date        TIMESTAMP DEFAULT now()
+)
+```
+
+---
+
+## Table Inventory (current)
+
+| # | Table | Module | Notes |
+|---|-------|--------|-------|
+| 1 | res_lang | base | 1 seed (en_US) |
+| 2 | res_currency | base | 5 seeds |
+| 3 | res_country | base | 250 seeds (WorldData.hpp), active flag |
+| 4 | res_country_state | base | ~700 seeds, UNIQUE(country_id,code) |
+| 5 | res_partner | base | 2 seeds (admin+company) |
+| 6 | res_company | auth | 1 seed |
+| 7 | res_groups | auth | 3 seeds |
+| 8 | res_users | auth | 1 seed (admin) |
+| 9 | res_groups_users_rel | auth | junction |
+| 10 | ir_act_window | ir | actions 1-25 + 34 used |
+| 11 | ir_ui_menu | ir | 3-level hierarchy |
+| 12 | ir_config_parameter | ir | key-value settings |
+| 13 | account_account | account | 9 seeds |
+| 14 | account_journal | account | 4 seeds |
+| 15 | account_tax | account | 2 seeds |
+| 16 | account_move | account | user-created |
+| 17 | account_move_line | account | user-created |
+| 18 | account_payment | account | user-created |
+| 19 | account_payment_term | account | 2 seeds |
+| 20 | uom_uom | uom | 15 seeds |
+| 21 | product_category | product | 3 seeds |
+| 22 | product_product | product | user-created |
+| 23 | sale_order | sale | user-created |
+| 24 | sale_order_line | sale | user-created |
+| 25 | purchase_order | purchase | user-created |
+| 26 | purchase_order_line | purchase | user-created |
+| 27 | stock_location | stock | 7 seeds |
+| 28 | stock_picking_type | stock | 3 seeds |
+| 29 | stock_warehouse | stock | 1 seed (Main Warehouse) |
+| 30 | stock_picking | stock | user-created |
+| 31 | stock_move | stock | user-created |
+| 32 | mrp_bom | mrp | user-created |
+| 33 | mrp_bom_line | mrp | user-created |
+| 34 | mail_message | mail | chatter entries |
+| 35 | resource_calendar | hr | user-created |
+| 36 | hr_department | hr | user-created |
+| 37 | hr_job | hr | user-created |
+| 38 | hr_employee | hr | user-created |
+
+**Total: 38 tables** (plus junction tables and generated columns)
