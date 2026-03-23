@@ -784,6 +784,149 @@ private:
 };
 
 
+// ----------------------------------------------------------------
+// StockMoveViewModel — stock.move with enriched search_read
+// Returns M2one fields as [id, "Name"] so ListView.formatCell()
+// can display names instead of raw integer IDs.
+// ----------------------------------------------------------------
+class StockMoveViewModel : public BaseViewModel {
+public:
+    explicit StockMoveViewModel(std::shared_ptr<DbConnection> db)
+        : db_(std::move(db))
+    {
+        REGISTER_METHOD("search_read",     handleSearchRead)
+        REGISTER_METHOD("web_search_read", handleSearchRead)
+        REGISTER_METHOD("read",            handleRead)
+        REGISTER_METHOD("web_read",        handleRead)
+        REGISTER_METHOD("create",          handleCreate)
+        REGISTER_METHOD("write",           handleWrite)
+        REGISTER_METHOD("unlink",          handleUnlink)
+        REGISTER_METHOD("fields_get",      handleFieldsGet)
+        REGISTER_METHOD("search_count",    handleSearchCount)
+        REGISTER_METHOD("search",          handleSearch)
+    }
+
+    std::string modelName() const override { return "stock.move"; }
+
+private:
+    std::shared_ptr<DbConnection> db_;
+
+    // Helper: build [id, name] JSON array, or false if id is null
+    static nlohmann::json m2o(const pqxx::row& row,
+                              const char* idCol, const char* nameCol) {
+        if (row[idCol].is_null()) return false;
+        nlohmann::json pair = nlohmann::json::array();
+        pair.push_back(row[idCol].as<int>());
+        pair.push_back(row[nameCol].is_null() ? "" : std::string(row[nameCol].c_str()));
+        return pair;
+    }
+
+    nlohmann::json handleSearchRead(const CallKwArgs& call) {
+        int lim = call.limit() > 0 ? call.limit() : 80;
+        int off = call.offset();
+
+        auto [where, paramVec] = domainFromJson(call.domain()).toSql();
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        std::string sql = R"(
+            SELECT sm.id,
+                   sm.name,
+                   sm.state,
+                   sm.origin,
+                   sm.product_uom_qty,
+                   sm.quantity,
+                   sm.picking_id,
+                   sp.name           AS picking_name,
+                   sm.product_id,
+                   pt.name           AS product_name,
+                   sm.product_uom_id,
+                   uu.name           AS product_uom_name,
+                   sm.location_id,
+                   COALESCE(sl_src.complete_name, sl_src.name) AS location_name,
+                   sm.location_dest_id,
+                   COALESCE(sl_dst.complete_name, sl_dst.name) AS location_dest_name,
+                   sm.company_id,
+                   rc.name           AS company_name
+            FROM stock_move sm
+            LEFT JOIN stock_picking   sp     ON sp.id  = sm.picking_id
+            LEFT JOIN product_product pp     ON pp.id  = sm.product_id
+            LEFT JOIN product_template pt    ON pt.id  = pp.product_tmpl_id
+            LEFT JOIN uom_uom          uu    ON uu.id  = sm.product_uom_id
+            LEFT JOIN stock_location   sl_src ON sl_src.id = sm.location_id
+            LEFT JOIN stock_location   sl_dst ON sl_dst.id = sm.location_dest_id
+            LEFT JOIN res_company      rc    ON rc.id  = sm.company_id
+            WHERE )";
+        sql += where;
+        sql += " ORDER BY sm.id DESC";
+        sql += " LIMIT " + std::to_string(lim);
+        if (off > 0) sql += " OFFSET " + std::to_string(off);
+
+        pqxx::result res;
+        if (paramVec.empty()) {
+            res = txn.exec(sql);
+        } else {
+            pqxx::params p; for (auto& s : paramVec) p.append(s);
+            res = txn.exec(sql, p);
+        }
+
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& row : res) {
+            nlohmann::json obj;
+            obj["id"]              = row["id"].as<int>();
+            obj["name"]            = row["name"].is_null()    ? nlohmann::json(false) : nlohmann::json(row["name"].c_str());
+            obj["state"]           = row["state"].is_null()   ? nlohmann::json(false) : nlohmann::json(row["state"].c_str());
+            obj["origin"]          = row["origin"].is_null()  ? nlohmann::json(false) : nlohmann::json(row["origin"].c_str());
+            obj["product_uom_qty"] = row["product_uom_qty"].is_null() ? 0.0 : row["product_uom_qty"].as<double>();
+            obj["quantity"]        = row["quantity"].is_null()        ? 0.0 : row["quantity"].as<double>();
+            obj["picking_id"]       = m2o(row, "picking_id",       "picking_name");
+            obj["product_id"]       = m2o(row, "product_id",       "product_name");
+            obj["product_uom_id"]   = m2o(row, "product_uom_id",   "product_uom_name");
+            obj["location_id"]      = m2o(row, "location_id",      "location_name");
+            obj["location_dest_id"] = m2o(row, "location_dest_id", "location_dest_name");
+            obj["company_id"]       = m2o(row, "company_id",       "company_name");
+            arr.push_back(std::move(obj));
+        }
+        return arr;
+    }
+
+    nlohmann::json handleRead(const CallKwArgs& call) {
+        StockMove proto(db_);
+        return proto.read(call.ids(), call.fields());
+    }
+    nlohmann::json handleCreate(const CallKwArgs& call) {
+        const auto v = call.arg(0);
+        if (!v.is_object()) throw std::runtime_error("create: args[0] must be a dict");
+        StockMove proto(db_);
+        return proto.create(v);
+    }
+    nlohmann::json handleWrite(const CallKwArgs& call) {
+        const auto v = call.arg(1);
+        if (!v.is_object()) throw std::runtime_error("write: args[1] must be a dict");
+        StockMove proto(db_);
+        return proto.write(call.ids(), v);
+    }
+    nlohmann::json handleUnlink(const CallKwArgs& call) {
+        StockMove proto(db_);
+        return proto.unlink(call.ids());
+    }
+    nlohmann::json handleFieldsGet(const CallKwArgs& call) {
+        StockMove proto(db_);
+        return proto.fieldsGet(call.fields());
+    }
+    nlohmann::json handleSearchCount(const CallKwArgs& call) {
+        StockMove proto(db_);
+        return proto.searchCount(call.domain());
+    }
+    nlohmann::json handleSearch(const CallKwArgs& call) {
+        StockMove proto(db_);
+        return proto.search(call.domain(),
+                            call.limit() > 0 ? call.limit() : 80,
+                            call.offset());
+    }
+};
+
 // ================================================================
 // 3. MODULE
 // ================================================================
@@ -891,7 +1034,7 @@ public:
             return std::make_shared<StockPickingViewModel>(db);
         });
         viewModels_.registerCreator("stock.move", [db]{
-            return std::make_shared<GenericViewModel<StockMove>>(db);
+            return std::make_shared<StockMoveViewModel>(db);
         });
         viewModels_.registerCreator("stock.location", [db]{
             return std::make_shared<GenericViewModel<StockLocation>>(db);
