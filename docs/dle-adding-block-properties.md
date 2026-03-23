@@ -77,7 +77,8 @@ if (tpls && tpls.length > 0) {
 ## 6. Save it in `onSave`
 
 ```js
-my_prop: parseInt(this.state.docSettings.my_prop) || 0,
+// CORRECT — 0 is a valid value, never use || default
+my_prop: Number.isInteger(this.state.docSettings.my_prop) ? this.state.docSettings.my_prop : 0,
 ```
 
 ---
@@ -117,7 +118,7 @@ format dummy data (see `dleFormatPrec` for the decimal example).
 
 ---
 
-## 10. Wire up the template
+## 9. Wire up the template
 
 Show the property only for the relevant block type, using `togglePropSect`/`isPropSectOpen` to
 make the section collapsible exactly like the built-in block property groups:
