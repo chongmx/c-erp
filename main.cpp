@@ -13,6 +13,7 @@
 #include "modules/mail/MailModule.hpp"
 #include "modules/mrp/MrpModule.hpp"
 #include "modules/report/ReportModule.hpp"
+#include "modules/portal/PortalModule.hpp"
 #include <csignal>
 #include <iostream>
 #include <memory>
@@ -59,6 +60,7 @@ int main(int, char**) {
     g_container->addModule<odoo::modules::stock::StockModule>();
     g_container->addModule<odoo::modules::mrp::MrpModule>();
     g_container->addModule<odoo::modules::report::ReportModule>();
+    g_container->addModule<odoo::modules::portal::PortalModule>();
 
     try {
         std::cout << "[odoo-cpp] Booting modules...\n";

@@ -5899,7 +5899,16 @@ const DLE_DUMMY = {
     'stock.picking':  { document_title:'Delivery Order', doc_number:'WH/OUT/2025/0001', doc_date:'01/03/2025', origin:'SO/2025/0001', source_location:'WH/Stock', dest_location:'Customers', lines:[{product_name:'Industrial Motor 5kW',demand:'2.00',done:'2.00',uom:'Unit'},{product_name:'Control Panel Assembly',demand:'1.00',done:'1.00',uom:'Unit'}] },
 };
 
-function dleRenderPreview(templateHtml, model) {
+function dleFormatPrec(val, prec) {
+    const n = parseFloat(String(val).replace(/,/g, ''));
+    if (isNaN(n)) return val;
+    return n.toLocaleString('en-US', { minimumFractionDigits: prec, maximumFractionDigits: prec });
+}
+
+function dleRenderPreview(templateHtml, model, settings) {
+    const qtyPrec = settings?.decimal_qty      ?? 2;
+    const prcPrec = settings?.decimal_price    ?? 2;
+    const subPrec = settings?.decimal_subtotal ?? 2;
     const d = { ...DLE_DUMMY.common, ...(DLE_DUMMY[model] || {}) };
     const cols = model === 'stock.picking' ? 4 : 5;
     // Process #each blocks FIRST — the simple replace below would blank inner {{vars}}
@@ -5909,7 +5918,12 @@ function dleRenderPreview(templateHtml, model) {
                 return `<tr class="row-line_section"><td colspan="${cols}">${ln.product_name || ''}</td></tr>`;
             if (ln.line_type === 'line_note')
                 return `<tr class="row-line_note"><td colspan="${cols}">${ln.product_name || ''}</td></tr>`;
-            return tpl.replace(/\{\{(\w+)\}\}/g, (__, k) => ln[k] || '');
+            const fmtLn = { ...ln,
+                qty:        dleFormatPrec(ln.qty,        qtyPrec),
+                price_unit: dleFormatPrec(ln.price_unit, prcPrec),
+                subtotal:   dleFormatPrec(ln.subtotal,   subPrec),
+            };
+            return tpl.replace(/\{\{(\w+)\}\}/g, (__, k) => fmtLn[k] !== undefined ? fmtLn[k] : '');
         }).join('')
     );
     // Then replace top-level document variables
@@ -6113,6 +6127,49 @@ class DocumentLayoutEditor extends Component {
                                         </t>
                                     </t>
                                 </t>
+                                <!-- Precision section — visible only for items_table block -->
+                                <t t-if="state.blocks[state.selectedBlock].type === 'items_table'">
+                                    <div class="dle-acc-hdr" style="font-size:.73rem;padding:5px 10px;"
+                                         t-on-click="()=>this.togglePropSect('Precision')">
+                                        <span>Precision (decimal digits)</span>
+                                        <span class="dle-acc-icon" t-esc="isPropSectOpen('Precision') ? '\u25BE' : '\u25B8'"/>
+                                    </div>
+                                    <t t-if="isPropSectOpen('Precision')">
+                                        <div class="dle-prop-row">
+                                            <label>Quantity</label>
+                                            <select class="dle-prop-input"
+                                                    t-on-change="setDecimalQty">
+                                                <t t-foreach="[0,1,2,3,4,5,6]" t-as="n" t-key="n">
+                                                    <option t-att-value="n"
+                                                            t-att-selected="state.docSettings.decimal_qty === n ? true : undefined"
+                                                            t-esc="n"/>
+                                                </t>
+                                            </select>
+                                        </div>
+                                        <div class="dle-prop-row">
+                                            <label>Unit Price</label>
+                                            <select class="dle-prop-input"
+                                                    t-on-change="setDecimalPrice">
+                                                <t t-foreach="[0,1,2,3,4,5,6]" t-as="n" t-key="n">
+                                                    <option t-att-value="n"
+                                                            t-att-selected="state.docSettings.decimal_price === n ? true : undefined"
+                                                            t-esc="n"/>
+                                                </t>
+                                            </select>
+                                        </div>
+                                        <div class="dle-prop-row">
+                                            <label>Subtotal</label>
+                                            <select class="dle-prop-input"
+                                                    t-on-change="setDecimalSubtotal">
+                                                <t t-foreach="[0,1,2,3,4,5,6]" t-as="n" t-key="n">
+                                                    <option t-att-value="n"
+                                                            t-att-selected="state.docSettings.decimal_subtotal === n ? true : undefined"
+                                                            t-esc="n"/>
+                                                </t>
+                                            </select>
+                                        </div>
+                                    </t>
+                                </t>
                             </t>
                             <t t-else="">
                                 <div class="dle-props-title">Document Settings</div>
@@ -6225,7 +6282,7 @@ class DocumentLayoutEditor extends Component {
             previewRecordId: '',
             saving:          false,
             saved:           false,
-            docSettings:     { paper_format:'A4', orientation:'portrait', font_family:'Arial, sans-serif', accent_color:'#4a4a4a' },
+            docSettings:     { paper_format:'A4', orientation:'portrait', font_family:'Arial, sans-serif', accent_color:'#4a4a4a', decimal_qty:2, decimal_price:2, decimal_subtotal:2 },
             loadingTemplate: false,
             docTypes:        DLE_DOC_TYPES,
             blockDefs:       DLE_BLOCK_DEFS,
@@ -6252,7 +6309,7 @@ class DocumentLayoutEditor extends Component {
             this._onMsgFromPopout = (ev) => {
                 if (ev.data && ev.data.type === 'dle-html-update') {
                     this.state.templateHtml = ev.data.html;
-                    this.state.previewDoc   = dleRenderPreview(ev.data.html, this.state.docModel);
+                    this.state.previewDoc   = dleRenderPreview(ev.data.html, this.state.docModel, this.state.docSettings);
                 }
             };
             window.addEventListener('message', this._onMsgFromPopout);
@@ -6424,9 +6481,13 @@ class DocumentLayoutEditor extends Component {
         this.rebuildHtml();
     }
 
+    setDecimalQty(ev)      { this.state.docSettings.decimal_qty      = parseInt(ev.target.value); this.rebuildHtml(); }
+    setDecimalPrice(ev)    { this.state.docSettings.decimal_price    = parseInt(ev.target.value); this.rebuildHtml(); }
+    setDecimalSubtotal(ev) { this.state.docSettings.decimal_subtotal = parseInt(ev.target.value); this.rebuildHtml(); }
+
     rebuildHtml() {
         this.state.templateHtml = dleBuildHtml(this.state.blocks, this.state.docModel);
-        this.state.previewDoc   = dleRenderPreview(this.state.templateHtml, this.state.docModel);
+        this.state.previewDoc   = dleRenderPreview(this.state.templateHtml, this.state.docModel, this.state.docSettings);
     }
 
     onDragStart(ev) {
@@ -6452,7 +6513,7 @@ class DocumentLayoutEditor extends Component {
 
     onHtmlInput(ev) {
         this.state.templateHtml = ev.target.value;
-        this.state.previewDoc   = dleRenderPreview(this.state.templateHtml, this.state.docModel);
+        this.state.previewDoc   = dleRenderPreview(this.state.templateHtml, this.state.docModel, this.state.docSettings);
     }
 
     getBlockPropDefs(type) {
@@ -6497,11 +6558,14 @@ class DocumentLayoutEditor extends Component {
         try {
             const tpls = await RpcService.call('ir.report.template', 'search_read',
                 [[['model', '=', model]]],
-                { fields: ['id', 'paper_format', 'orientation'], limit: 1 });
+                { fields: ['id', 'paper_format', 'orientation', 'decimal_qty', 'decimal_price', 'decimal_subtotal'], limit: 1 });
             if (tpls && tpls.length > 0) {
                 this.state.templateId = tpls[0].id;
-                this.state.docSettings.paper_format = tpls[0].paper_format || 'A4';
-                this.state.docSettings.orientation  = tpls[0].orientation  || 'portrait';
+                this.state.docSettings.paper_format      = tpls[0].paper_format      || 'A4';
+                this.state.docSettings.orientation       = tpls[0].orientation       || 'portrait';
+                this.state.docSettings.decimal_qty       = tpls[0].decimal_qty       ?? 2;
+                this.state.docSettings.decimal_price     = tpls[0].decimal_price     ?? 2;
+                this.state.docSettings.decimal_subtotal  = tpls[0].decimal_subtotal  ?? 2;
             }
         } catch (e) { console.error(e); }
         // Load block config
@@ -6547,9 +6611,12 @@ class DocumentLayoutEditor extends Component {
             if (this.state.templateId) {
                 await RpcService.call('ir.report.template', 'write',
                     [[this.state.templateId], {
-                        template_html: this.state.templateHtml,
-                        paper_format:  this.state.docSettings.paper_format,
-                        orientation:   this.state.docSettings.orientation,
+                        template_html:    this.state.templateHtml,
+                        paper_format:     this.state.docSettings.paper_format,
+                        orientation:      this.state.docSettings.orientation,
+                        decimal_qty:      Number.isInteger(this.state.docSettings.decimal_qty)      ? this.state.docSettings.decimal_qty      : 2,
+                        decimal_price:    Number.isInteger(this.state.docSettings.decimal_price)    ? this.state.docSettings.decimal_price    : 2,
+                        decimal_subtotal: Number.isInteger(this.state.docSettings.decimal_subtotal) ? this.state.docSettings.decimal_subtotal : 2,
                     }], {});
             }
             // Save block config
@@ -6978,6 +7045,205 @@ class ReportSettingsView extends Component {
 }
 
 // ----------------------------------------------------------------
+// PortalUserListView — manage portal user access & passwords
+// ----------------------------------------------------------------
+class PortalUserListView extends Component {
+    static template = xml`
+        <div class="portal-user-list">
+            <div class="portal-filter-bar">
+                <label style="font-size:.85rem;font-weight:600">Filter by Company:</label>
+                <select class="form-select" t-on-change="onCompanyFilter">
+                    <option value="">All Companies</option>
+                    <t t-foreach="state.companies" t-as="co" t-key="co.id">
+                        <option t-att-value="co.id" t-esc="co.name"/>
+                    </t>
+                </select>
+                <span t-if="state.loading" class="text-muted" style="font-size:.8rem">Loading…</span>
+                <span style="flex:1"/>
+                <span class="text-muted" style="font-size:.8rem" t-esc="state.users.length + ' partners'"/>
+            </div>
+
+            <table class="list-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Company</th>
+                        <th>Email</th>
+                        <th>Portal Access</th>
+                        <th>Password</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <t t-if="state.users.length === 0 and !state.loading">
+                        <tr><td colspan="6" style="text-align:center;padding:32px;color:var(--muted)">
+                            No partners found.
+                        </td></tr>
+                    </t>
+                    <t t-foreach="state.users" t-as="user" t-key="user.id">
+                        <tr>
+                            <td style="font-weight:500" t-esc="user.name"/>
+                            <td t-esc="user.company_name || '—'"/>
+                            <td t-esc="user.email || '—'"/>
+                            <td>
+                                <label class="toggle-switch">
+                                    <input type="checkbox"
+                                           t-att-checked="user.portal_active ? true : undefined"
+                                           t-on-change="() => this.toggleActive(user)"/>
+                                    <span class="toggle-slider"/>
+                                </label>
+                            </td>
+                            <td>
+                                <span t-if="user.has_password" class="badge-yes">✓ Set</span>
+                                <span t-else="" class="badge-no">✗ None</span>
+                            </td>
+                            <td>
+                                <div style="display:flex;gap:6px;flex-wrap:wrap">
+                                    <button class="btn btn-sm" t-on-click="() => this.openPasswordDialog(user)">Set Password</button>
+                                    <button class="btn btn-sm" t-on-click="() => this.resetPassword(user)">Reset to Default</button>
+                                </div>
+                            </td>
+                        </tr>
+                    </t>
+                </tbody>
+            </table>
+
+            <!-- Password dialog -->
+            <t t-if="state.dialog">
+                <div class="pay-overlay" t-on-click.stop="closeDialog">
+                    <div class="pay-dialog" t-on-click.stop="" style="min-width:380px">
+                        <div class="pay-dialog-title">Set Portal Password</div>
+                        <div style="font-size:.85rem;color:var(--muted);margin-bottom:4px">
+                            Partner: <strong t-esc="state.dialog.name"/>
+                        </div>
+                        <div>
+                            <label style="font-size:.8rem;font-weight:600;display:block;margin-bottom:4px">New Password</label>
+                            <input type="password" class="form-input" style="width:100%"
+                                   placeholder="Minimum 8 characters"
+                                   t-ref="pwInput"/>
+                        </div>
+                        <div>
+                            <label style="font-size:.8rem;font-weight:600;display:block;margin-bottom:4px">Confirm Password</label>
+                            <input type="password" class="form-input" style="width:100%"
+                                   placeholder="Repeat password"
+                                   t-ref="pwConfirm"/>
+                        </div>
+                        <t t-if="state.dialogError">
+                            <div class="pay-dialog-error" t-esc="state.dialogError"/>
+                        </t>
+                        <div class="pay-dialog-actions">
+                            <button class="btn" t-on-click.stop="closeDialog">Cancel</button>
+                            <button class="btn btn-primary" t-on-click.stop="savePassword">Save Password</button>
+                        </div>
+                    </div>
+                </div>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({
+            loading: false,
+            users:       [],
+            companies:   [],
+            companyFilter: '',
+            dialog:      null,   // { id, name }
+            dialogError: '',
+        });
+        this.pwInput   = useRef('pwInput');
+        this.pwConfirm = useRef('pwConfirm');
+        onMounted(() => {
+            this.loadCompanies();
+            this.loadUsers();
+        });
+    }
+
+    async loadCompanies() {
+        try {
+            const cos = await RpcService.call('portal.partner', 'get_companies', [[]], {});
+            this.state.companies = Array.isArray(cos) ? cos : [];
+        } catch (e) {
+            console.error('loadCompanies failed:', e);
+        }
+    }
+
+    async loadUsers() {
+        this.state.loading = true;
+        try {
+            const domain = this.state.companyFilter
+                ? [['company_id', '=', parseInt(this.state.companyFilter)]]
+                : [];
+            const users = await RpcService.call(
+                'portal.partner', 'search_read',
+                [domain],
+                { fields: ['id','name','email','company_name','portal_active','has_password'], limit: 200 });
+            this.state.users = Array.isArray(users) ? users : [];
+        } catch (e) {
+            console.error('loadUsers failed:', e);
+        } finally {
+            this.state.loading = false;
+        }
+    }
+
+    onCompanyFilter(ev) {
+        this.state.companyFilter = ev.target.value;
+        this.loadUsers();
+    }
+
+    async toggleActive(user) {
+        const newVal = !user.portal_active;
+        try {
+            await RpcService.call('portal.partner', 'write', [[user.id], { portal_active: newVal }]);
+            user.portal_active = newVal;
+        } catch (e) {
+            console.error('toggleActive failed:', e);
+        }
+    }
+
+    openPasswordDialog(user) {
+        this.state.dialog      = { id: user.id, name: user.name };
+        this.state.dialogError = '';
+    }
+
+    closeDialog() {
+        this.state.dialog      = null;
+        this.state.dialogError = '';
+    }
+
+    async savePassword() {
+        const pw  = this.pwInput.el?.value   || '';
+        const pw2 = this.pwConfirm.el?.value || '';
+
+        if (pw.length < 8) {
+            this.state.dialogError = 'Password must be at least 8 characters.';
+            return;
+        }
+        if (pw !== pw2) {
+            this.state.dialogError = 'Passwords do not match.';
+            return;
+        }
+        try {
+            await RpcService.call('portal.partner', 'set_portal_password',
+                [[this.state.dialog.id]], { password: pw });
+            this.closeDialog();
+            await this.loadUsers();
+        } catch (e) {
+            this.state.dialogError = e.message || 'Failed to set password.';
+        }
+    }
+
+    async resetPassword(user) {
+        if (!confirm(`Reset portal password for "${user.name}" to the default "Welcome1"?`)) return;
+        try {
+            await RpcService.call('portal.partner', 'portal_reset_password', [[user.id]], {});
+            await this.loadUsers();
+        } catch (e) {
+            console.error('resetPassword failed:', e);
+        }
+    }
+}
+
+// ----------------------------------------------------------------
 // ActionView — orchestrates list ↔ form switching
 // ----------------------------------------------------------------
 class ActionView extends Component {
@@ -6991,6 +7257,9 @@ class ActionView extends Component {
             </t>
             <t t-elif="isReportTemplateModel">
                 <DocumentLayoutEditor/>
+            </t>
+            <t t-elif="isPortalPartnerModel">
+                <PortalUserListView/>
             </t>
             <t t-elif="state.mode === 'list'">
                 <t t-if="isPartnerModel">
@@ -7071,7 +7340,7 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor, PortalUserListView };
 
     // Use overrideAction when navigateTo() has been called, else fall back to props.action
     get currentAction()          { return this.state.overrideAction || this.props.action; }
@@ -7087,6 +7356,7 @@ class ActionView extends Component {
     get isReportTemplateModel()  { return this.currentAction.res_model === 'ir.report.template'; }
     get isERPSettingsModel()     { return this.currentAction.res_model === 'ir.erp.settings'; }
     get isPartnerModel()         { return this.currentAction.res_model === 'res.partner'; }
+    get isPortalPartnerModel()   { return this.currentAction.res_model === 'portal.partner'; }
 
     setContactFilter(f) { this.state.contactFilter = f; }
 

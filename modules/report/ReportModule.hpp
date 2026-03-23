@@ -142,6 +142,23 @@ static std::string fmtMoneyField(const pqxx::field& f) {
     try { return fmtMoney(f.as<double>()); } catch (...) { return f.c_str(); }
 }
 
+// Precision-aware format (comma-thousands, variable decimals)
+static std::string fmtPrec(double v, int prec) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(prec) << std::abs(v);
+    std::string s = oss.str();
+    size_t dot = s.find('.');
+    size_t start = dot == std::string::npos ? s.size() : dot;
+    int ins = (int)start - 3;
+    while (ins > 0) { s.insert(ins, ","); ins -= 3; }
+    if (v < 0) s = "-" + s;
+    return s;
+}
+static std::string fmtPrecF(const pqxx::field& f, int prec) {
+    if (f.is_null()) return "0." + std::string(std::max(0, prec), '0');
+    try { return fmtPrec(f.as<double>(), prec); } catch (...) { return f.c_str(); }
+}
+
 // Convert YYYY-MM-DD to DD/MM/YYYY
 static std::string ymdToDisplay(const std::string& ymd) {
     if (ymd.size() >= 10 && ymd[4] == '-' && ymd[7] == '-')
@@ -560,11 +577,13 @@ private:
         pqxx::result rows;
         if (modelFilter.empty()) {
             rows = txn.exec(
-                "SELECT id, name, model, paper_format, orientation, active "
+                "SELECT id, name, model, paper_format, orientation, active, "
+                "decimal_qty, decimal_price, decimal_subtotal "
                 "FROM ir_report_template WHERE active=true ORDER BY id");
         } else {
             rows = txn.exec(
-                "SELECT id, name, model, paper_format, orientation, active "
+                "SELECT id, name, model, paper_format, orientation, active, "
+                "decimal_qty, decimal_price, decimal_subtotal "
                 "FROM ir_report_template WHERE active=true AND model=$1 ORDER BY id LIMIT 1",
                 pqxx::params{modelFilter});
         }
@@ -572,12 +591,15 @@ private:
         nlohmann::json result = nlohmann::json::array();
         for (const auto& row : rows) {
             nlohmann::json rec;
-            rec["id"]          = row["id"].as<int>();
-            rec["name"]        = safeStr(row["name"]);
-            rec["model"]       = safeStr(row["model"]);
-            rec["paper_format"]= safeStr(row["paper_format"]);
-            rec["orientation"] = safeStr(row["orientation"]);
-            rec["active"]      = row["active"].is_null() ? true : row["active"].as<bool>();
+            rec["id"]             = row["id"].as<int>();
+            rec["name"]           = safeStr(row["name"]);
+            rec["model"]          = safeStr(row["model"]);
+            rec["paper_format"]   = safeStr(row["paper_format"]);
+            rec["orientation"]    = safeStr(row["orientation"]);
+            rec["active"]         = row["active"].is_null() ? true : row["active"].as<bool>();
+            rec["decimal_qty"]      = row["decimal_qty"].is_null()      ? 2 : row["decimal_qty"].as<int>();
+            rec["decimal_price"]    = row["decimal_price"].is_null()    ? 2 : row["decimal_price"].as<int>();
+            rec["decimal_subtotal"] = row["decimal_subtotal"].is_null() ? 2 : row["decimal_subtotal"].as<int>();
             result.push_back(rec);
         }
         return result;
@@ -608,19 +630,23 @@ private:
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
         auto rows = txn.exec(
-            "SELECT id, name, model, template_html, paper_format, orientation, active "
+            "SELECT id, name, model, template_html, paper_format, orientation, active, "
+            "decimal_qty, decimal_price, decimal_subtotal "
             "FROM ir_report_template WHERE id IN (" + inClause + ") ORDER BY id");
 
         nlohmann::json result = nlohmann::json::array();
         for (const auto& row : rows) {
             nlohmann::json rec;
-            rec["id"]            = row["id"].as<int>();
-            rec["name"]          = safeStr(row["name"]);
-            rec["model"]         = safeStr(row["model"]);
-            rec["template_html"] = safeStr(row["template_html"]);
-            rec["paper_format"]  = safeStr(row["paper_format"]);
-            rec["orientation"]   = safeStr(row["orientation"]);
-            rec["active"]        = row["active"].is_null() ? true : row["active"].as<bool>();
+            rec["id"]               = row["id"].as<int>();
+            rec["name"]             = safeStr(row["name"]);
+            rec["model"]            = safeStr(row["model"]);
+            rec["template_html"]    = safeStr(row["template_html"]);
+            rec["paper_format"]     = safeStr(row["paper_format"]);
+            rec["orientation"]      = safeStr(row["orientation"]);
+            rec["active"]           = row["active"].is_null() ? true : row["active"].as<bool>();
+            rec["decimal_qty"]      = row["decimal_qty"].is_null()      ? 2 : row["decimal_qty"].as<int>();
+            rec["decimal_price"]    = row["decimal_price"].is_null()    ? 2 : row["decimal_price"].as<int>();
+            rec["decimal_subtotal"] = row["decimal_subtotal"].is_null() ? 2 : row["decimal_subtotal"].as<int>();
             result.push_back(rec);
         }
         return result;
@@ -644,6 +670,15 @@ private:
         std::string paperFormat  = vals.value("paper_format",  "A4");
         std::string orientation  = vals.value("orientation",   "portrait");
         std::string name         = vals.value("name",          "");
+        int decimalQty      = vals.contains("decimal_qty")      && vals["decimal_qty"].is_number_integer()
+                               ? vals["decimal_qty"].get<int>() : -1;
+        int decimalPrice    = vals.contains("decimal_price")    && vals["decimal_price"].is_number_integer()
+                               ? vals["decimal_price"].get<int>() : -1;
+        int decimalSubtotal = vals.contains("decimal_subtotal") && vals["decimal_subtotal"].is_number_integer()
+                               ? vals["decimal_subtotal"].get<int>() : -1;
+        int decQty  = std::max(0, decimalQty      < 0 ? 2 : decimalQty);
+        int decPrc  = std::max(0, decimalPrice    < 0 ? 2 : decimalPrice);
+        int decSub  = std::max(0, decimalSubtotal < 0 ? 2 : decimalSubtotal);
 
         std::string inClause;
         for (size_t i = 0; i < ids.size(); ++i) {
@@ -657,15 +692,17 @@ private:
         if (!name.empty()) {
             txn.exec(
                 "UPDATE ir_report_template SET "
-                "template_html=$1, paper_format=$2, orientation=$3, name=$4 "
+                "template_html=$1, paper_format=$2, orientation=$3, name=$4, "
+                "decimal_qty=$5, decimal_price=$6, decimal_subtotal=$7 "
                 "WHERE id IN (" + inClause + ")",
-                pqxx::params{templateHtml, paperFormat, orientation, name});
+                pqxx::params{templateHtml, paperFormat, orientation, name, decQty, decPrc, decSub});
         } else {
             txn.exec(
                 "UPDATE ir_report_template SET "
-                "template_html=$1, paper_format=$2, orientation=$3 "
+                "template_html=$1, paper_format=$2, orientation=$3, "
+                "decimal_qty=$4, decimal_price=$5, decimal_subtotal=$6 "
                 "WHERE id IN (" + inClause + ")",
-                pqxx::params{templateHtml, paperFormat, orientation});
+                pqxx::params{templateHtml, paperFormat, orientation, decQty, decPrc, decSub});
         }
         txn.commit();
         return true;
@@ -741,7 +778,10 @@ public:
 
                     // ---- Load template ----
                     auto tplRows = txn.exec(
-                        "SELECT template_html, paper_format, orientation "
+                        "SELECT template_html, paper_format, orientation, "
+                        "COALESCE(decimal_qty, 2) AS decimal_qty, "
+                        "COALESCE(decimal_price, 2) AS decimal_price, "
+                        "COALESCE(decimal_subtotal, 2) AS decimal_subtotal "
                         "FROM ir_report_template "
                         "WHERE model=$1 AND active=true ORDER BY id LIMIT 1",
                         pqxx::params{model});
@@ -756,6 +796,9 @@ public:
                     std::string orientation = safeStr(tplRows[0]["orientation"]);
                     if (paperFormat.empty()) paperFormat = "A4";
                     if (orientation.empty()) orientation = "portrait";
+                    const int qtyPrec = tplRows[0]["decimal_qty"].as<int>(2);
+                    const int prcPrec = tplRows[0]["decimal_price"].as<int>(2);
+                    const int subPrec = tplRows[0]["decimal_subtotal"].as<int>(2);
 
                     std::map<std::string, std::string> vars;
                     std::vector<std::map<std::string, std::string>> lines;
@@ -819,10 +862,10 @@ public:
                         for (const auto& lr : lrows) {
                             std::map<std::string, std::string> line;
                             line["product_name"] = safeStr(lr["product_name"]);
-                            line["qty"]          = fmtMoneyField(lr["qty"]);
+                            line["qty"]          = fmtPrecF(lr["qty"],      qtyPrec);
                             line["uom"]          = safeStr(lr["uom"]);
-                            line["price_unit"]   = fmtMoneyField(lr["price_unit"]);
-                            line["subtotal"]     = fmtMoneyField(lr["subtotal"]);
+                            line["price_unit"]   = fmtPrecF(lr["price_unit"], prcPrec);
+                            line["subtotal"]     = fmtPrecF(lr["subtotal"],  subPrec);
                             lines.push_back(line);
                         }
 
@@ -856,9 +899,9 @@ public:
                         // Lines — include display_type='' (product lines), exclude AR/AP accounting lines
                         auto lrows = txn.exec(
                             "SELECT COALESCE(aml.name,'') AS product_name, "
-                            "COALESCE(aml.quantity::TEXT,'0') AS qty, "
-                            "COALESCE(aml.price_unit::TEXT,'0') AS price_unit, "
-                            "COALESCE(NULLIF(aml.price_unit,0) * aml.quantity, aml.debit)::TEXT AS subtotal, "
+                            "COALESCE(aml.quantity, 0) AS qty, "
+                            "COALESCE(aml.price_unit, 0) AS price_unit, "
+                            "COALESCE(NULLIF(aml.price_unit,0) * aml.quantity, aml.debit, 0) AS subtotal, "
                             "COALESCE(NULLIF(aml.display_type,''),'product') AS line_type "
                             "FROM account_move_line aml "
                             "JOIN account_account aa ON aa.id = aml.account_id "
@@ -870,9 +913,9 @@ public:
                         for (const auto& lr : lrows) {
                             std::map<std::string, std::string> line;
                             line["product_name"] = safeStr(lr["product_name"]);
-                            line["qty"]          = safeStr(lr["qty"]);
-                            line["price_unit"]   = safeStr(lr["price_unit"]);
-                            line["subtotal"]     = safeStr(lr["subtotal"]);
+                            line["qty"]          = fmtPrecF(lr["qty"],       qtyPrec);
+                            line["price_unit"]   = fmtPrecF(lr["price_unit"], prcPrec);
+                            line["subtotal"]     = fmtPrecF(lr["subtotal"],  subPrec);
                             line["line_type"]    = safeStr(lr["line_type"]);
                             line["uom"]          = "Unit";
                             lines.push_back(line);
@@ -918,10 +961,10 @@ public:
                         for (const auto& lr : lrows) {
                             std::map<std::string, std::string> line;
                             line["product_name"] = safeStr(lr["product_name"]);
-                            line["qty"]          = fmtMoneyField(lr["qty"]);
+                            line["qty"]          = fmtPrecF(lr["qty"],      qtyPrec);
                             line["uom"]          = safeStr(lr["uom"]);
-                            line["price_unit"]   = fmtMoneyField(lr["price_unit"]);
-                            line["subtotal"]     = fmtMoneyField(lr["subtotal"]);
+                            line["price_unit"]   = fmtPrecF(lr["price_unit"], prcPrec);
+                            line["subtotal"]     = fmtPrecF(lr["subtotal"],  subPrec);
                             lines.push_back(line);
                         }
 
@@ -979,8 +1022,8 @@ public:
                         for (const auto& lr : lrows) {
                             std::map<std::string, std::string> line;
                             line["product_name"] = safeStr(lr["product_name"]);
-                            line["demand"]       = fmtMoneyField(lr["demand"]);
-                            line["done"]         = fmtMoneyField(lr["done"]);
+                            line["demand"]       = fmtPrecF(lr["demand"], qtyPrec);
+                            line["done"]         = fmtPrecF(lr["done"],   qtyPrec);
                             line["uom"]          = safeStr(lr["uom"]);
                             lines.push_back(line);
                         }
@@ -1264,6 +1307,16 @@ private:
             "  orientation   TEXT NOT NULL DEFAULT 'portrait', "
             "  active        BOOLEAN NOT NULL DEFAULT true "
             ")");
+        // Add decimal precision columns if not yet present
+        txn.exec(
+            "ALTER TABLE ir_report_template "
+            "ADD COLUMN IF NOT EXISTS decimal_qty INTEGER NOT NULL DEFAULT 2");
+        txn.exec(
+            "ALTER TABLE ir_report_template "
+            "ADD COLUMN IF NOT EXISTS decimal_price INTEGER NOT NULL DEFAULT 2");
+        txn.exec(
+            "ALTER TABLE ir_report_template "
+            "ADD COLUMN IF NOT EXISTS decimal_subtotal INTEGER NOT NULL DEFAULT 2");
         txn.commit();
     }
 
