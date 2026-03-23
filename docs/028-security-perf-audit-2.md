@@ -138,6 +138,54 @@ includes from `SessionManager.hpp`.
 
 ---
 
+---
+
+## SEC-25 — handleCallKw_ Leaked e.what() Regardless of devMode
+
+**Root cause:** The `catch` blocks inside `handleCallKw_()` passed `e.what()` directly to
+`errorResponse_()`. The outer `HttpServer` devMode gating was already bypassed because the
+exception was caught internally first, so SQL errors, table names, and internal messages
+were always sent to clients.
+
+**Fix (`core/infrastructure/JsonRpcDispatcher.hpp`, `core/infrastructure/Errors.hpp`,
+`core/Container.hpp`):**
+- New `AccessDeniedError` class in `core/infrastructure/Errors.hpp` — extends
+  `std::runtime_error`; always shown to client (user must know why they're denied)
+- Added `devMode_` member to `JsonRpcDispatcher`; passed from `Container` via
+  `cfg.http.devMode` (new 5th constructor argument)
+- Catch order in `handleCallKw_()`:
+  1. `AccessDeniedError` → always shown, HTTP 403
+  2. `std::out_of_range` → `devMode_ ? e.what() : "An internal error occurred"` + `LOG_ERROR`
+  3. `std::exception` → same devMode gate + `LOG_ERROR`
+- `checkModelAccess_()` and all authorization guards in `AuthViewModel` now throw
+  `AccessDeniedError` instead of `std::runtime_error`
+
+---
+
+## SEC-26 — Model Access Map Had Coverage Gaps (Allow-by-Default)
+
+**Root cause:** `checkModelAccess_()` had 13 models in `kRequired`. Any model not in the
+map was allowed for any authenticated user. Notable gaps: `account.account`,
+`account.journal`, `account.tax`, `account.payment`, `account.payment.term`,
+`res.company`, `res.groups`, `ir.config.parameter`, `hr.department`, `hr.job`, `mrp.bom`.
+
+**Fix (`core/infrastructure/JsonRpcDispatcher.hpp`):**
+Three-tier deny-by-default policy:
+1. **kAllowed** (any authenticated BASE_INTERNAL user): `ir.ui.menu`, `ir.actions.act_window`,
+   `res.currency`, `res.partner`, `res.users`, `uom.uom`, `product.product`,
+   `product.category`, `product.supplierinfo`, `mail.message`, `portal.partner`
+2. **kRequired** (specific group — expanded from 13 to 23 entries):
+   - All account.* models → ACCOUNT_BILLING (5)
+   - hr.department, hr.job added → HR_EMPLOYEE (15)
+   - `res.company` → SETTINGS_CONFIGURATION (4)
+   - `res.groups` → SETTINGS_CONFIGURATION (4)
+   - `ir.config.parameter` → BASE_ADMIN (3) — may contain SMTP credentials / API keys
+   - `mrp.bom` added → MRP_USER (13)
+3. **Default** (model not in either set): require BASE_INTERNAL (2) — any future ViewModel
+   registered without an explicit entry is still protected from unauthenticated access
+
+---
+
 ## Updated Rules
 
 ### ViewModel authorization — any sensitive model
