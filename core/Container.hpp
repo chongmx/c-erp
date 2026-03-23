@@ -138,7 +138,7 @@ public:
         // --- Factories ---
         // Models and services receive the DB connection; the others are stateless.
         models     = std::make_shared<core::ModelFactory>(db);
-        services   = std::make_shared<core::ServiceFactory>(db);
+        services   = std::make_shared<core::ServiceFactory>(db, cfg.http.devMode, cfg.http.secureCookies);
         viewModels = std::make_shared<core::ViewModelFactory>();
         views      = std::make_shared<core::ViewFactory>();
         modules    = std::make_shared<core::ModuleFactory>();

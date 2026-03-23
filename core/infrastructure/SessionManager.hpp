@@ -5,6 +5,7 @@
 #include <chrono>
 #include <iomanip>
 #include <mutex>
+#include <shared_mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -130,7 +131,7 @@ public:
         s.sessionId = generateId_();
         s.db        = db;
 
-        std::scoped_lock lock{mutex_};
+        std::unique_lock lock{mutex_};
         const std::string id = s.sessionId;
         store_[id] = std::move(s);
         return id;
@@ -140,18 +141,25 @@ public:
      * @brief Look up a session by id.
      *
      * Returns nullopt if the id is unknown or the session has expired.
-     * Touching the session resets its TTL.
+     * Uses a shared (read) lock for the common fast path; upgrades to an
+     * exclusive lock at most once per kTouchInterval seconds to refresh
+     * accessedAt, preventing every request from serializing on a write lock.
      */
     std::optional<Session> get(const std::string& sessionId) {
-        std::scoped_lock lock{mutex_};
-        auto it = store_.find(sessionId);
-        if (it == store_.end()) return std::nullopt;
-
-        if (isExpired_(it->second)) {
-            store_.erase(it);
-            return std::nullopt;
+        // --- Phase 1: shared lock (concurrent reads) ---
+        {
+            std::shared_lock slock{mutex_};
+            auto it = store_.find(sessionId);
+            if (it == store_.end()) return std::nullopt;
+            if (isExpired_(it->second))  return std::nullopt; // evictExpired() will clean up
+            // Skip the write if accessedAt was updated recently (reduces exclusive-lock frequency)
+            auto age = Session::Clock::now() - it->second.accessedAt;
+            if (age < kTouchInterval_) return it->second;
         }
-
+        // --- Phase 2: exclusive lock to refresh accessedAt ---
+        std::unique_lock ulock{mutex_};
+        auto it = store_.find(sessionId);
+        if (it == store_.end() || isExpired_(it->second)) return std::nullopt;
         it->second.accessedAt = Session::Clock::now();
         return it->second;
     }
@@ -166,7 +174,7 @@ public:
      */
     template<typename Fn>
     bool update(const std::string& sessionId, Fn&& patch) {
-        std::scoped_lock lock{mutex_};
+        std::unique_lock lock{mutex_};
         auto it = store_.find(sessionId);
         if (it == store_.end() || isExpired_(it->second)) return false;
         patch(it->second);
@@ -178,7 +186,7 @@ public:
      * @brief Destroy a session (logout).
      */
     void destroy(const std::string& sessionId) {
-        std::scoped_lock lock{mutex_};
+        std::unique_lock lock{mutex_};
         store_.erase(sessionId);
     }
 
@@ -192,7 +200,7 @@ public:
      * @returns Number of sessions evicted.
      */
     std::size_t evictExpired() {
-        std::scoped_lock lock{mutex_};
+        std::unique_lock lock{mutex_};
         std::size_t count = 0;
         for (auto it = store_.begin(); it != store_.end(); ) {
             if (isExpired_(it->second)) { it = store_.erase(it); ++count; }
@@ -203,12 +211,12 @@ public:
 
     /** @brief Current number of live sessions (including potentially expired). */
     std::size_t size() const {
-        std::scoped_lock lock{mutex_};
+        std::shared_lock lock{mutex_};
         return store_.size();
     }
 
     nlohmann::json healthInfo() const {
-        std::scoped_lock lock{mutex_};
+        std::shared_lock lock{mutex_};
         return {
             {"active_sessions", static_cast<int>(store_.size())},
             {"ttl_seconds",     ttl_.count()},
@@ -253,8 +261,12 @@ private:
         return ss.str();
     }
 
-    Duration                              ttl_;
-    mutable std::mutex                    mutex_;
+    // Refresh accessedAt at most once per kTouchInterval to keep get() on the shared-lock
+    // fast path for the vast majority of requests.
+    static constexpr Duration kTouchInterval_ = std::chrono::seconds{60};
+
+    Duration                                 ttl_;
+    mutable std::shared_mutex                mutex_;
     std::unordered_map<std::string, Session> store_;
 };
 

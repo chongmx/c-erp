@@ -997,6 +997,8 @@ public:
         , viewModels_   (viewModelFactory)
         , portalSessions_(std::make_shared<PortalSessionManager>())
         , rateLimiter_  (std::make_shared<PortalLoginRateLimiter>())
+        , devMode_      (serviceFactory.devMode())
+        , secureCookies_(serviceFactory.secureCookies())
     {}
 
     std::string              moduleName()   const override { return "portal"; }
@@ -1023,9 +1025,11 @@ public:
     // registerRoutes — 10 portal HTTP routes
     // ----------------------------------------------------------
     void registerRoutes() override {
-        auto db             = db_;
-        auto portalSessions = portalSessions_;
-        auto rateLimiter    = rateLimiter_;
+        auto db              = db_;
+        auto portalSessions  = portalSessions_;
+        auto rateLimiter     = rateLimiter_;
+        const bool devMode      = devMode_;
+        const bool secureCookies = secureCookies_;
 
         // Shared helper: add security headers to a response
         auto addSecHeaders = [](const drogon::HttpResponsePtr& res) {
@@ -1054,7 +1058,7 @@ public:
         // Body: {email, password}
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/login",
-            [db, portalSessions, rateLimiter, addSecHeaders](
+            [db, portalSessions, rateLimiter, addSecHeaders, devMode, secureCookies](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb)
             {
@@ -1139,6 +1143,7 @@ public:
                     cookie.setSameSite(drogon::Cookie::SameSite::kLax);
                     cookie.setPath("/");
                     cookie.setMaxAge(8 * 3600); // 8 hours
+                    if (secureCookies) cookie.setSecure(true);
 
                     res->setStatusCode(drogon::k200OK);
                     res->addCookie(cookie);
@@ -1150,7 +1155,8 @@ public:
                     cb(res);
                 } catch (const std::exception& e) {
                     res->setStatusCode(drogon::k500InternalServerError);
-                    res->setBody(nlohmann::json{{"error", e.what()}}.dump());
+                    LOG_ERROR << "[portal] " << e.what();
+                    res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
                     cb(res);
                 }
             },
@@ -1160,7 +1166,7 @@ public:
         // c. POST /portal/api/logout
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/logout",
-            [portalSessions, addSecHeaders](
+            [portalSessions, addSecHeaders, devMode](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb)
             {
@@ -1192,7 +1198,7 @@ public:
         // Body: {current_password, new_password}
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/change-password",
-            [db, portalSessions, addSecHeaders](
+            [db, portalSessions, addSecHeaders, devMode](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb)
             {
@@ -1278,7 +1284,8 @@ public:
                     cb(res);
                 } catch (const std::exception& e) {
                     res->setStatusCode(drogon::k500InternalServerError);
-                    res->setBody(nlohmann::json{{"error", e.what()}}.dump());
+                    LOG_ERROR << "[portal] " << e.what();
+                    res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
                     cb(res);
                 }
             },
@@ -1289,7 +1296,7 @@ public:
         // Returns invoices with attached payment proofs
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/invoices",
-            [db, portalSessions, addSecHeaders](
+            [db, portalSessions, addSecHeaders, devMode](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb)
             {
@@ -1368,7 +1375,8 @@ public:
                     cb(res);
                 } catch (const std::exception& e) {
                     res->setStatusCode(drogon::k500InternalServerError);
-                    res->setBody(nlohmann::json{{"error", e.what()}}.dump());
+                    LOG_ERROR << "[portal] " << e.what();
+                    res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
                     cb(res);
                 }
             },
@@ -1379,7 +1387,7 @@ public:
         // Verify invoice belongs to partner, return header + lines
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/invoice/{1}/detail",
-            [db, portalSessions, addSecHeaders](
+            [db, portalSessions, addSecHeaders, devMode](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb,
                 const std::string& idStr)
@@ -1469,7 +1477,8 @@ public:
                     cb(res);
                 } catch (const std::exception& e) {
                     res->setStatusCode(drogon::k500InternalServerError);
-                    res->setBody(nlohmann::json{{"error", e.what()}}.dump());
+                    LOG_ERROR << "[portal] " << e.what();
+                    res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
                     cb(res);
                 }
             },
@@ -1479,7 +1488,7 @@ public:
         // h2. GET /portal/api/invoice/{id}/print  — portal-authenticated, same format as backend
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/invoice/{1}/print",
-            [db, portalSessions](
+            [db, portalSessions, devMode](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb,
                 const std::string& idStr)
@@ -1510,7 +1519,8 @@ public:
                     res->setBody(html);
                     cb(res);
                 } catch (const std::exception& e) {
-                    htmlErr(500, std::string("Error: ") + e.what());
+                    LOG_ERROR << "[portal] " << e.what();
+                    htmlErr(500, devMode ? std::string("Error: ") + e.what() : "An internal error occurred");
                 }
             },
             {drogon::Get});
@@ -1519,7 +1529,7 @@ public:
         // k. GET /portal/api/orders  — list of sale orders for this partner
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/orders",
-            [db, portalSessions, addSecHeaders](
+            [db, portalSessions, addSecHeaders, devMode](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb)
             {
@@ -1554,7 +1564,8 @@ public:
                     cb(res);
                 } catch (const std::exception& e) {
                     res->setStatusCode(drogon::k500InternalServerError);
-                    res->setBody(nlohmann::json{{"error",e.what()}}.dump());
+                    LOG_ERROR << "[portal] " << e.what();
+                    res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
                     cb(res);
                 }
             },
@@ -1564,7 +1575,7 @@ public:
         // l. GET /portal/api/order/{id}/detail
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/order/{1}/detail",
-            [db, portalSessions, addSecHeaders](
+            [db, portalSessions, addSecHeaders, devMode](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb,
                 const std::string& idStr)
@@ -1630,7 +1641,8 @@ public:
                     cb(res);
                 } catch (const std::exception& e) {
                     res->setStatusCode(drogon::k500InternalServerError);
-                    res->setBody(nlohmann::json{{"error",e.what()}}.dump());
+                    LOG_ERROR << "[portal] " << e.what();
+                    res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
                     cb(res);
                 }
             },
@@ -1640,7 +1652,7 @@ public:
         // m. GET /portal/api/order/{id}/print
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/order/{1}/print",
-            [db, portalSessions](
+            [db, portalSessions, devMode](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb,
                 const std::string& idStr)
@@ -1671,7 +1683,8 @@ public:
                     res->setBody(html);
                     cb(res);
                 } catch (const std::exception& e) {
-                    htmlErr(500, std::string("Error: ") + e.what());
+                    LOG_ERROR << "[portal] " << e.what();
+                    htmlErr(500, devMode ? std::string("Error: ") + e.what() : "An internal error occurred");
                 }
             },
             {drogon::Get});
@@ -1680,7 +1693,7 @@ public:
         // n. GET /portal/api/deliveries  — outgoing stock_picking for this partner
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/deliveries",
-            [db, portalSessions, addSecHeaders](
+            [db, portalSessions, addSecHeaders, devMode](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb)
             {
@@ -1718,7 +1731,8 @@ public:
                     cb(res);
                 } catch (const std::exception& e) {
                     res->setStatusCode(drogon::k500InternalServerError);
-                    res->setBody(nlohmann::json{{"error",e.what()}}.dump());
+                    LOG_ERROR << "[portal] " << e.what();
+                    res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
                     cb(res);
                 }
             },
@@ -1728,7 +1742,7 @@ public:
         // o. GET /portal/api/delivery/{id}/detail
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/delivery/{1}/detail",
-            [db, portalSessions, addSecHeaders](
+            [db, portalSessions, addSecHeaders, devMode](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb,
                 const std::string& idStr)
@@ -1796,7 +1810,8 @@ public:
                     cb(res);
                 } catch (const std::exception& e) {
                     res->setStatusCode(drogon::k500InternalServerError);
-                    res->setBody(nlohmann::json{{"error",e.what()}}.dump());
+                    LOG_ERROR << "[portal] " << e.what();
+                    res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
                     cb(res);
                 }
             },
@@ -1806,7 +1821,7 @@ public:
         // p. GET /portal/api/delivery/{id}/print
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/delivery/{1}/print",
-            [db, portalSessions](
+            [db, portalSessions, devMode](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb,
                 const std::string& idStr)
@@ -1837,7 +1852,8 @@ public:
                     res->setBody(html);
                     cb(res);
                 } catch (const std::exception& e) {
-                    htmlErr(500, std::string("Error: ") + e.what());
+                    LOG_ERROR << "[portal] " << e.what();
+                    htmlErr(500, devMode ? std::string("Error: ") + e.what() : "An internal error occurred");
                 }
             },
             {drogon::Get});
@@ -1846,7 +1862,7 @@ public:
         // h. POST /portal/api/invoice/{id}/proof  — multipart upload
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/invoice/{1}/proof",
-            [db, portalSessions, addSecHeaders](
+            [db, portalSessions, addSecHeaders, devMode](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb,
                 const std::string& idStr)
@@ -1908,16 +1924,59 @@ public:
 
                     const auto& file = files[0];
 
-                    // Generate unique filename: {invoiceId}_{timestamp}_{original}
+                    // SEC-19: Enforce 10 MB size limit
+                    constexpr std::size_t kMaxBytes = 10 * 1024 * 1024;
+                    if (file.fileLength() > kMaxBytes) {
+                        res->setStatusCode(drogon::k400BadRequest);
+                        res->setBody(nlohmann::json{{"error", "File too large (max 10 MB)"}}.dump());
+                        cb(res);
+                        return;
+                    }
+
+                    // SEC-16: Sanitize filename — keep only the basename,
+                    // strip all directory components and reject path separators.
+                    const std::string rawName = file.getFileName();
+                    // Extract basename: everything after the last '/' or '\'
+                    std::string baseName = rawName;
+                    {
+                        const auto sl = baseName.rfind('/');
+                        if (sl != std::string::npos) baseName = baseName.substr(sl + 1);
+                        const auto bs = baseName.rfind('\\');
+                        if (bs != std::string::npos) baseName = baseName.substr(bs + 1);
+                    }
+                    // SEC-19: Validate extension against allowlist
+                    {
+                        const std::string lower = [&]{
+                            std::string s = baseName;
+                            for (auto& c : s) c = static_cast<char>(std::tolower(
+                                static_cast<unsigned char>(c)));
+                            return s;
+                        }();
+                        const bool allowed =
+                            lower.size() > 4 && (
+                            lower.substr(lower.size()-4) == ".pdf" ||
+                            lower.substr(lower.size()-4) == ".jpg" ||
+                            lower.substr(lower.size()-4) == ".png" ||
+                            (lower.size() > 5 &&
+                             lower.substr(lower.size()-5) == ".jpeg"));
+                        if (!allowed || baseName.empty()) {
+                            res->setStatusCode(drogon::k400BadRequest);
+                            res->setBody(nlohmann::json{{"error",
+                                "Invalid file type. Allowed: pdf, jpg, jpeg, png"}}.dump());
+                            cb(res);
+                            return;
+                        }
+                    }
+
+                    // Generate unique filename: {invoiceId}_{timestamp}_{sanitizedBaseName}
                     const auto now = std::chrono::system_clock::now();
                     const auto ts  = std::chrono::duration_cast<std::chrono::seconds>(
                         now.time_since_epoch()).count();
 
-                    const std::string originalName = file.getFileName();
-                    const std::string uniqueName   =
+                    const std::string uniqueName =
                         std::to_string(invoiceId) + "_" +
                         std::to_string(ts)          + "_" +
-                        originalName;
+                        baseName;
 
                     const std::string savePath = "data/payment_proofs/" + uniqueName;
 
@@ -1933,18 +1992,19 @@ public:
                         "(invoice_id, partner_id, filename, mimetype, filepath) "
                         "VALUES ($1, $2, $3, $4, $5)",
                         pqxx::params{invoiceId, session->partnerId,
-                                     originalName, mimetype, savePath});
+                                     baseName, mimetype, savePath});
                     txn.commit();
 
                     res->setStatusCode(drogon::k200OK);
                     res->setBody(nlohmann::json{
                         {"ok",       true},
-                        {"filename", originalName},
+                        {"filename", baseName},
                     }.dump());
                     cb(res);
                 } catch (const std::exception& e) {
                     res->setStatusCode(drogon::k500InternalServerError);
-                    res->setBody(nlohmann::json{{"error", e.what()}}.dump());
+                    LOG_ERROR << "[portal] " << e.what();
+                    res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
                     cb(res);
                 }
             },
@@ -1955,7 +2015,7 @@ public:
         // Returns partner-specific rental prices
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/products",
-            [db, portalSessions, addSecHeaders](
+            [db, portalSessions, addSecHeaders, devMode](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb)
             {
@@ -1999,7 +2059,8 @@ public:
                     cb(res);
                 } catch (const std::exception& e) {
                     res->setStatusCode(drogon::k500InternalServerError);
-                    res->setBody(nlohmann::json{{"error", e.what()}}.dump());
+                    LOG_ERROR << "[portal] " << e.what();
+                    res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
                     cb(res);
                 }
             },
@@ -2011,7 +2072,7 @@ public:
         // Creates a draft invoice for the partner
         // ----------------------------------------------------------
         drogon::app().registerHandler("/portal/api/request",
-            [db, portalSessions, addSecHeaders](
+            [db, portalSessions, addSecHeaders, devMode](
                 const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb)
             {
@@ -2107,7 +2168,8 @@ public:
                     cb(res);
                 } catch (const std::exception& e) {
                     res->setStatusCode(drogon::k500InternalServerError);
-                    res->setBody(nlohmann::json{{"error", e.what()}}.dump());
+                    LOG_ERROR << "[portal] " << e.what();
+                    res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
                     cb(res);
                 }
             },
@@ -2128,6 +2190,8 @@ private:
     core::ViewModelFactory&                       viewModels_;
     std::shared_ptr<PortalSessionManager>         portalSessions_;
     std::shared_ptr<PortalLoginRateLimiter>       rateLimiter_;
+    bool                                          devMode_       = false;
+    bool                                          secureCookies_ = false;
 
     // ----------------------------------------------------------
     // Schema (idempotent)

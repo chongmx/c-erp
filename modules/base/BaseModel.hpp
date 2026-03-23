@@ -42,9 +42,15 @@ public:
     explicit BaseModel(std::shared_ptr<infrastructure::DbConnection> db)
         : db_(std::move(db)), id_(0)
     {
-        // Explicit qualification bypasses vtable (which still points to the
-        // base during construction) and calls TDerived::registerFields() directly.
-        static_cast<TDerived*>(this)->TDerived::registerFields();
+        // Initialize the field registry exactly once per concrete model type
+        // (TDerived). The local static `once` is per template specialization,
+        // so BaseModel<ResPartner> and BaseModel<ResUsers> each have their own.
+        // Subsequent constructor calls skip registerFields() entirely (~50 map
+        // insertions saved per request under PERF-02).
+        static std::once_flag once;
+        std::call_once(once, [this]() {
+            static_cast<TDerived*>(this)->TDerived::registerFields();
+        });
     }
 
     // ----------------------------------------------------------
@@ -255,7 +261,9 @@ public:
 protected:
     std::shared_ptr<infrastructure::DbConnection> db_;
     int           id_ = 0;
-    FieldRegistry fieldRegistry_;
+    // One FieldRegistry shared across all instances of the same concrete model type.
+    // Populated once via call_once in the constructor; thereafter read-only.
+    inline static FieldRegistry fieldRegistry_{};
 
 private:
     // Validates that every column name in a (regex-sanitized) ORDER BY clause
