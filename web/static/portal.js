@@ -19,7 +19,16 @@ const Portal = (() => {
         if (body !== undefined) opts.body = JSON.stringify(body);
         const res = await fetch('/portal/api' + path, opts);
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Request failed');
+        if (!res.ok) {
+            // Session expired — clear stored state and return to login
+            if (res.status === 401 && path !== '/login') {
+                sessionStorage.removeItem('portal_user');
+                _user = null;
+                document.getElementById('portal-app').style.display = 'none';
+                document.getElementById('login-screen').style.display = 'flex';
+            }
+            throw new Error(data.error || 'Request failed');
+        }
         return data;
     }
 
@@ -82,6 +91,7 @@ const Portal = (() => {
         try {
             const data = await api('POST', '/login', { email, password });
             _user = { name: data.name, email: data.email };
+            sessionStorage.setItem('portal_user', JSON.stringify(_user));
             showApp();
         } catch (e) {
             errEl.textContent = e.message || 'Invalid email or password.';
@@ -99,18 +109,18 @@ const Portal = (() => {
                 if (e.key === 'Enter') login();
             });
         });
-        // Check if already logged in
-        api('GET', '/me').then(data => {
-            _user = data;
-            showApp();
-        }).catch(() => {
-            document.getElementById('login-screen').style.display = 'flex';
-        });
+        // Restore session from storage (avoids a server round-trip on page refresh)
+        const stored = sessionStorage.getItem('portal_user');
+        if (stored) {
+            try { _user = JSON.parse(stored); showApp(); return; } catch (_) {}
+        }
+        document.getElementById('login-screen').style.display = 'flex';
     });
 
     async function logout() {
         await api('POST', '/logout').catch(() => {});
         _user = null;
+        sessionStorage.removeItem('portal_user');
         document.getElementById('portal-app').style.display = 'none';
         document.getElementById('login-screen').style.display = 'flex';
         document.getElementById('login-email').value = '';

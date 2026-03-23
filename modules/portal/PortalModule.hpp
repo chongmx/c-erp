@@ -1174,37 +1174,6 @@ public:
             {drogon::Post});
 
         // ----------------------------------------------------------
-        // d. GET /portal/api/me  — require portal session
-        // ----------------------------------------------------------
-        drogon::app().registerHandler("/portal/api/me",
-            [portalSessions, addSecHeaders](
-                const drogon::HttpRequestPtr& req,
-                std::function<void(const drogon::HttpResponsePtr&)>&& cb)
-            {
-                auto res = drogon::HttpResponse::newHttpResponse();
-                res->addHeader("Content-Type", "application/json");
-                addSecHeaders(res);
-
-                const std::string sid = req->getCookie(PortalSessionManager::kCookieName);
-                auto session = portalSessions->get(sid);
-                if (!session) {
-                    res->setStatusCode(drogon::k401Unauthorized);
-                    res->setBody(nlohmann::json{{"error", "Not authenticated"}}.dump());
-                    cb(res);
-                    return;
-                }
-
-                res->setStatusCode(drogon::k200OK);
-                res->setBody(nlohmann::json{
-                    {"partner_id", session->partnerId},
-                    {"name",       session->name},
-                    {"email",      session->email},
-                }.dump());
-                cb(res);
-            },
-            {drogon::Get});
-
-        // ----------------------------------------------------------
         // e. POST /portal/api/change-password  — require portal session
         // Body: {current_password, new_password}
         // ----------------------------------------------------------
