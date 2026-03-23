@@ -1,6 +1,7 @@
 #pragma once
 #include "HttpServer.hpp"
 #include "SessionManager.hpp"
+#include "Errors.hpp"
 #include "../../core/factories/Factories.hpp"
 #include "../../core/interfaces/IViewModel.hpp"
 #include "../../core/interfaces/IView.hpp"
@@ -122,11 +123,13 @@ public:
     JsonRpcDispatcher(std::shared_ptr<core::ViewModelFactory> vmFactory,
                       std::shared_ptr<SessionManager>         sessions,
                       std::shared_ptr<core::ViewFactory>      viewFactory = nullptr,
-                      bool                                    secureCookies = false)
+                      bool                                    secureCookies = false,
+                      bool                                    devMode = false)
         : vmFactory_    (std::move(vmFactory))
         , sessions_     (std::move(sessions))
         , viewFactory_  (std::move(viewFactory))
         , secureCookies_(secureCookies)
+        , devMode_      (devMode)
     {}
 
     void registerRoutes(HttpServer& http) {
@@ -309,10 +312,19 @@ private:
 
             return successResponse_(id, result);
 
+        } catch (const AccessDeniedError& e) {
+            // SEC-25: authorization errors are always shown — client must know why (SEC-25)
+            return errorResponse_(id, 403, "Access Denied", e.what());
         } catch (const std::out_of_range& e) {
-            return errorResponse_(id, 400, "Missing required field", e.what());
+            // SEC-25: gate internal details behind devMode
+            LOG_ERROR << "[rpc] " << e.what();
+            return errorResponse_(id, 400, "Missing required field",
+                                  devMode_ ? e.what() : "An internal error occurred");
         } catch (const std::exception& e) {
-            return errorResponse_(id, 200, "Odoo Server Error", e.what());
+            // SEC-25: gate internal details (SQL errors, stack traces) behind devMode
+            LOG_ERROR << "[rpc] " << e.what();
+            return errorResponse_(id, 200, "Odoo Server Error",
+                                  devMode_ ? e.what() : "An internal error occurred");
         }
     }
 
@@ -463,39 +475,96 @@ private:
         return kPublic.count(method) > 0;
     }
 
-    // Model-level access control (SEC-04).
-    // Maps model name → minimum group id required (from Groups.hpp constants).
-    // Admins bypass all checks. Throws std::runtime_error on denial.
+    // Model-level access control (SEC-04 / SEC-26).
+    //
+    // Policy (deny-by-default):
+    //   1. Admins bypass all checks.
+    //   2. Models in kAllowed: require auth only (any BASE_INTERNAL user).
+    //   3. Models in kRequired: require the specified group.
+    //   4. Models not in either: require BASE_INTERNAL (2) — deny-by-default for unknown models.
+    //      This prevents newly-registered ViewModels from being accidentally exposed.
+    //
+    // Group IDs (modules/auth/Groups.hpp):
+    //   2  = BASE_INTERNAL        3  = BASE_ADMIN
+    //   4  = SETTINGS_CONFIGURATION
+    //   5  = ACCOUNT_BILLING      6  = ACCOUNT_MANAGER
+    //   7  = SALES_USER           8  = SALES_MANAGER
+    //   9  = PURCHASE_USER       10  = PURCHASE_MANAGER
+    //  11  = INVENTORY_USER      12  = INVENTORY_MANAGER
+    //  13  = MRP_USER            14  = MRP_MANAGER
+    //  15  = HR_EMPLOYEE         16  = HR_MANAGER
     static void checkModelAccess_(const std::string& model, const Session& session) {
         if (session.isAdmin) return;
 
-        // model → required group id (seeded by AuthModule::seedGroups_())
-        //   5  = ACCOUNT_BILLING,   6  = ACCOUNT_MANAGER
-        //  11  = INVENTORY_USER,   12  = INVENTORY_MANAGER
-        //   7  = SALES_USER,        8  = SALES_MANAGER
-        //   9  = PURCHASE_USER,    10  = PURCHASE_MANAGER
-        //  13  = MRP_USER,         14  = MRP_MANAGER
-        //  15  = HR_EMPLOYEE,      16  = HR_MANAGER
+        // Models accessible to any authenticated internal user (no extra group needed)
+        static const std::unordered_set<std::string> kAllowed = {
+            "ir.ui.menu",            // sidebar rendering
+            "ir.actions.act_window", // navigation
+            "res.currency",          // currency display
+            "res.partner",           // contacts (all employees)
+            "res.users",             // user data (AuthViewModel has its own authz)
+            "uom.uom",               // units of measure (product display)
+            "product.product",       // products (sales/purchase/inventory all need this)
+            "product.category",      // product categories
+            "product.supplierinfo",  // vendor pricelist (viewed in product form)
+            "mail.message",          // chatter (gated by the parent document's access)
+            "portal.partner",        // portal admin ViewModel (internal RPC only)
+        };
+        if (kAllowed.count(model)) {
+            // Still require at least a logged-in internal user (BASE_INTERNAL = 2)
+            if (!session.hasGroup(2))
+                throw AccessDeniedError(
+                    "Access denied: internal login required to access " + model);
+            return;
+        }
+
+        // Models that require a specific module group
         static const std::unordered_map<std::string, int> kRequired = {
+            // Accounting — ACCOUNT_BILLING (5)
             {"account.move",          5},
             {"account.move.line",     5},
+            {"account.account",       5},
+            {"account.journal",       5},
+            {"account.tax",           5},
+            {"account.payment",       5},
+            {"account.payment.term",  5},
+            // HR — HR_EMPLOYEE (15)
             {"hr.employee",          15},
+            {"hr.department",        15},
+            {"hr.job",               15},
+            // Inventory — INVENTORY_USER (11)
             {"stock.move",           11},
             {"stock.picking",        11},
             {"stock.location",       11},
             {"stock.picking.type",   11},
             {"stock.warehouse",      11},
+            // Sales — SALES_USER (7)
             {"sale.order",            7},
             {"sale.order.line",       7},
+            // Purchase — PURCHASE_USER (9)
             {"purchase.order",        9},
             {"purchase.order.line",   9},
+            // Manufacturing — MRP_USER (13)
+            {"mrp.bom",              13},
             {"mrp.production",       13},
+            // Settings — SETTINGS_CONFIGURATION (4)
+            {"res.company",           4},
+            {"res.groups",            4},
+            // System parameters — BASE_ADMIN (3): may contain SMTP credentials / API keys
+            {"ir.config.parameter",   3},
         };
         auto it = kRequired.find(model);
-        if (it == kRequired.end()) return;
-        if (!session.hasGroup(it->second))
-            throw std::runtime_error(
-                "Access denied: insufficient permissions to access " + model);
+        if (it != kRequired.end()) {
+            if (!session.hasGroup(it->second))
+                throw AccessDeniedError(
+                    "Access denied: insufficient permissions to access " + model);
+            return;
+        }
+
+        // Deny-by-default (SEC-26): unknown models require BASE_INTERNAL (2)
+        if (!session.hasGroup(2))
+            throw AccessDeniedError(
+                "Access denied: internal login required to access " + model);
     }
 
     // ----------------------------------------------------------
@@ -665,6 +734,7 @@ private:
     std::shared_ptr<core::ViewFactory>      viewFactory_;
     LoginRateLimiter                        rateLimiter_;
     bool                                    secureCookies_ = false;
+    bool                                    devMode_       = false;
 };
 
 } // namespace odoo::infrastructure

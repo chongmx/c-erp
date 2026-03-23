@@ -2,12 +2,15 @@
 #include "BaseViewModel.hpp"
 #include "AuthService.hpp"
 #include "SessionManager.hpp"
+#include "Errors.hpp"
 #include "Groups.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <string>
 
 namespace odoo::modules::auth {
+
+using odoo::infrastructure::AccessDeniedError;
 
 // ================================================================
 // AuthViewModel
@@ -86,7 +89,7 @@ private:
     void requireAdmin_(const core::CallKwArgs& call) const {
         const auto s = callerSession_(call);
         if (!s.isAdmin && !s.hasGroup(Groups::SETTINGS_CONFIGURATION))
-            throw std::runtime_error(
+            throw AccessDeniedError(
                 "Access denied: user management requires Administrator or "
                 "Settings / Configuration group");
     }
@@ -295,12 +298,12 @@ private:
         if (!session.isAdmin) {
             // Non-admin: can only write their own record and cannot modify groups or password
             if (ids.size() != 1 || ids[0] != session.uid)
-                throw std::runtime_error("Access denied: cannot modify other users");
+                throw AccessDeniedError("Access denied: cannot modify other users");
             const auto& v = call.arg(1);
             if (v.is_object() && v.contains("groups_id"))
-                throw std::runtime_error("Access denied: cannot modify group memberships");
+                throw AccessDeniedError("Access denied: cannot modify group memberships");
             if (v.is_object() && v.contains("password"))
-                throw std::runtime_error("Access denied: use change_password to update your password");
+                throw AccessDeniedError("Access denied: use change_password to update your password");
         }
         auto vals = call.arg(1).is_object() ? call.arg(1) : nlohmann::json::object();
 
@@ -369,12 +372,12 @@ private:
     nlohmann::json handleUnlink(const core::CallKwArgs& call) {
         const auto session = callerSession_(call);
         if (!session.isAdmin && !session.hasGroup(Groups::SETTINGS_CONFIGURATION))
-            throw std::runtime_error(
+            throw AccessDeniedError(
                 "Access denied: user management requires Administrator or "
                 "Settings / Configuration group");
         for (int id : call.ids())
             if (id == session.uid)
-                throw std::runtime_error("Cannot delete your own user account");
+                throw AccessDeniedError("Cannot delete your own user account");
         ResUsers proto(db_);
         return proto.unlink(call.ids());
     }
