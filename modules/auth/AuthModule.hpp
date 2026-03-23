@@ -381,7 +381,7 @@ private:
         for (const auto& [gid, perms] : defaults) {
             // Compact the JSON (remove whitespace/newlines) before storing
             nlohmann::json parsed = nlohmann::json::parse(perms);
-            txn.exec_params(
+            txn.exec(
                 "UPDATE res_groups SET permissions=$2::jsonb "
                 "WHERE id=$1 AND permissions='[]'::jsonb",
                 pqxx::params{gid, parsed.dump()});
@@ -492,7 +492,7 @@ private:
             pqxx::work txn{conn.get()};
             nlohmann::json result = nlohmann::json::array();
             for (int id : ids) {
-                auto rows = txn.exec_params(
+                auto rows = txn.exec(
                     "SELECT g.id, g.name, g.full_name, g.share, "
                     "       COALESCE(g.permissions::text, '[]') AS permissions, "
                     "       ARRAY(SELECT uid FROM res_groups_users_rel "
@@ -533,7 +533,7 @@ private:
             if (name.empty()) throw std::runtime_error("name is required");
             auto conn = db_->acquire();
             pqxx::work txn{conn.get()};
-            auto rows = txn.exec_params(
+            auto rows = txn.exec(
                 "INSERT INTO res_groups (name, full_name, share, permissions) "
                 "VALUES ($1,$2,$3,$4::jsonb) RETURNING id",
                 pqxx::params{name, fullName, share, perms});
@@ -548,18 +548,18 @@ private:
                 pqxx::work txn{conn.get()};
                 // Update only the fields present in vals (avoid blanking absent fields)
                 if (vals.contains("name"))
-                    txn.exec_params("UPDATE res_groups SET name=$2 WHERE id=$1",
+                    txn.exec("UPDATE res_groups SET name=$2 WHERE id=$1",
                         pqxx::params{id, vals["name"].get<std::string>()});
                 if (vals.contains("full_name"))
-                    txn.exec_params("UPDATE res_groups SET full_name=$2 WHERE id=$1",
+                    txn.exec("UPDATE res_groups SET full_name=$2 WHERE id=$1",
                         pqxx::params{id, vals["full_name"].get<std::string>()});
                 if (vals.contains("share"))
-                    txn.exec_params("UPDATE res_groups SET share=$2 WHERE id=$1",
+                    txn.exec("UPDATE res_groups SET share=$2 WHERE id=$1",
                         pqxx::params{id, vals["share"].get<bool>()});
                 if (vals.contains("permissions") && vals["permissions"].is_array())
-                    txn.exec_params("UPDATE res_groups SET permissions=$2::jsonb WHERE id=$1",
+                    txn.exec("UPDATE res_groups SET permissions=$2::jsonb WHERE id=$1",
                         pqxx::params{id, vals["permissions"].dump()});
-                txn.exec_params("UPDATE res_groups SET write_date=now() WHERE id=$1",
+                txn.exec("UPDATE res_groups SET write_date=now() WHERE id=$1",
                     pqxx::params{id});
                 txn.commit();
             }
@@ -570,7 +570,7 @@ private:
             auto conn = db_->acquire();
             pqxx::work txn{conn.get()};
             for (int id : call.ids())
-                txn.exec_params("DELETE FROM res_groups WHERE id=$1", pqxx::params{id});
+                txn.exec("DELETE FROM res_groups WHERE id=$1", pqxx::params{id});
             txn.commit();
             return true;
         }

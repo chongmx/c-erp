@@ -840,7 +840,7 @@ private:
                    sm.picking_id,
                    sp.name           AS picking_name,
                    sm.product_id,
-                   pt.name           AS product_name,
+                   pp.name           AS product_name,
                    sm.product_uom_id,
                    uu.name           AS product_uom_name,
                    sm.location_id,
@@ -852,7 +852,6 @@ private:
             FROM stock_move sm
             LEFT JOIN stock_picking   sp     ON sp.id  = sm.picking_id
             LEFT JOIN product_product pp     ON pp.id  = sm.product_id
-            LEFT JOIN product_template pt    ON pt.id  = pp.product_tmpl_id
             LEFT JOIN uom_uom          uu    ON uu.id  = sm.product_uom_id
             LEFT JOIN stock_location   sl_src ON sl_src.id = sm.location_id
             LEFT JOIN stock_location   sl_dst ON sl_dst.id = sm.location_dest_id
@@ -993,6 +992,38 @@ public:
     nlohmann::json render(const nlohmann::json&) const override { return {}; }
 };
 
+class StockMoveListView : public core::BaseView {
+public:
+    std::string viewName()  const override { return "stock.move.list"; }
+    std::string modelName() const override { return "stock.move"; }
+    std::string viewType()  const override { return "list"; }
+    std::string arch() const override {
+        return "<list string=\"Move History\">"
+               "<field name=\"picking_id\"/>"
+               "<field name=\"product_id\"/>"
+               "<field name=\"location_id\"/>"
+               "<field name=\"location_dest_id\"/>"
+               "<field name=\"product_uom_qty\"/>"
+               "<field name=\"quantity\"/>"
+               "<field name=\"state\"/>"
+               "<field name=\"origin\"/>"
+               "</list>";
+    }
+    nlohmann::json fields() const override {
+        return {
+            {"picking_id",       {{"type","many2one"},  {"string","Transfer"},       {"relation","stock.picking"}}},
+            {"product_id",       {{"type","many2one"},  {"string","Product"},        {"relation","product.product"}}},
+            {"location_id",      {{"type","many2one"},  {"string","From"},           {"relation","stock.location"}}},
+            {"location_dest_id", {{"type","many2one"},  {"string","To"},             {"relation","stock.location"}}},
+            {"product_uom_qty",  {{"type","float"},     {"string","Demand"}}},
+            {"quantity",         {{"type","float"},     {"string","Done"}}},
+            {"state",            {{"type","selection"}, {"string","Status"}}},
+            {"origin",           {{"type","char"},      {"string","Source Document"}}},
+        };
+    }
+    nlohmann::json render(const nlohmann::json&) const override { return {}; }
+};
+
 // ================================================================
 
 class StockModule : public core::IModule {
@@ -1026,6 +1057,7 @@ public:
     void registerViews()    override {
         views_.registerView<StockPickingListView>("stock.picking.list");
         views_.registerView<StockPickingFormView>("stock.picking.form");
+        views_.registerView<StockMoveListView>("stock.move.list");
     }
 
     void registerViewModels() override {

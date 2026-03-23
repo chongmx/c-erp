@@ -249,12 +249,12 @@ private:
                 const int op = cmd[0].get<int>();
                 if (op == 6 && cmd.size() >= 3 && cmd[2].is_array()) {
                     for (const auto& gid : cmd[2])
-                        txn.exec_params(
+                        txn.exec(
                             "INSERT INTO res_groups_users_rel (gid,uid) "
                             "VALUES ($1,$2) ON CONFLICT DO NOTHING",
                             pqxx::params{gid.get<int>(), newId});
                 } else if (op == 4 && cmd.size() >= 2) {
-                    txn.exec_params(
+                    txn.exec(
                         "INSERT INTO res_groups_users_rel (gid,uid) "
                         "VALUES ($1,$2) ON CONFLICT DO NOTHING",
                         pqxx::params{cmd[1].get<int>(), newId});
@@ -278,7 +278,7 @@ private:
                 auto conn = db_->acquire();
                 pqxx::work txn{conn.get()};
                 for (int uid : call.ids())
-                    txn.exec_params(
+                    txn.exec(
                         "UPDATE res_users SET password=$2, write_date=now() WHERE id=$1",
                         pqxx::params{uid, hash});
                 txn.commit();
@@ -295,23 +295,23 @@ private:
                     if (!cmd.is_array() || cmd.empty()) continue;
                     const int op = cmd[0].get<int>();
                     if (op == 6) {
-                        txn.exec_params(
+                        txn.exec(
                             "DELETE FROM res_groups_users_rel WHERE uid=$1",
                             pqxx::params{uid});
                         if (cmd.size() >= 3 && cmd[2].is_array()) {
                             for (const auto& gid : cmd[2])
-                                txn.exec_params(
+                                txn.exec(
                                     "INSERT INTO res_groups_users_rel (gid,uid) "
                                     "VALUES ($1,$2) ON CONFLICT DO NOTHING",
                                     pqxx::params{gid.get<int>(), uid});
                         }
                     } else if (op == 4 && cmd.size() >= 2) {
-                        txn.exec_params(
+                        txn.exec(
                             "INSERT INTO res_groups_users_rel (gid,uid) "
                             "VALUES ($1,$2) ON CONFLICT DO NOTHING",
                             pqxx::params{cmd[1].get<int>(), uid});
                     } else if (op == 3 && cmd.size() >= 2) {
-                        txn.exec_params(
+                        txn.exec(
                             "DELETE FROM res_groups_users_rel WHERE gid=$1 AND uid=$2",
                             pqxx::params{cmd[1].get<int>(), uid});
                     }
@@ -352,7 +352,7 @@ private:
             pqxx::work txn{conn.get()};
             for (auto& rec : result) {
                 const int uid = rec.value("id", 0);
-                auto gRows = txn.exec_params(
+                auto gRows = txn.exec(
                     "SELECT gid FROM res_groups_users_rel WHERE uid=$1 ORDER BY gid",
                     pqxx::params{uid});
                 nlohmann::json gArr = nlohmann::json::array();
@@ -388,7 +388,7 @@ private:
             pqxx::work txn{conn.get()};
             for (auto& rec : result) {
                 const int uid = rec.value("id", 0);
-                auto gRows = txn.exec_params(
+                auto gRows = txn.exec(
                     "SELECT gid FROM res_groups_users_rel WHERE uid=$1 ORDER BY gid",
                     pqxx::params{uid});
                 nlohmann::json gArr = nlohmann::json::array();
