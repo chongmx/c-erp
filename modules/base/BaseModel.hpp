@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -177,6 +178,7 @@ public:
     std::vector<int> search(const nlohmann::json& domainJson,
                             int limit = 0, int offset = 0,
                             const std::string& order = "") override {
+        validateOrder_(order);
         auto [where, paramVec] = domainFromJson(domainJson).toSql();
         std::string sql =
             "SELECT id FROM " + std::string(TDerived::TABLE_NAME) +
@@ -203,6 +205,7 @@ public:
                                const std::vector<std::string>& fields = {},
                                int limit = 0, int offset = 0,
                                const std::string& order = "") override {
+        validateOrder_(order);
         auto [where, paramVec] = domainFromJson(domainJson).toSql();
         const std::string cols = buildSelectCols_(fields);
         std::string sql =
@@ -255,6 +258,26 @@ protected:
     FieldRegistry fieldRegistry_;
 
 private:
+    // Validates that every column name in a (regex-sanitized) ORDER BY clause
+    // actually exists in this model's field registry.  "id" is always valid.
+    // Throws std::invalid_argument for unknown columns, preventing information
+    // leakage via sort order on fields not exposed in the SELECT list.
+    void validateOrder_(const std::string& order) const {
+        if (order.empty()) return;
+        std::istringstream ss(order);
+        std::string token;
+        while (std::getline(ss, token, ',')) {
+            std::size_t start = token.find_first_not_of(" \t");
+            if (start == std::string::npos) continue;
+            std::size_t end = token.find_first_of(" \t", start);
+            const std::string col = (end == std::string::npos)
+                ? token.substr(start)
+                : token.substr(start, end - start);
+            if (col != "id" && !fieldRegistry_.has(col))
+                throw std::invalid_argument("Unknown order field: " + col);
+        }
+    }
+
     std::string buildSelectCols_(const std::vector<std::string>& fields) const {
         if (fields.empty()) {
             const auto cols = fieldRegistry_.storedColumnNames();

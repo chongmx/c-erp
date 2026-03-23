@@ -1,5 +1,7 @@
 #pragma once
 #include <nlohmann/json.hpp>
+#include <cctype>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -50,9 +52,59 @@ struct CallKwArgs {
         return kwargs.value("offset", 0);
     }
 
-    /** @brief kwargs["order"] or empty string if not present. */
+    /**
+     * @brief kwargs["order"] or empty string if not present.
+     *
+     * Validates syntax before returning:
+     *   col_name [ASC|DESC] [, col_name [ASC|DESC]] ...
+     *
+     * Hand-written parser — no regex, no heap allocation beyond the return
+     * value.  Throws std::invalid_argument on anything that doesn't match
+     * (semicolons, quotes, parens, UNION injections, etc. are all rejected).
+     */
     std::string order() const {
-        return kwargs.value("order", std::string{});
+        const std::string raw = kwargs.value("order", std::string{});
+        if (raw.empty()) return raw;
+
+        const char* p   = raw.c_str();
+        const char* end = p + raw.size();
+
+        auto skipSpaces = [&]{ while (p < end && (*p == ' ' || *p == '\t')) ++p; };
+
+        // Case-insensitive match for a literal keyword
+        auto matchWord = [&](const char* kw) -> bool {
+            std::size_t n = std::strlen(kw);
+            if (static_cast<std::size_t>(end - p) < n) return false;
+            for (std::size_t i = 0; i < n; ++i)
+                if (std::toupper(static_cast<unsigned char>(p[i])) !=
+                    static_cast<unsigned char>(kw[i]))               return false;
+            // Must not be followed by an identifier char
+            if (p + n < end && (std::isalnum(static_cast<unsigned char>(p[n])) || p[n] == '_'))
+                return false;
+            p += n;
+            return true;
+        };
+
+        while (p < end) {
+            skipSpaces();
+            // Require identifier start: [a-zA-Z_]
+            if (p >= end || (!std::isalpha(static_cast<unsigned char>(*p)) && *p != '_'))
+                throw std::invalid_argument("Invalid order clause: " + raw);
+            // Consume identifier: [a-zA-Z0-9_]*
+            while (p < end && (std::isalnum(static_cast<unsigned char>(*p)) || *p == '_'))
+                ++p;
+            // Optional ASC / DESC
+            skipSpaces();
+            if (matchWord("ASC") || matchWord("DESC")) {}
+            skipSpaces();
+            // Expect comma or end-of-string
+            if (p < end) {
+                if (*p != ',')
+                    throw std::invalid_argument("Invalid order clause: " + raw);
+                ++p; // consume comma
+            }
+        }
+        return raw;
     }
 
     /** @brief args[0] as domain, or empty array if not present. */
