@@ -1,11 +1,12 @@
 #pragma once
 #include <nlohmann/json.hpp>
+#include <openssl/rand.h>
 #include <chrono>
 #include <iomanip>
 #include <mutex>
 #include <optional>
-#include <random>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 
@@ -223,15 +224,14 @@ private:
     }
 
     static std::string generateId_() {
-        // 128-bit cryptographically random hex token
-        static thread_local std::mt19937_64 rng{std::random_device{}()};
-        std::uniform_int_distribution<uint64_t> dist;
-        const uint64_t hi = dist(rng);
-        const uint64_t lo = dist(rng);
+        // 128-bit cryptographically random hex token via OpenSSL CSPRNG
+        unsigned char buf[16];
+        if (RAND_bytes(buf, sizeof(buf)) != 1)
+            throw std::runtime_error("SessionManager: RAND_bytes failed");
         std::ostringstream ss;
-        ss << std::hex << std::setfill('0')
-           << std::setw(16) << hi
-           << std::setw(16) << lo;
+        ss << std::hex << std::setfill('0');
+        for (unsigned char b : buf)
+            ss << std::setw(2) << static_cast<unsigned>(b);
         return ss.str();
     }
 

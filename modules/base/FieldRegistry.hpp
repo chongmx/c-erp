@@ -1,5 +1,6 @@
 #pragma once
 #include <nlohmann/json.hpp>
+#include <cctype>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -106,9 +107,36 @@ struct FieldDef {
  *                         false, false, true, false, "res.partner" });
  * @endcode
  */
+// ---------------------------------------------------------------------------
+// Identifier validation — shared by FieldRegistry and any code that builds
+// SQL identifiers from field names.
+// ---------------------------------------------------------------------------
+/**
+ * @brief Returns true iff @p name is a safe SQL identifier:
+ *        matches [a-zA-Z_][a-zA-Z0-9_]* and is non-empty.
+ *
+ * This is the same rule Domain.hpp applies to column names in WHERE clauses.
+ * Enforced at registration time so every downstream SQL concatenation is safe
+ * by construction, even without a per-use re-check.
+ */
+inline bool isValidIdentifier(const std::string& name) {
+    if (name.empty()) return false;
+    if (!std::isalpha(static_cast<unsigned char>(name[0])) && name[0] != '_')
+        return false;
+    for (std::size_t i = 1; i < name.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(name[i]);
+        if (!std::isalnum(c) && c != '_') return false;
+    }
+    return true;
+}
+
 class FieldRegistry {
 public:
     void add(FieldDef def) {
+        if (!isValidIdentifier(def.name))
+            throw std::invalid_argument(
+                "FieldRegistry: field name '" + def.name +
+                "' is not a valid SQL identifier ([a-zA-Z_][a-zA-Z0-9_]*)");
         if (index_.count(def.name))
             throw std::invalid_argument(
                 "FieldRegistry: duplicate field '" + def.name + "'");

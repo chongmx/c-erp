@@ -16,10 +16,34 @@ struct HttpConfig {
     bool        logRequests = true;
 
     /**
-     * @brief Permissive CORS origin sent in every response.
-     * Set to the OWL dev server in development, restrict in production.
+     * @brief Allowed CORS origin, e.g. "http://localhost:3000".
+     *
+     * Empty string (default): no CORS headers are added — correct for
+     * same-origin deployments where the frontend is served by this server.
+     *
+     * Set explicitly only when the JS frontend is on a different origin
+     * (e.g. a separate dev server). Never use "*" in production because
+     * it exposes all API responses to arbitrary third-party sites.
      */
-    std::string corsOrigin  = "*";
+    std::string corsOrigin  = "";
+
+    /**
+     * @brief Development mode — includes e.what() in error responses.
+     *
+     * false (default): generic "Internal server error" is returned to the
+     * client; detail is logged server-side only.
+     * true: full exception message is included in {"detail": ...}.
+     * Set to true only on local developer machines. Never in production.
+     */
+    bool devMode = false;
+
+    /**
+     * @brief Set the Secure flag on the session cookie.
+     *
+     * Must be true whenever the server is behind HTTPS (production).
+     * Leave false only for plain-HTTP localhost development.
+     */
+    bool secureCookies = false;
 
     /**
      * @brief Root directory for static file serving.
@@ -121,14 +145,15 @@ public:
 
     template<typename Handler>
     void addJsonPost(const std::string& path, Handler&& handler) {
-        const std::string origin = cfg_.corsOrigin;
+        const std::string origin  = cfg_.corsOrigin;
+        const bool        devMode = cfg_.devMode;
 
         drogon::app().registerHandler(path,
-            [h = std::forward<Handler>(handler), origin]
+            [this, h = std::forward<Handler>(handler), origin, devMode]
             (const HttpRequestPtr& req, HttpCallback&& cb) {
                 auto res = drogon::HttpResponse::newHttpResponse();
-                res->addHeader("Content-Type",                "application/json");
-                res->addHeader("Access-Control-Allow-Origin", origin);
+                res->addHeader("Content-Type", "application/json");
+                applySecurityHeaders_(res, origin);
 
                 try {
                     const auto body   = nlohmann::json::parse(req->body());
@@ -139,13 +164,15 @@ public:
                     res->setStatusCode(drogon::k400BadRequest);
                     res->setBody(nlohmann::json{
                         {"error",  "Invalid JSON"},
-                        {"detail", e.what()}
+                        {"detail", devMode ? e.what() : "Bad request"}
                     }.dump());
                 } catch (const std::exception& e) {
+                    LOG_ERROR << "[http] POST " << req->getPath()
+                              << " exception: " << e.what();
                     res->setStatusCode(drogon::k500InternalServerError);
                     res->setBody(nlohmann::json{
                         {"error",  "Internal server error"},
-                        {"detail", e.what()}
+                        {"detail", devMode ? e.what() : "An internal error occurred"}
                     }.dump());
                 }
                 cb(res);
@@ -163,14 +190,15 @@ public:
      */
     template<typename Handler>
     void addJsonPostWithResponse(const std::string& path, Handler&& handler) {
-        const std::string origin = cfg_.corsOrigin;
+        const std::string origin  = cfg_.corsOrigin;
+        const bool        devMode = cfg_.devMode;
 
         drogon::app().registerHandler(path,
-            [h = std::forward<Handler>(handler), origin]
+            [this, h = std::forward<Handler>(handler), origin, devMode]
             (const HttpRequestPtr& req, HttpCallback&& cb) {
                 auto res = drogon::HttpResponse::newHttpResponse();
-                res->addHeader("Content-Type",                "application/json");
-                res->addHeader("Access-Control-Allow-Origin", origin);
+                res->addHeader("Content-Type", "application/json");
+                applySecurityHeaders_(res, origin);
 
                 try {
                     const auto body   = nlohmann::json::parse(req->body());
@@ -181,13 +209,15 @@ public:
                     res->setStatusCode(drogon::k400BadRequest);
                     res->setBody(nlohmann::json{
                         {"error",  "Invalid JSON"},
-                        {"detail", e.what()}
+                        {"detail", devMode ? e.what() : "Bad request"}
                     }.dump());
                 } catch (const std::exception& e) {
+                    LOG_ERROR << "[http] POST " << req->getPath()
+                              << " exception: " << e.what();
                     res->setStatusCode(drogon::k500InternalServerError);
                     res->setBody(nlohmann::json{
                         {"error",  "Internal server error"},
-                        {"detail", e.what()}
+                        {"detail", devMode ? e.what() : "An internal error occurred"}
                     }.dump());
                 }
                 cb(res);
@@ -197,22 +227,25 @@ public:
 
     template<typename Handler>
     void addJsonGet(const std::string& path, Handler&& handler) {
-        const std::string origin = cfg_.corsOrigin;
+        const std::string origin  = cfg_.corsOrigin;
+        const bool        devMode = cfg_.devMode;
 
         drogon::app().registerHandler(path,
-            [h = std::forward<Handler>(handler), origin]
+            [this, h = std::forward<Handler>(handler), origin, devMode]
             (const HttpRequestPtr& req, HttpCallback&& cb) {
                 auto res = drogon::HttpResponse::newHttpResponse();
-                res->addHeader("Content-Type",                "application/json");
-                res->addHeader("Access-Control-Allow-Origin", origin);
+                res->addHeader("Content-Type", "application/json");
+                applySecurityHeaders_(res, origin);
 
                 try {
                     res->setStatusCode(drogon::k200OK);
                     res->setBody(h(req).dump());
                 } catch (const std::exception& e) {
+                    LOG_ERROR << "[http] GET " << req->getPath()
+                              << " exception: " << e.what();
                     res->setStatusCode(drogon::k500InternalServerError);
                     res->setBody(nlohmann::json{
-                        {"error", e.what()}
+                        {"error", devMode ? e.what() : "An internal error occurred"}
                     }.dump());
                 }
                 cb(res);
@@ -224,13 +257,15 @@ public:
         const std::string origin = cfg_.corsOrigin;
 
         drogon::app().registerHandler(path,
-            [origin](const HttpRequestPtr&, HttpCallback&& cb) {
+            [this, origin](const HttpRequestPtr&, HttpCallback&& cb) {
                 auto res = drogon::HttpResponse::newHttpResponse();
                 res->setStatusCode(drogon::k204NoContent);
-                res->addHeader("Access-Control-Allow-Origin",  origin);
-                res->addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-                res->addHeader("Access-Control-Allow-Headers",
-                               "Content-Type, Authorization, X-Requested-With");
+                applySecurityHeaders_(res, origin);
+                if (!origin.empty()) {
+                    res->addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                    res->addHeader("Access-Control-Allow-Headers",
+                                   "Content-Type, Authorization, X-Requested-With");
+                }
                 cb(res);
             },
             {drogon::Options});
@@ -250,6 +285,22 @@ public:
 
 private:
     HttpConfig cfg_;
+
+    /** Apply security headers + CORS to @p res. Call on every outgoing response. */
+    void applySecurityHeaders_(const HttpResponsePtr& res,
+                                const std::string&     origin) const {
+        // Defense-in-depth headers — safe for all response types
+        res->addHeader("X-Content-Type-Options", "nosniff");
+        res->addHeader("X-Frame-Options",        "DENY");
+        res->addHeader("Referrer-Policy",        "strict-origin-when-cross-origin");
+        // CSP: for pure JSON API responses nothing should execute.
+        // Static HTML/JS files are served by Drogon directly and will need a
+        // separate hook; this at minimum protects API endpoints.
+        res->addHeader("Content-Security-Policy", "default-src 'none'");
+
+        if (!origin.empty())
+            res->addHeader("Access-Control-Allow-Origin", origin);
+    }
 };
 
 } // namespace odoo::infrastructure

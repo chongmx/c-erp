@@ -6,12 +6,90 @@
 #include "../../core/interfaces/IView.hpp"
 #include <drogon/Cookie.h>
 #include <nlohmann/json.hpp>
+#include <atomic>
+#include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <sstream>
 
 namespace odoo::infrastructure {
+
+// ============================================================
+// LoginRateLimiter
+// ============================================================
+/**
+ * @brief Per-IP sliding-window rate limiter for the authenticate endpoint.
+ *
+ * Allows up to kMaxAttempts failed login attempts within kWindowSeconds.
+ * A successful login resets the counter for that IP.
+ * Thread-safe via a single mutex; the map is pruned on each check to
+ * prevent unbounded growth from unique IPs.
+ */
+class LoginRateLimiter {
+public:
+    static constexpr int kMaxAttempts   = 10;
+    static constexpr int kWindowSeconds = 300; // 5-minute window
+
+    /** Returns true if the IP is allowed to attempt login. */
+    bool allow(const std::string& ip) {
+        const auto now = Clock::now();
+        std::lock_guard<std::mutex> lk(mutex_);
+        prune_(now);
+        auto& entry = table_[ip];
+        if (entry.count >= kMaxAttempts &&
+            (now - entry.windowStart) < std::chrono::seconds(kWindowSeconds))
+            return false;
+        if ((now - entry.windowStart) >= std::chrono::seconds(kWindowSeconds)) {
+            entry.windowStart = now;
+            entry.count = 0;
+        }
+        return true;
+    }
+
+    /** Call on every failed attempt. */
+    void recordFailure(const std::string& ip) {
+        const auto now = Clock::now();
+        std::lock_guard<std::mutex> lk(mutex_);
+        auto& entry = table_[ip];
+        if ((now - entry.windowStart) >= std::chrono::seconds(kWindowSeconds)) {
+            entry.windowStart = now;
+            entry.count = 0;
+        }
+        ++entry.count;
+    }
+
+    /** Call on successful login — resets counter for this IP. */
+    void recordSuccess(const std::string& ip) {
+        std::lock_guard<std::mutex> lk(mutex_);
+        table_.erase(ip);
+    }
+
+private:
+    using Clock = std::chrono::steady_clock;
+
+    struct Entry {
+        Clock::time_point windowStart = Clock::now();
+        int               count       = 0;
+    };
+
+    // Remove entries whose window has fully expired to bound memory usage.
+    void prune_(Clock::time_point now) {
+        const auto cutoff = std::chrono::seconds(kWindowSeconds * 2);
+        for (auto it = table_.begin(); it != table_.end(); ) {
+            if ((now - it->second.windowStart) > cutoff)
+                it = table_.erase(it);
+            else
+                ++it;
+        }
+    }
+
+    std::mutex                          mutex_;
+    std::unordered_map<std::string, Entry> table_;
+};
+
 
 // ============================================================
 // JsonRpcDispatcher
@@ -38,10 +116,12 @@ class JsonRpcDispatcher {
 public:
     JsonRpcDispatcher(std::shared_ptr<core::ViewModelFactory> vmFactory,
                       std::shared_ptr<SessionManager>         sessions,
-                      std::shared_ptr<core::ViewFactory>      viewFactory = nullptr)
-        : vmFactory_  (std::move(vmFactory))
-        , sessions_   (std::move(sessions))
-        , viewFactory_(std::move(viewFactory))
+                      std::shared_ptr<core::ViewFactory>      viewFactory = nullptr,
+                      bool                                    secureCookies = false)
+        : vmFactory_    (std::move(vmFactory))
+        , sessions_     (std::move(sessions))
+        , viewFactory_  (std::move(viewFactory))
+        , secureCookies_(secureCookies)
     {}
 
     void registerRoutes(HttpServer& http) {
@@ -148,6 +228,14 @@ private:
                      << " sid=" << sid.substr(0, 8) << "... uid=" << session.uid
                      << " body_sid=" << bodySidDbg.substr(0, 12);
 
+            // Rate-limit the login endpoint before doing any work
+            if (call.method == "authenticate") {
+                const std::string ip = req->getPeerAddr().toIp();
+                if (!rateLimiter_.allow(ip))
+                    return errorResponse_(id, 429, "Too many requests",
+                                         "Too many failed login attempts. Try again later.");
+            }
+
             // Auth check
             if (!isPublicMethod_(call.method) && !session.isAuthenticated())
                 return errorResponse_(id, 100, "Session expired",
@@ -166,6 +254,16 @@ private:
 
             auto vm     = vmFactory_->create(call.model, core::Lifetime::Transient);
             auto result = vm->callKw(call);
+
+            // After authenticate: record rate-limiter outcome
+            if (call.method == "authenticate") {
+                const std::string ip = req->getPeerAddr().toIp();
+                const bool ok = result.contains("uid") &&
+                                result["uid"].is_number_integer() &&
+                                result["uid"].get<int>() > 0;
+                if (ok) rateLimiter_.recordSuccess(ip);
+                else    rateLimiter_.recordFailure(ip);
+            }
 
             // After authenticate: sync auth data into dispatcher's SM and set cookie
             if (call.method == "authenticate" && result.contains("uid") &&
@@ -191,6 +289,7 @@ private:
                 c.setPath("/");
                 c.setSameSite(drogon::Cookie::SameSite::kLax);
                 c.setMaxAge(3600);
+                if (secureCookies_) c.setSecure(true);
                 res->addCookie(c);
             }
 
@@ -515,6 +614,8 @@ private:
     std::shared_ptr<core::ViewModelFactory> vmFactory_;
     std::shared_ptr<SessionManager>         sessions_;
     std::shared_ptr<core::ViewFactory>      viewFactory_;
+    LoginRateLimiter                        rateLimiter_;
+    bool                                    secureCookies_ = false;
 };
 
 } // namespace odoo::infrastructure

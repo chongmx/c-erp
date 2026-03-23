@@ -145,7 +145,8 @@ public:
 
         // --- RPC dispatcher ---
         // Wired to viewModelFactory + viewFactory + session store; HTTP routes added in boot().
-        rpc = std::make_shared<JsonRpcDispatcher>(viewModels, sessions, views);
+        rpc = std::make_shared<JsonRpcDispatcher>(viewModels, sessions, views,
+                                                   cfg.http.secureCookies);
     }
 
     // ----------------------------------------------------------
@@ -434,11 +435,16 @@ inline AppConfig AppConfig::fromFile(const std::string& path) {
     cfg.db.password = get("db_password", "");
     cfg.db.poolSize = getInt("db_maxconn", 10);
 
-    cfg.http.host      = get("http_interface", "0.0.0.0");
-    cfg.http.port      = getInt("http_port",   8069);
-    cfg.http.threads   = getInt("workers",     4);
-    cfg.http.docRoot   = get("http_doc_root",  "web/static");
-    cfg.http.indexFile = get("http_index",     "index.html");
+    cfg.http.host          = get("http_interface", "0.0.0.0");
+    cfg.http.port          = getInt("http_port",   8069);
+    cfg.http.threads       = getInt("workers",     4);
+    cfg.http.docRoot       = get("http_doc_root",  "web/static");
+    cfg.http.indexFile     = get("http_index",     "index.html");
+    cfg.http.corsOrigin    = get("cors_origin",    "");
+    cfg.http.devMode       = (get("dev_mode",       "false") == "true"
+                           || get("dev_mode",       "false") == "True");
+    cfg.http.secureCookies = (get("secure_cookies", "false") == "true"
+                           || get("secure_cookies", "false") == "True");
 
     return cfg;
 }
