@@ -623,15 +623,17 @@ private:
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
                 (112, 'Bills of Materials', 111, 10, 34)
             ON CONFLICT (id) DO UPDATE
-                SET action_id = EXCLUDED.action_id
+                SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                    sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
         )");
 
-        // Bills of Materials under Products app (id=50, sibling of Products leaf id=51)
+        // Bills of Materials under Products app (id=50)
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
                 (113, 'Bills of Materials', 50, 20, 34)
             ON CONFLICT (id) DO UPDATE
-                SET action_id = EXCLUDED.action_id
+                SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                    sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
         )");
 
         // Bills of Materials under Inventory → Products section (id=96)
@@ -639,7 +641,8 @@ private:
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
                 (104, 'Bills of Materials', 96, 20, 34)
             ON CONFLICT (id) DO UPDATE
-                SET action_id = EXCLUDED.action_id
+                SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                    sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
         )");
 
         txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");

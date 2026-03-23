@@ -445,6 +445,13 @@ inline AppConfig AppConfig::fromFile(const std::string& path) {
                            || get("dev_mode",       "false") == "True");
     cfg.http.secureCookies = (get("secure_cookies", "false") == "true"
                            || get("secure_cookies", "false") == "True");
+    cfg.http.logFile       = get("logfile",   "");
+    // Normalise to lowercase for comparison in HttpServer
+    {
+        std::string lvl = get("log_level", "warn");
+        for (auto& c : lvl) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        cfg.http.logLevel = lvl;
+    }
 
     return cfg;
 }

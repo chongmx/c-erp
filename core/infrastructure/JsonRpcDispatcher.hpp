@@ -280,6 +280,11 @@ private:
                     if (result.contains("company_id") && result["company_id"].is_number_integer())
                         s.companyId = result["company_id"].get<int>();
                     s.context = {{"uid", s.uid}, {"lang", "en_US"}, {"tz", "UTC"}};
+                    if (result.contains("group_ids") && result["group_ids"].is_array()) {
+                        s.groupIds.clear();
+                        for (const auto& g : result["group_ids"])
+                            if (g.is_number_integer()) s.groupIds.push_back(g.get<int>());
+                    }
                 });
                 LOG_INFO << "[auth] session sync for " << cookieSid
                          << " uid=" << result["uid"].get<int>()
@@ -311,7 +316,7 @@ private:
         // Standard Odoo session_info fields expected by the webclient
         info["server_version"]   = "19.0+e (odoo-cpp)";
         info["is_public"]        = !session.isAuthenticated();
-        info["is_internal_user"] = session.isAuthenticated() && !session.isAdmin;
+        info["is_internal_user"] = session.isAuthenticated() && session.hasGroup(2);
         info["username"]         = session.login;
 
         info["user_context"] = {

@@ -1394,6 +1394,19 @@ private:
             "(102, 'Document Templates', 101, 10, 30) "
             "ON CONFLICT (id) DO UPDATE SET parent_id=101");
 
+        // Action id=36: Groups (res.groups)
+        txn.exec(
+            "INSERT INTO ir_act_window (id, name, res_model, view_mode, path) VALUES "
+            "(36, 'Groups', 'res.groups', 'list', 'groups') "
+            "ON CONFLICT (id) DO NOTHING");
+
+        // Menu id=105: Groups under Technical (id=101), after Document Templates (seq=10)
+        // (id=104 is owned by MrpModule for Bills of Materials under Inventory)
+        txn.exec(
+            "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
+            "(105, 'Groups', 101, 20, 36) "
+            "ON CONFLICT (id) DO UPDATE SET name='Groups', parent_id=101, sequence=20, action_id=36");
+
         // Action id=31: ERP Settings
         txn.exec(
             "INSERT INTO ir_act_window (id, name, res_model, view_mode) VALUES "

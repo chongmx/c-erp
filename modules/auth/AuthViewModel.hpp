@@ -106,10 +106,12 @@ private:
         if (!ok)
             throw std::runtime_error("Invalid credentials");
 
-        // Enrich session with display name, partner, company, and admin flag
+        // Enrich session with display name, partner, company, admin flag, and group IDs
         {
             auto conn = db_->acquire();
             pqxx::work etxn{conn.get()};
+
+            // User details + admin flag
             auto rows = etxn.exec(
                 "SELECT u.partner_id, u.company_id, "
                 "       COALESCE(p.name, u.login) AS uname, "
@@ -130,6 +132,14 @@ private:
                 session.companyName = r["cname"].c_str();
                 session.isAdmin     = std::string(r["is_admin"].c_str()) == "t";
             }
+
+            // All group IDs for this user
+            auto gRows = etxn.exec(
+                "SELECT gid FROM res_groups_users_rel WHERE uid = $1 ORDER BY gid",
+                pqxx::params{session.uid});
+            session.groupIds.clear();
+            for (const auto& gr : gRows)
+                session.groupIds.push_back(gr["gid"].as<int>());
         }
 
         // Write the populated session back
@@ -143,7 +153,12 @@ private:
             s.companyId   = session.companyId;
             s.companyName = session.companyName;
             s.isAdmin     = session.isAdmin;
+            s.groupIds    = session.groupIds;
         });
+
+        // Build group_ids JSON array for the response
+        nlohmann::json groupArr = nlohmann::json::array();
+        for (int g : session.groupIds) groupArr.push_back(g);
 
         return {
             {"uid",          session.uid},
@@ -158,6 +173,7 @@ private:
                              ? nlohmann::json(session.companyId)
                              : nlohmann::json(false)},
             {"is_admin",     session.isAdmin},
+            {"group_ids",    groupArr},
             {"context",      session.context},
         };
     }
@@ -180,28 +196,138 @@ private:
     }
 
     // ----------------------------------------------------------
-    // create — new user; hashes password before storing
+    // create — new user; direct INSERT bypasses BaseModel field registry
+    // (password is intentionally excluded from ResUsers fieldRegistry_ to
+    //  prevent it being sent to the client — so we must INSERT it manually)
     // ----------------------------------------------------------
     nlohmann::json handleCreate(const core::CallKwArgs& call) {
         auto vals = call.arg(0).is_object() ? call.arg(0) : nlohmann::json::object();
-        const std::string pw = vals.value("password", std::string{});
-        if (pw.empty()) throw std::runtime_error("password is required");
-        nlohmann::json normalized = vals;
-        normalized["password"] = AuthService::hashPassword(pw);
-        ResUsers proto(db_);
-        return proto.create(normalized);
+        const std::string pw    = vals.value("password", std::string{});
+        const std::string login = vals.value("login", std::string{});
+        if (pw.empty())    throw std::runtime_error("password is required");
+        if (login.empty()) throw std::runtime_error("login is required");
+
+        nlohmann::json groupsCmds;
+        if (vals.contains("groups_id")) groupsCmds = vals["groups_id"];
+
+        // Resolve nullable FK values (false / 0 / [id,"Name"] → int or NULL)
+        auto extractFk = [](const nlohmann::json& v) -> int {
+            if (v.is_number_integer() && v.get<int>() > 0) return v.get<int>();
+            if (v.is_array() && !v.empty() && v[0].is_number_integer() && v[0].get<int>() > 0)
+                return v[0].get<int>();
+            return 0;
+        };
+        const int  partnerId = vals.contains("partner_id") ? extractFk(vals["partner_id"]) : 0;
+        const int  companyId = vals.contains("company_id") ? extractFk(vals["company_id"]) : 0;
+        const bool active    = vals.value("active", true);
+        const bool share     = vals.value("share",  false);
+        const std::string hash = AuthService::hashPassword(pw);
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        // Build params — append nullptr for 0 FK values (NULL in DB)
+        pqxx::params p;
+        p.append(login);
+        p.append(hash);
+        if (partnerId > 0) p.append(partnerId); else p.append(nullptr);
+        if (companyId > 0) p.append(companyId); else p.append(nullptr);
+        p.append(active);
+        p.append(share);
+
+        auto rows = txn.exec(
+            "INSERT INTO res_users "
+            "  (login, password, partner_id, company_id, active, share) "
+            "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+            p);
+        const int newId = rows[0][0].as<int>();
+
+        // Apply group assignments
+        if (!groupsCmds.is_null() && groupsCmds.is_array()) {
+            for (const auto& cmd : groupsCmds) {
+                if (!cmd.is_array() || cmd.empty()) continue;
+                const int op = cmd[0].get<int>();
+                if (op == 6 && cmd.size() >= 3 && cmd[2].is_array()) {
+                    for (const auto& gid : cmd[2])
+                        txn.exec_params(
+                            "INSERT INTO res_groups_users_rel (gid,uid) "
+                            "VALUES ($1,$2) ON CONFLICT DO NOTHING",
+                            pqxx::params{gid.get<int>(), newId});
+                } else if (op == 4 && cmd.size() >= 2) {
+                    txn.exec_params(
+                        "INSERT INTO res_groups_users_rel (gid,uid) "
+                        "VALUES ($1,$2) ON CONFLICT DO NOTHING",
+                        pqxx::params{cmd[1].get<int>(), newId});
+                }
+            }
+        }
+        txn.commit();
+        return newId;
     }
 
     nlohmann::json handleWrite(const core::CallKwArgs& call) {
         auto vals = call.arg(1).is_object() ? call.arg(1) : nlohmann::json::object();
-        // Hash password if being changed
+
+        // Handle password directly — BaseModel::write() skips it because
+        // password is excluded from ResUsers::registerFields() for security
         if (vals.contains("password") && vals["password"].is_string()) {
             const std::string pw = vals["password"].get<std::string>();
-            if (!pw.empty() && pw.front() != '$')   // not already a hash
-                vals["password"] = AuthService::hashPassword(pw);
+            if (!pw.empty()) {
+                const std::string hash = (pw.front() == '$')
+                    ? pw : AuthService::hashPassword(pw);
+                auto conn = db_->acquire();
+                pqxx::work txn{conn.get()};
+                for (int uid : call.ids())
+                    txn.exec_params(
+                        "UPDATE res_users SET password=$2, write_date=now() WHERE id=$1",
+                        pqxx::params{uid, hash});
+                txn.commit();
+            }
+            vals.erase("password");
         }
-        ResUsers proto(db_);
-        return proto.write(call.ids(), vals);
+
+        // Handle groups_id many2many commands
+        if (vals.contains("groups_id") && vals["groups_id"].is_array()) {
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            for (int uid : call.ids()) {
+                for (const auto& cmd : vals["groups_id"]) {
+                    if (!cmd.is_array() || cmd.empty()) continue;
+                    const int op = cmd[0].get<int>();
+                    if (op == 6) {
+                        txn.exec_params(
+                            "DELETE FROM res_groups_users_rel WHERE uid=$1",
+                            pqxx::params{uid});
+                        if (cmd.size() >= 3 && cmd[2].is_array()) {
+                            for (const auto& gid : cmd[2])
+                                txn.exec_params(
+                                    "INSERT INTO res_groups_users_rel (gid,uid) "
+                                    "VALUES ($1,$2) ON CONFLICT DO NOTHING",
+                                    pqxx::params{gid.get<int>(), uid});
+                        }
+                    } else if (op == 4 && cmd.size() >= 2) {
+                        txn.exec_params(
+                            "INSERT INTO res_groups_users_rel (gid,uid) "
+                            "VALUES ($1,$2) ON CONFLICT DO NOTHING",
+                            pqxx::params{cmd[1].get<int>(), uid});
+                    } else if (op == 3 && cmd.size() >= 2) {
+                        txn.exec_params(
+                            "DELETE FROM res_groups_users_rel WHERE gid=$1 AND uid=$2",
+                            pqxx::params{cmd[1].get<int>(), uid});
+                    }
+                }
+            }
+            txn.commit();
+            vals.erase("groups_id");
+        }
+
+        // Write remaining scalar fields via BaseModel
+        vals.erase("id");
+        if (!vals.empty()) {
+            ResUsers proto(db_);
+            proto.write(call.ids(), vals);
+        }
+        return true;
     }
 
     nlohmann::json handleUnlink(const core::CallKwArgs& call) {
@@ -210,27 +336,67 @@ private:
     }
 
     // ----------------------------------------------------------
-    // search_read — list of users (admin-visible fields only)
+    // search_read — list of users with optional groups_id
     // ----------------------------------------------------------
     nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
         ResUsers proto(db_);
-        return proto.searchRead(call.domain(), call.fields(),
-                                call.limit() > 0 ? call.limit() : 80,
-                                call.offset(), "id ASC");
+        const auto fields = call.fields();
+        auto result = proto.searchRead(call.domain(), fields,
+                                       call.limit() > 0 ? call.limit() : 80,
+                                       call.offset(), "id ASC");
+
+        const bool wantGroups = fields.empty() ||
+            std::find(fields.begin(), fields.end(), "groups_id") != fields.end();
+        if (wantGroups && !result.empty()) {
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            for (auto& rec : result) {
+                const int uid = rec.value("id", 0);
+                auto gRows = txn.exec_params(
+                    "SELECT gid FROM res_groups_users_rel WHERE uid=$1 ORDER BY gid",
+                    pqxx::params{uid});
+                nlohmann::json gArr = nlohmann::json::array();
+                for (const auto& gr : gRows) gArr.push_back(gr["gid"].as<int>());
+                rec["groups_id"] = gArr;
+            }
+        }
+        return result;
     }
 
     // ----------------------------------------------------------
-    // read — return fields for the current user (uid in context)
+    // read — return fields for given ids (falls back to current uid)
     // ----------------------------------------------------------
     nlohmann::json handleRead(const core::CallKwArgs& call) {
-        const int uid = call.kwargs
-                            .value("context", nlohmann::json::object())
-                            .value("uid", 0);
-        if (uid <= 0) throw std::runtime_error("Not authenticated");
+        std::vector<int> ids = call.ids();
+        if (ids.empty()) {
+            const int uid = call.kwargs
+                                .value("context", nlohmann::json::object())
+                                .value("uid", 0);
+            if (uid <= 0) throw std::runtime_error("Not authenticated");
+            ids = {uid};
+        }
 
         ResUsers proto(db_);
         const auto fields = call.fields();
-        return proto.read({uid}, fields);
+        auto result = proto.read(ids, fields);
+
+        // Append groups_id to each record if requested or no specific fields asked
+        const bool wantGroups = fields.empty() ||
+            std::find(fields.begin(), fields.end(), "groups_id") != fields.end();
+        if (wantGroups) {
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            for (auto& rec : result) {
+                const int uid = rec.value("id", 0);
+                auto gRows = txn.exec_params(
+                    "SELECT gid FROM res_groups_users_rel WHERE uid=$1 ORDER BY gid",
+                    pqxx::params{uid});
+                nlohmann::json gArr = nlohmann::json::array();
+                for (const auto& gr : gRows) gArr.push_back(gr["gid"].as<int>());
+                rec["groups_id"] = gArr;
+            }
+        }
+        return result;
     }
 
     // ----------------------------------------------------------

@@ -1,6 +1,7 @@
 #pragma once
 #include <nlohmann/json.hpp>
 #include <openssl/rand.h>
+#include <algorithm>
 #include <chrono>
 #include <iomanip>
 #include <mutex>
@@ -9,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace odoo::infrastructure {
 
@@ -38,11 +40,12 @@ struct Session {
     nlohmann::json context = nlohmann::json::object(); ///< user context
 
     // Enriched fields populated after authentication
-    std::string    name;               ///< display name from res_partner
-    int            partnerId  = 0;     ///< res_partner.id
-    int            companyId  = 0;     ///< res_company.id
-    std::string    companyName;        ///< res_company.name
-    bool           isAdmin    = false; ///< member of Administrator group (id=3)
+    std::string       name;               ///< display name from res_partner
+    int               partnerId  = 0;     ///< res_partner.id
+    int               companyId  = 0;     ///< res_company.id
+    std::string       companyName;        ///< res_company.name
+    bool              isAdmin    = false; ///< member of Administrator group (id=3)
+    std::vector<int>  groupIds;           ///< all res_groups ids this user belongs to
 
     using Clock     = std::chrono::steady_clock;
     using TimePoint = Clock::time_point;
@@ -52,7 +55,21 @@ struct Session {
 
     bool isAuthenticated() const { return uid > 0; }
 
+    /// Returns true if the user belongs to the given group id.
+    bool hasGroup(int gid) const {
+        return std::find(groupIds.begin(), groupIds.end(), gid) != groupIds.end();
+    }
+
+    /// Returns true if the user belongs to ANY of the given group ids.
+    bool hasAnyGroup(std::initializer_list<int> gids) const {
+        for (int gid : gids)
+            if (hasGroup(gid)) return true;
+        return false;
+    }
+
     nlohmann::json toJson() const {
+        nlohmann::json gArr = nlohmann::json::array();
+        for (int g : groupIds) gArr.push_back(g);
         return {
             {"session_id",   sessionId},
             {"uid",          uid},
@@ -65,6 +82,7 @@ struct Session {
             {"company_name", companyName},
             {"is_admin",     isAdmin},
             {"is_system",    isAdmin},
+            {"group_ids",    gArr},
         };
     }
 };

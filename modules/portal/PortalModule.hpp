@@ -701,6 +701,20 @@ private:
 
         auto [where, paramVec] = domainFromJson(call.domain()).toSql();
 
+        // Qualify bare "company_id" references to "rp.company_id" to avoid
+        // ambiguity: both rp and rc (the joined company partner) have company_id.
+        {
+            const std::string from = "company_id";
+            const std::string to   = "rp.company_id";
+            size_t pos = 0;
+            while ((pos = where.find(from, pos)) != std::string::npos) {
+                // Skip if already table-qualified (preceded by a dot)
+                if (pos > 0 && where[pos - 1] == '.') { pos += from.size(); continue; }
+                where.replace(pos, from.size(), to);
+                pos += to.size();
+            }
+        }
+
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
 
@@ -2152,6 +2166,20 @@ private:
                 price_unit  NUMERIC(16,2) NOT NULL DEFAULT 0,
                 UNIQUE(partner_id, product_id)
             )
+        )");
+
+        // Backfill company_id FK for partners that have a company_name text value
+        // but no company_id set (happens when contacts were saved before the FK fix).
+        txn.exec(R"(
+            UPDATE res_partner rp
+            SET company_id = co.id
+            FROM res_partner co
+            WHERE co.is_company = TRUE
+              AND co.active     = TRUE
+              AND LOWER(co.name) = LOWER(rp.company_name)
+              AND rp.company_id IS NULL
+              AND rp.company_name IS NOT NULL
+              AND rp.company_name <> ''
         )");
 
         txn.commit();

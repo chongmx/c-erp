@@ -1,6 +1,8 @@
 #pragma once
 #include <drogon/drogon.h>
+#include <trantor/utils/AsyncFileLogger.h>
 #include <nlohmann/json.hpp>
+#include <filesystem>
 #include <functional>
 #include <string>
 
@@ -68,6 +70,27 @@ struct HttpConfig {
      * Only used when docRoot is non-empty.
      */
     std::string indexFile   = "index.html";
+
+    /**
+     * @brief Path to the log file, e.g. "log/system.log".
+     *
+     * Empty (default): log to stdout only.
+     * Non-empty: log to both stdout and the specified file.
+     * The directory is created automatically if it does not exist.
+     *
+     * config/system.cfg:  logfile = log/system.log
+     */
+    std::string logFile = "";
+
+    /**
+     * @brief Minimum log level written to the log.
+     *
+     * Accepted values (case-insensitive): trace, debug, info, warn, error, fatal
+     * Default: warn
+     *
+     * config/system.cfg:  log_level = info
+     */
+    std::string logLevel = "warn";
 };
 
 
@@ -101,9 +124,43 @@ public:
     explicit HttpServer(const HttpConfig& cfg = {}) : cfg_(cfg) {
         auto& app = drogon::app();
 
-        app.setLogLevel(cfg_.logRequests
-            ? trantor::Logger::kInfo
-            : trantor::Logger::kWarn);
+        // ── Log level ──────────────────────────────────────────────
+        {
+            const std::string& lvl = cfg_.logLevel;
+            trantor::Logger::LogLevel level = trantor::Logger::kWarn;
+            if      (lvl == "trace") level = trantor::Logger::kTrace;
+            else if (lvl == "debug") level = trantor::Logger::kDebug;
+            else if (lvl == "info")  level = trantor::Logger::kInfo;
+            else if (lvl == "warn")  level = trantor::Logger::kWarn;
+            else if (lvl == "error") level = trantor::Logger::kError;
+            else if (lvl == "fatal") level = trantor::Logger::kFatal;
+            app.setLogLevel(level);
+        }
+
+        // ── File logger ────────────────────────────────────────────
+        if (!cfg_.logFile.empty()) {
+            // Ensure the log directory exists
+            std::filesystem::path logPath(cfg_.logFile);
+            if (logPath.has_parent_path())
+                std::filesystem::create_directories(logPath.parent_path());
+
+            // trantor uses the path as a base name and appends ".log" if
+            // no extension is present; strip ".log" to avoid "system.log.log"
+            std::string baseName = cfg_.logFile;
+            if (baseName.size() > 4 &&
+                baseName.substr(baseName.size() - 4) == ".log")
+                baseName = baseName.substr(0, baseName.size() - 4);
+
+            asyncLogger_.setFileName(baseName);
+            asyncLogger_.startLogging();
+            trantor::Logger::setOutputFunction(
+                [this](const char* msg, const uint64_t len) {
+                    asyncLogger_.output(msg, len);
+                },
+                [this]() { asyncLogger_.flush(); }
+            );
+            std::cout << "[odoo-cpp] Logging to file: " << cfg_.logFile << "\n";
+        }
 
         app.addListener(cfg_.host, cfg_.port)
            .setThreadNum(cfg_.threads);
@@ -285,6 +342,7 @@ public:
 
 private:
     HttpConfig cfg_;
+    trantor::AsyncFileLogger asyncLogger_;
 
     /** Apply security headers + CORS to @p res. Call on every outgoing response. */
     void applySecurityHeaders_(const HttpResponsePtr& res,

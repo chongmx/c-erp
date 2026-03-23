@@ -4408,8 +4408,8 @@ class ContactFormView extends Component {
                                         <select class="form-input" t-on-change="onCompanyNameSelect">
                                             <option value="">—</option>
                                             <t t-foreach="state.companies" t-as="co" t-key="co.id">
-                                                <option t-att-value="co.name"
-                                                        t-att-selected="strVal(state.record.company_name)===co.name?true:undefined"
+                                                <option t-att-value="co.id"
+                                                        t-att-selected="m2oId(state.record.company_id)===co.id?true:undefined"
                                                         t-esc="co.name"/>
                                             </t>
                                             <option value="__new__">— New Company —</option>
@@ -4556,7 +4556,7 @@ class ContactFormView extends Component {
             if (this.props.recordId) {
                 const recs = await RpcService.call('res.partner', 'read',
                     [[this.props.recordId]],
-                    { fields: ['id','name','company_name','email','phone','mobile','website',
+                    { fields: ['id','name','company_name','company_id','email','phone','mobile','website',
                                'street','city','zip','lang','comment','job_position',
                                'is_company','is_individual','is_contractor',
                                'country_id','state_id',
@@ -4566,7 +4566,8 @@ class ContactFormView extends Component {
                 this._orig        = { ...recs[0] };
             } else {
                 this.state.record = {
-                    name: '', company_name: '', email: '', phone: '', mobile: '', website: '',
+                    name: '', company_name: '', company_id: false,
+                    email: '', phone: '', mobile: '', website: '',
                     street: '', city: '', zip: '', lang: '',
                     is_company: false, is_individual: false, is_contractor: false,
                     country_id: false, state_id: false,
@@ -4605,8 +4606,15 @@ class ContactFormView extends Component {
         if (val === '__new__') {
             this.state.newCompanyMode = true;
             this.state.record.company_name = '';
+            this.state.record.company_id   = false;
+        } else if (val === '') {
+            this.state.record.company_name = '';
+            this.state.record.company_id   = false;
         } else {
-            this.state.record.company_name = val;
+            const coId = parseInt(val);
+            const co   = this.state.companies.find(c => c.id === coId);
+            this.state.record.company_id   = coId;
+            this.state.record.company_name = co ? co.name : '';
         }
     }
     toggleCustomer()   { this.state.record.customer_rank = this.isCustomer ? 0 : 1; }
@@ -4643,16 +4651,20 @@ class ContactFormView extends Component {
         // Auto-create a company contact if company_name is typed but not in DB
         const companyNameVal = (r.company_name || '').trim();
         if (companyNameVal && !r.is_company) {
-            const exists = this.state.companies.some(
+            // Resolve company_id: if name was typed free-form, find or create the company partner
+            const existing = this.state.companies.find(
                 c => c.name.toLowerCase() === companyNameVal.toLowerCase());
-            if (!exists) {
+            if (existing) {
+                r.company_id = existing.id;
+            } else if (!this.m2oId(r.company_id)) {
+                // Auto-create the company partner and capture its ID
                 try {
-                    await RpcService.call('res.partner', 'create', [{
+                    const newCoId = await RpcService.call('res.partner', 'create', [{
                         name: companyNameVal,
                         is_company: true,
                         company_name: companyNameVal,
                     }]);
-                    // Refresh companies list so the new one shows up next time
+                    r.company_id = typeof newCoId === 'number' ? newCoId : 0;
                     const cos = await RpcService.call('res.partner', 'search_read',
                         [[['is_company','=',true]]], { fields: ['id','name'], limit: 500 });
                     this.state.companies = Array.isArray(cos) ? cos : [];
@@ -4665,6 +4677,7 @@ class ContactFormView extends Component {
         const vals = {
             name:          r.name.trim(),
             company_name:  r.company_name   || false,
+            company_id:    this.m2oId(r.company_id) || false,
             email:         r.email         || false,
             phone:         r.phone         || false,
             mobile:        r.mobile        || false,
@@ -7244,6 +7257,522 @@ class PortalUserListView extends Component {
 }
 
 // ----------------------------------------------------------------
+// GROUP_DEFS — module groupings for Access Rights tab
+// ----------------------------------------------------------------
+const GROUP_DEFS = [
+    { label: 'Technical', type: 'checkboxes', groups: [
+        { id: 2,  label: 'Internal User',  hint: 'Required for all internal access' },
+        { id: 3,  label: 'Administrator',  hint: 'Full access to all modules' },
+        { id: 4,  label: 'Configuration',  hint: 'Can modify system settings' },
+    ]},
+    { label: 'Accounting', type: 'radio', noneLabel: 'None',
+      groups: [
+        { id: 5, label: 'Billing' },
+        { id: 6, label: 'Accountant' },
+    ]},
+    { label: 'Sales', type: 'radio', noneLabel: 'None',
+      groups: [
+        { id: 7, label: 'User' },
+        { id: 8, label: 'Manager' },
+    ]},
+    { label: 'Purchase', type: 'radio', noneLabel: 'None',
+      groups: [
+        { id: 9,  label: 'User' },
+        { id: 10, label: 'Manager' },
+    ]},
+    { label: 'Inventory', type: 'radio', noneLabel: 'None',
+      groups: [
+        { id: 11, label: 'User' },
+        { id: 12, label: 'Manager' },
+    ]},
+    { label: 'Manufacturing', type: 'radio', noneLabel: 'None',
+      groups: [
+        { id: 13, label: 'User' },
+        { id: 14, label: 'Manager' },
+    ]},
+    { label: 'Human Resources', type: 'radio', noneLabel: 'None',
+      groups: [
+        { id: 15, label: 'Employee' },
+        { id: 16, label: 'Manager' },
+    ]},
+];
+
+// ----------------------------------------------------------------
+// UserFormView — create / edit a res.users record
+// ----------------------------------------------------------------
+class UserFormView extends Component {
+    static template = xml`
+        <div class="so-shell">
+            <!-- Breadcrumb -->
+            <div class="so-topbar">
+                <button class="btn" t-on-click="onBack">&#8592; Users</button>
+                <span class="so-ref" t-esc="state.record.login || 'New User'"/>
+                <div style="flex:1"/>
+                <button class="btn btn-primary" t-on-click="onSave" t-att-disabled="state.saving">
+                    <t t-if="state.saving">Saving…</t><t t-else="">Save</t>
+                </button>
+                <button class="btn" t-on-click="onDiscard">Discard</button>
+            </div>
+            <t t-if="state.msg">
+                <div t-attf-class="alert {{state.msgType === 'error' ? 'alert-danger' : 'alert-success'}}"
+                     style="margin:12px 16px 0">
+                    <t t-esc="state.msg"/>
+                </div>
+            </t>
+            <!-- Tabs -->
+            <div class="form-tabs" style="padding:0 16px;border-bottom:1px solid #e2e8f0;display:flex;gap:4px;margin-top:12px">
+                <button t-attf-class="form-tab-btn{{state.tab==='info'?' active':''}}"
+                        t-on-click="()=>this.state.tab='info'">General Information</button>
+                <button t-attf-class="form-tab-btn{{state.tab==='access'?' active':''}}"
+                        t-on-click="()=>this.state.tab='access'">Access Rights</button>
+            </div>
+            <!-- General tab -->
+            <t t-if="state.tab === 'info'">
+                <div class="form-body" style="padding:20px;max-width:600px;display:grid;gap:14px">
+                    <div class="field-row">
+                        <label>Login (Email)</label>
+                        <input class="field-input" type="email"
+                               t-att-value="state.record.login || ''"
+                               t-on-input="e => this.state.record.login = e.target.value"/>
+                    </div>
+                    <div class="field-row">
+                        <label>Password <t t-if="props.recordId">(leave blank to keep current)</t></label>
+                        <input class="field-input" type="password" autocomplete="new-password"
+                               t-att-value="state.record.password || ''"
+                               t-on-input="e => this.state.record.password = e.target.value"/>
+                    </div>
+                    <div class="field-row">
+                        <label>Display Name (Partner)</label>
+                        <select class="field-input" t-on-change="e => this.state.record.partner_id = parseInt(e.target.value) || 0">
+                            <option value="">— select —</option>
+                            <t t-foreach="state.partners" t-as="p" t-key="p.id">
+                                <option t-att-value="p.id"
+                                        t-att-selected="state.record.partner_id === p.id"
+                                        t-esc="p.name"/>
+                            </t>
+                        </select>
+                    </div>
+                    <div class="field-row">
+                        <label>Company</label>
+                        <select class="field-input" t-on-change="e => this.state.record.company_id = parseInt(e.target.value) || 0">
+                            <option value="">— select —</option>
+                            <t t-foreach="state.companies" t-as="c" t-key="c.id">
+                                <option t-att-value="c.id"
+                                        t-att-selected="state.record.company_id === c.id"
+                                        t-esc="c.name"/>
+                            </t>
+                        </select>
+                    </div>
+                    <div class="field-row" style="display:flex;align-items:center;gap:10px">
+                        <input type="checkbox" id="uf-active"
+                               t-att-checked="state.record.active !== false"
+                               t-on-change="e => this.state.record.active = e.target.checked"/>
+                        <label for="uf-active" style="margin:0;font-weight:400">Active</label>
+                    </div>
+                </div>
+            </t>
+            <!-- Access Rights tab -->
+            <t t-if="state.tab === 'access'">
+                <div style="padding:20px;max-width:700px">
+                    <table class="ar-table">
+                        <thead>
+                            <tr><th style="width:200px">Module</th><th>Access Level</th></tr>
+                        </thead>
+                        <tbody>
+                            <t t-foreach="groupDefs" t-as="sec" t-key="sec.label">
+                                <tr>
+                                    <td class="ar-section-label" t-esc="sec.label"/>
+                                    <td class="ar-options">
+                                        <!-- Checkboxes for Technical section -->
+                                        <t t-if="sec.type === 'checkboxes'">
+                                            <t t-foreach="sec.groups" t-as="g" t-key="g.id">
+                                                <label class="ar-check-label" t-att-title="g.hint || ''">
+                                                    <input type="checkbox"
+                                                           t-att-checked="state.selectedGroups[g.id] || false"
+                                                           t-on-change="e => this.toggleGroup(g.id, e.target.checked)"/>
+                                                    <span t-esc="g.label"/>
+                                                    <span t-if="g.hint" class="ar-hint" t-esc="'— ' + g.hint"/>
+                                                </label>
+                                            </t>
+                                        </t>
+                                        <!-- Radio buttons for module sections -->
+                                        <t t-if="sec.type === 'radio'">
+                                            <label class="ar-radio-label">
+                                                <input type="radio"
+                                                       t-att-name="'ar_' + sec.label"
+                                                       t-att-checked="!hasAnyInSection(sec)"
+                                                       t-on-change="() => this.clearSection(sec)"/>
+                                                <span t-esc="sec.noneLabel || 'None'"/>
+                                            </label>
+                                            <t t-foreach="sec.groups" t-as="g" t-key="g.id">
+                                                <label class="ar-radio-label">
+                                                    <input type="radio"
+                                                           t-att-name="'ar_' + sec.label"
+                                                           t-att-checked="state.selectedGroups[g.id] || false"
+                                                           t-on-change="() => this.selectRadio(sec, g.id)"/>
+                                                    <span t-esc="g.label"/>
+                                                </label>
+                                            </t>
+                                        </t>
+                                    </td>
+                                </tr>
+                            </t>
+                        </tbody>
+                    </table>
+                </div>
+            </t>
+        </div>
+    `;
+
+    get groupDefs() { return GROUP_DEFS; }
+
+    setup() {
+        this.state = useState({
+            tab:            'info',
+            record:         { login:'', password:'', partner_id:0, company_id:0, active:true },
+            selectedGroups: {},   // { [groupId]: true/false }
+            partners:       [],
+            companies:      [],
+            saving:         false,
+            msg:            '',
+            msgType:        'success',
+        });
+        onMounted(async () => {
+            const [partners, companies] = await Promise.all([
+                RpcService.call('res.partner', 'search_read', [[]], { fields:['id','name'], limit:200 }),
+                RpcService.call('res.company', 'search_read', [[]], { fields:['id','name'], limit:100 }),
+            ]);
+            this.state.partners  = partners  || [];
+            this.state.companies = companies || [];
+            if (this.props.recordId) await this.loadRecord();
+        });
+    }
+
+    async loadRecord() {
+        const rows = await RpcService.call('res.users', 'read',
+            [[this.props.recordId]], { fields:['id','login','partner_id','company_id','active','groups_id'] });
+        if (!rows || !rows.length) return;
+        const r = rows[0];
+        this.state.record = {
+            login:      r.login || '',
+            password:   '',
+            partner_id: Array.isArray(r.partner_id) ? r.partner_id[0] : (r.partner_id || 0),
+            company_id: Array.isArray(r.company_id) ? r.company_id[0] : (r.company_id || 0),
+            active:     r.active !== false,
+        };
+        const sel = {};
+        for (const gid of (r.groups_id || [])) sel[gid] = true;
+        this.state.selectedGroups = sel;
+    }
+
+    toggleGroup(gid, checked) {
+        this.state.selectedGroups = { ...this.state.selectedGroups, [gid]: checked };
+    }
+
+    hasAnyInSection(sec) {
+        return sec.groups.some(g => this.state.selectedGroups[g.id]);
+    }
+
+    clearSection(sec) {
+        const upd = { ...this.state.selectedGroups };
+        sec.groups.forEach(g => { upd[g.id] = false; });
+        this.state.selectedGroups = upd;
+    }
+
+    selectRadio(sec, gid) {
+        const upd = { ...this.state.selectedGroups };
+        sec.groups.forEach(g => { upd[g.id] = (g.id === gid); });
+        this.state.selectedGroups = upd;
+    }
+
+    async onSave() {
+        if (!this.state.record.login) {
+            this.state.msg = 'Login is required.'; this.state.msgType = 'error'; return;
+        }
+        this.state.saving = true; this.state.msg = '';
+        try {
+            // Build groups_id command 6 (replace all)
+            const gids = Object.entries(this.state.selectedGroups)
+                .filter(([,v]) => v).map(([k]) => parseInt(k));
+            const vals = {
+                login:      this.state.record.login,
+                partner_id: this.state.record.partner_id || false,
+                company_id: this.state.record.company_id || false,
+                active:     this.state.record.active,
+                groups_id:  [[6, 0, gids]],
+            };
+            if (this.state.record.password)
+                vals.password = this.state.record.password;
+
+            if (this.props.recordId) {
+                await RpcService.call('res.users', 'write', [[this.props.recordId], vals], {});
+            } else {
+                if (!this.state.record.password) {
+                    this.state.msg = 'Password is required for new users.';
+                    this.state.msgType = 'error'; this.state.saving = false; return;
+                }
+                await RpcService.call('res.users', 'create', [vals], {});
+            }
+            this.state.msg = 'Saved successfully.'; this.state.msgType = 'success';
+            this.state.record.password = '';
+        } catch (e) {
+            this.state.msg = e.message || 'Save failed.'; this.state.msgType = 'error';
+        } finally {
+            this.state.saving = false;
+        }
+    }
+
+    onDiscard() {
+        if (this.props.recordId) this.loadRecord();
+        else { this.state.record = { login:'', password:'', partner_id:0, company_id:0, active:true }; this.state.selectedGroups = {}; }
+        this.state.msg = '';
+    }
+
+    onBack() { this.props.onBack(); }
+}
+
+// ----------------------------------------------------------------
+// ----------------------------------------------------------------
+// PERMISSION_DEFS — drives the permission checkboxes in the Groups form
+// Add a new section here to expose permissions without changing component code
+// ----------------------------------------------------------------
+const PERMISSION_DEFS = [
+    { label: 'Contacts & Partners', perms: [
+        { id: 'partner.view',   label: 'View Contacts' },
+        { id: 'partner.create', label: 'Create / Edit Contacts' },
+    ]},
+    { label: 'Products', perms: [
+        { id: 'product.view',        label: 'View Products' },
+        { id: 'product.create',      label: 'Create / Edit Products' },
+        { id: 'product.manage_cats', label: 'Manage Product Categories' },
+        { id: 'product.manage_uom',  label: 'Manage Units of Measure' },
+    ]},
+    { label: 'Accounting', perms: [
+        { id: 'account.view_invoices',     label: 'View Customer Invoices' },
+        { id: 'account.create_invoices',   label: 'Create Customer Invoices' },
+        { id: 'account.validate_invoices', label: 'Validate / Confirm Invoices' },
+        { id: 'account.view_bills',        label: 'View Vendor Bills' },
+        { id: 'account.create_bills',      label: 'Create Vendor Bills' },
+        { id: 'account.manage_accounts',   label: 'Manage Chart of Accounts' },
+        { id: 'account.view_journals',     label: 'View Journal Entries' },
+        { id: 'account.manage_journals',   label: 'Manage Journals' },
+    ]},
+    { label: 'Sales', perms: [
+        { id: 'sale.view_orders',    label: 'View Sales Orders' },
+        { id: 'sale.create_orders',  label: 'Create Sales Orders' },
+        { id: 'sale.confirm_orders', label: 'Confirm / Lock Orders' },
+        { id: 'sale.override_price', label: 'Override Prices' },
+    ]},
+    { label: 'Purchasing', perms: [
+        { id: 'purchase.view_orders',    label: 'View Purchase Orders' },
+        { id: 'purchase.create_orders',  label: 'Create Purchase Orders' },
+        { id: 'purchase.approve_orders', label: 'Approve Purchase Orders' },
+    ]},
+    { label: 'Inventory', perms: [
+        { id: 'stock.view_transfers',     label: 'View Transfers' },
+        { id: 'stock.create_transfers',   label: 'Create Transfers' },
+        { id: 'stock.validate_transfers', label: 'Validate / Complete Transfers' },
+        { id: 'stock.manage_locations',   label: 'Manage Locations' },
+        { id: 'stock.manage_warehouses',  label: 'Manage Warehouses' },
+        { id: 'stock.manage_op_types',    label: 'Manage Operation Types' },
+    ]},
+    { label: 'Manufacturing', perms: [
+        { id: 'mrp.view_bom',        label: 'View Bills of Materials' },
+        { id: 'mrp.manage_bom',      label: 'Manage Bills of Materials' },
+        { id: 'mrp.view_orders',     label: 'View Manufacturing Orders' },
+        { id: 'mrp.create_orders',   label: 'Create Manufacturing Orders' },
+        { id: 'mrp.validate_orders', label: 'Validate Manufacturing Orders' },
+    ]},
+    { label: 'Human Resources', perms: [
+        { id: 'hr.view_employees',     label: 'View Employees' },
+        { id: 'hr.manage_employees',   label: 'Manage Employees' },
+        { id: 'hr.view_departments',   label: 'View Departments' },
+        { id: 'hr.manage_departments', label: 'Manage Departments' },
+        { id: 'hr.view_schedules',     label: 'View Working Schedules' },
+        { id: 'hr.manage_schedules',   label: 'Manage Working Schedules' },
+    ]},
+    { label: 'Settings & Administration', perms: [
+        { id: 'settings.view_users',       label: 'View Users' },
+        { id: 'settings.manage_users',     label: 'Manage Users & Passwords' },
+        { id: 'settings.manage_groups',    label: 'Manage User Groups' },
+        { id: 'settings.manage_companies', label: 'Manage Companies' },
+        { id: 'settings.erp_config',       label: 'ERP System Configuration' },
+        { id: 'settings.technical',        label: 'Access Technical Menus' },
+    ]},
+];
+
+// ----------------------------------------------------------------
+// GroupsListView — Settings → Technical → Groups (list + form)
+// ----------------------------------------------------------------
+class GroupsListView extends Component {
+    static template = xml`
+        <div class="so-shell">
+            <t t-if="state.view === 'list'">
+                <div class="so-topbar">
+                    <span class="so-ref">Groups</span>
+                </div>
+                <t t-if="state.loading">
+                    <div class="loading">Loading...</div>
+                </t>
+                <t t-else="">
+                    <table class="list-table" style="margin:0">
+                        <thead>
+                            <tr>
+                                <th style="width:50px">ID</th>
+                                <th>Full Name</th>
+                                <th>Name</th>
+                                <th style="text-align:center">Portal</th>
+                                <th style="text-align:center">Users</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <t t-foreach="state.groups" t-as="g" t-key="g.id">
+                                <tr style="cursor:pointer" t-on-click="() => this.openGroup(g)">
+                                    <td t-esc="g.id"/>
+                                    <td t-esc="g.full_name || g.name"/>
+                                    <td t-esc="g.name"/>
+                                    <td style="text-align:center">
+                                        <t t-if="g.share">&#10003;</t>
+                                    </td>
+                                    <td style="text-align:center" t-esc="g.user_count"/>
+                                </tr>
+                            </t>
+                        </tbody>
+                    </table>
+                </t>
+            </t>
+            <t t-else="">
+                <div class="so-topbar">
+                    <button class="btn" t-on-click="backToList" style="margin-right:12px">&#8592; Groups</button>
+                    <span class="so-ref" t-esc="state.form ? (state.form.full_name || state.form.name) : ''"/>
+                </div>
+                <t t-if="state.formLoading">
+                    <div class="loading">Loading...</div>
+                </t>
+                <t t-elif="state.form">
+                    <div style="padding:16px;max-width:900px">
+                        <div class="field-row" style="margin-bottom:8px">
+                            <label>ID</label>
+                            <span style="display:inline-block;padding:6px 10px;background:#f4f4f4;border:1px solid #ddd;border-radius:4px;color:#666;font-size:13px" t-esc="state.form.id"/>
+                        </div>
+                        <div class="field-row" style="margin-bottom:8px">
+                            <label>Full Name</label>
+                            <input class="field-input" t-att-value="state.form.full_name" t-on-input="onFullNameInput"/>
+                        </div>
+                        <div class="field-row" style="margin-bottom:20px">
+                            <label>Portal / Shared</label>
+                            <input type="checkbox" t-att-checked="state.form.share" t-on-change="onShareChange" style="width:auto;margin-top:4px"/>
+                        </div>
+                        <h3 style="margin:0 0 12px;border-bottom:1px solid #eee;padding-bottom:8px;font-size:14px;font-weight:600">Permissions</h3>
+                        <table class="ar-table" style="width:100%">
+                            <t t-foreach="permDefs" t-as="section" t-key="section.label">
+                                <tr>
+                                    <td class="ar-section-label" t-esc="section.label"/>
+                                    <td class="ar-options">
+                                        <t t-foreach="section.perms" t-as="perm" t-key="perm.id">
+                                            <label class="ar-check-label">
+                                                <input type="checkbox"
+                                                       t-att-checked="hasPerm(perm.id)"
+                                                       t-att-data-perm-id="perm.id"
+                                                       t-on-change="onTogglePerm"/>
+                                                <span t-esc="perm.label"/>
+                                            </label>
+                                        </t>
+                                    </td>
+                                </tr>
+                            </t>
+                        </table>
+                        <div style="margin-top:20px;display:flex;gap:8px">
+                            <button class="btn btn-primary" t-on-click="saveGroup" t-att-disabled="state.saving">
+                                <t t-if="state.saving">Saving...</t>
+                                <t t-else="">Save</t>
+                            </button>
+                            <button class="btn" t-on-click="backToList">Discard</button>
+                        </div>
+                    </div>
+                </t>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({
+            groups: [], loading: true,
+            view: 'list',
+            form: null, formLoading: false,
+            saving: false,
+        });
+        onMounted(() => this.loadList());
+    }
+
+    get permDefs() { return PERMISSION_DEFS; }
+
+    async loadList() {
+        this.state.loading = true;
+        try {
+            this.state.groups = await RpcService.call('res.groups', 'search_read', [[]], {
+                fields: ['id','name','full_name','share','user_count'], limit: 100
+            }) || [];
+        } finally { this.state.loading = false; }
+    }
+
+    async openGroup(g) {
+        this.state.view = 'form';
+        this.state.formLoading = true;
+        this.state.form = null;
+        try {
+            const data = await RpcService.call('res.groups', 'read', [[g.id]], {
+                fields: ['id','name','full_name','share','permissions']
+            });
+            this.state.form = data && data[0]
+                ? { ...data[0], permissions: data[0].permissions || [] }
+                : { ...g, permissions: [] };
+        } finally { this.state.formLoading = false; }
+    }
+
+    backToList() {
+        this.state.view = 'list';
+        this.state.form = null;
+    }
+
+    hasPerm(permId) {
+        return (this.state.form?.permissions || []).includes(permId);
+    }
+
+    onTogglePerm(ev) {
+        const permId = ev.target.dataset.permId;
+        const perms = [...(this.state.form.permissions || [])];
+        if (ev.target.checked && !perms.includes(permId)) {
+            perms.push(permId);
+        } else if (!ev.target.checked) {
+            const idx = perms.indexOf(permId);
+            if (idx >= 0) perms.splice(idx, 1);
+        }
+        this.state.form.permissions = perms;
+    }
+
+    onFullNameInput(ev) { this.state.form.full_name = ev.target.value; }
+    onShareChange(ev)   { this.state.form.share = ev.target.checked; }
+
+    async saveGroup() {
+        if (!this.state.form) return;
+        this.state.saving = true;
+        try {
+            await RpcService.call('res.groups', 'write', [
+                [this.state.form.id],
+                {
+                    full_name:   this.state.form.full_name,
+                    share:       this.state.form.share,
+                    permissions: this.state.form.permissions,
+                }
+            ]);
+            await this.loadList();
+            this.backToList();
+        } finally { this.state.saving = false; }
+    }
+}
+
+// ----------------------------------------------------------------
 // ActionView — orchestrates list ↔ form switching
 // ----------------------------------------------------------------
 class ActionView extends Component {
@@ -7260,6 +7789,9 @@ class ActionView extends Component {
             </t>
             <t t-elif="isPortalPartnerModel">
                 <PortalUserListView/>
+            </t>
+            <t t-elif="isGroupsModel">
+                <GroupsListView/>
             </t>
             <t t-elif="state.mode === 'list'">
                 <t t-if="isPartnerModel">
@@ -7330,6 +7862,10 @@ class ActionView extends Component {
                     <ContactFormView recordId="state.recordId"
                                      onBack.bind="backToList"/>
                 </t>
+                <t t-elif="isUsersModel">
+                    <UserFormView recordId="state.recordId"
+                                  onBack.bind="backToList"/>
+                </t>
                 <t t-else="">
                     <FormView action="currentAction"
                               viewDef="state.formView"
@@ -7340,7 +7876,7 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor, PortalUserListView };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor, PortalUserListView, UserFormView, GroupsListView };
 
     // Use overrideAction when navigateTo() has been called, else fall back to props.action
     get currentAction()          { return this.state.overrideAction || this.props.action; }
@@ -7357,6 +7893,8 @@ class ActionView extends Component {
     get isERPSettingsModel()     { return this.currentAction.res_model === 'ir.erp.settings'; }
     get isPartnerModel()         { return this.currentAction.res_model === 'res.partner'; }
     get isPortalPartnerModel()   { return this.currentAction.res_model === 'portal.partner'; }
+    get isUsersModel()           { return this.currentAction.res_model === 'res.users'; }
+    get isGroupsModel()          { return this.currentAction.res_model === 'res.groups'; }
 
     setContactFilter(f) { this.state.contactFilter = f; }
 

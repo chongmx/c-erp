@@ -593,6 +593,8 @@ private:
 
         // Remove old flat menu rows (ids 1-9) that predate the 3-level hierarchy
         txn.exec("DELETE FROM ir_ui_menu WHERE id < 10");
+        // Remove stale id=33 "Technical" row inserted by an earlier (buggy) seed run
+        txn.exec("DELETE FROM ir_ui_menu WHERE id=33");
 
         // Level 0: App tiles shown on home screen
         txn.exec(R"(
@@ -610,11 +612,11 @@ private:
             ON CONFLICT (id) DO NOTHING
         )");
 
-        // Level 1: Settings app — direct leaves (Users, Companies)
+        // Level 1: Settings app — direct leaves
         txn.exec(R"(
             INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-                (31, 'Users',     30, 10, 2),
-                (32, 'Companies', 30, 20, 3)
+                (31, 'Users',        30, 10, 2),
+                (32, 'Companies',    30, 20, 3)
             ON CONFLICT (id) DO NOTHING
         )");
 
