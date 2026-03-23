@@ -37,7 +37,11 @@ public:
     bool allow(const std::string& ip) {
         const auto now = Clock::now();
         std::lock_guard<std::mutex> lk(mutex_);
-        prune_(now);
+        // PERF-07: only prune when the full window has elapsed to avoid O(n) on every call
+        if ((now - lastPrune_) >= std::chrono::seconds(kWindowSeconds)) {
+            prune_(now);
+            lastPrune_ = now;
+        }
         auto& entry = table_[ip];
         if (entry.count >= kMaxAttempts &&
             (now - entry.windowStart) < std::chrono::seconds(kWindowSeconds))
@@ -86,7 +90,8 @@ private:
         }
     }
 
-    std::mutex                          mutex_;
+    Clock::time_point                      lastPrune_ = Clock::now();
+    std::mutex                             mutex_;
     std::unordered_map<std::string, Entry> table_;
 };
 
@@ -240,6 +245,10 @@ private:
             if (!isPublicMethod_(call.method) && !session.isAuthenticated())
                 return errorResponse_(id, 100, "Session expired",
                                       "Please authenticate first.");
+
+            // Model-level access check (SEC-04)
+            if (session.isAuthenticated())
+                checkModelAccess_(call.model, session);
 
             // Inject session_id + uid into context
             if (!call.kwargs.contains("context"))
@@ -452,6 +461,41 @@ private:
             "server_version",
         };
         return kPublic.count(method) > 0;
+    }
+
+    // Model-level access control (SEC-04).
+    // Maps model name → minimum group id required (from Groups.hpp constants).
+    // Admins bypass all checks. Throws std::runtime_error on denial.
+    static void checkModelAccess_(const std::string& model, const Session& session) {
+        if (session.isAdmin) return;
+
+        // model → required group id (seeded by AuthModule::seedGroups_())
+        //   5  = ACCOUNT_BILLING,   6  = ACCOUNT_MANAGER
+        //  11  = INVENTORY_USER,   12  = INVENTORY_MANAGER
+        //   7  = SALES_USER,        8  = SALES_MANAGER
+        //   9  = PURCHASE_USER,    10  = PURCHASE_MANAGER
+        //  13  = MRP_USER,         14  = MRP_MANAGER
+        //  15  = HR_EMPLOYEE,      16  = HR_MANAGER
+        static const std::unordered_map<std::string, int> kRequired = {
+            {"account.move",          5},
+            {"account.move.line",     5},
+            {"hr.employee",          15},
+            {"stock.move",           11},
+            {"stock.picking",        11},
+            {"stock.location",       11},
+            {"stock.picking.type",   11},
+            {"stock.warehouse",      11},
+            {"sale.order",            7},
+            {"sale.order.line",       7},
+            {"purchase.order",        9},
+            {"purchase.order.line",   9},
+            {"mrp.production",       13},
+        };
+        auto it = kRequired.find(model);
+        if (it == kRequired.end()) return;
+        if (!session.hasGroup(it->second))
+            throw std::runtime_error(
+                "Access denied: insufficient permissions to access " + model);
     }
 
     // ----------------------------------------------------------

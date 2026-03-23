@@ -132,13 +132,13 @@ public:
         // --- Infrastructure ---
         db       = std::make_shared<DbConnection>(cfg.db);
         http     = std::make_shared<HttpServer>(cfg.http);
-        ws       = std::make_shared<WebSocketServer>();
         sessions = std::make_shared<SessionManager>();
+        ws       = std::make_shared<WebSocketServer>(sessions);
 
         // --- Factories ---
         // Models and services receive the DB connection; the others are stateless.
         models     = std::make_shared<core::ModelFactory>(db);
-        services   = std::make_shared<core::ServiceFactory>(db, cfg.http.devMode, cfg.http.secureCookies);
+        services   = std::make_shared<core::ServiceFactory>(db, cfg.http.devMode, cfg.http.secureCookies, sessions);
         viewModels = std::make_shared<core::ViewModelFactory>();
         views      = std::make_shared<core::ViewFactory>();
         modules    = std::make_shared<core::ModuleFactory>();

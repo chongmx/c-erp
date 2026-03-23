@@ -87,11 +87,10 @@ public:
         auto& vf  = views_;
         auto  db  = services_.db();
 
-        viewModels_.registerCreator("res.users", [&sf, &vf, db] {
-            auto auth = std::static_pointer_cast<AuthService>(
+        viewModels_.registerCreator("res.users", [&sf, db] {
+            auto auth     = std::static_pointer_cast<AuthService>(
                 sf.create("auth", core::Lifetime::Singleton));
-            auto sessions = std::make_shared<infrastructure::SessionManager>();
-            auto vfPtr    = std::shared_ptr<core::ViewFactory>(&vf, [](auto*){});
+            auto sessions = sf.sessions();
             return std::make_shared<AuthViewModel>(auth, sessions, db, db->config().name);
         });
 

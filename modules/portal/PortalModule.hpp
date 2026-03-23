@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <mutex>
+#include <shared_mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -521,7 +522,7 @@ public:
         s.email      = email;
         s.accessedAt = PortalSession::Clock::now();
 
-        std::scoped_lock lock{mutex_};
+        std::unique_lock lock{mutex_};
         const std::string id = s.sessionId;
         store_[id] = std::move(s);
         return id;
@@ -530,19 +531,24 @@ public:
     /**
      * @brief Look up a portal session by ID.
      *
-     * Returns nullopt if the ID is unknown or the session has expired.
-     * Touching the session resets its TTL.
+     * Uses a shared (read) lock for the common fast path; upgrades to an
+     * exclusive lock at most once per kTouchInterval_ seconds to refresh
+     * accessedAt (same two-phase pattern as core SessionManager, PERF-01/PERF-09).
      */
     std::optional<PortalSession> get(const std::string& sid) {
-        std::scoped_lock lock{mutex_};
-        auto it = store_.find(sid);
-        if (it == store_.end()) return std::nullopt;
-
-        if (isExpired_(it->second)) {
-            store_.erase(it);
-            return std::nullopt;
+        // Phase 1: shared lock — return cached value if accessedAt is recent
+        {
+            std::shared_lock slock{mutex_};
+            auto it = store_.find(sid);
+            if (it == store_.end()) return std::nullopt;
+            if (isExpired_(it->second)) return std::nullopt;
+            auto age = PortalSession::Clock::now() - it->second.accessedAt;
+            if (age < kTouchInterval_) return it->second;
         }
-
+        // Phase 2: exclusive lock to refresh accessedAt
+        std::unique_lock ulock{mutex_};
+        auto it = store_.find(sid);
+        if (it == store_.end() || isExpired_(it->second)) return std::nullopt;
         it->second.accessedAt = PortalSession::Clock::now();
         return it->second;
     }
@@ -551,7 +557,7 @@ public:
      * @brief Destroy a portal session (logout).
      */
     void remove(const std::string& sid) {
-        std::scoped_lock lock{mutex_};
+        std::unique_lock lock{mutex_};
         store_.erase(sid);
     }
 
@@ -560,19 +566,27 @@ private:
         return (PortalSession::Clock::now() - s.accessedAt) > ttl_;
     }
 
+    // PERF-08: direct hex lookup table — avoids ostringstream construction per session
     static std::string generateId_() {
+        static constexpr char kHex[] = "0123456789abcdef";
         unsigned char buf[16];
         if (RAND_bytes(buf, sizeof(buf)) != 1)
             throw std::runtime_error("PortalSessionManager: RAND_bytes failed");
-        std::ostringstream ss;
-        ss << std::hex << std::setfill('0');
-        for (unsigned char b : buf)
-            ss << std::setw(2) << static_cast<unsigned>(b);
-        return ss.str();
+        std::string id;
+        id.reserve(32);
+        for (unsigned char b : buf) {
+            id += kHex[b >> 4];
+            id += kHex[b & 0x0f];
+        }
+        return id;
     }
 
-    Duration                                     ttl_;
-    mutable std::mutex                           mutex_;
+    // Refresh accessedAt at most once per kTouchInterval_ to keep get() on the
+    // shared-lock fast path for the vast majority of requests (PERF-09).
+    static constexpr Duration kTouchInterval_ = std::chrono::seconds{60};
+
+    Duration                                       ttl_;
+    mutable std::shared_mutex                      mutex_;
     std::unordered_map<std::string, PortalSession> store_;
 };
 
@@ -598,7 +612,11 @@ public:
     bool allow(const std::string& ip) {
         const auto now = Clock::now();
         std::lock_guard<std::mutex> lk(mutex_);
-        prune_(now);
+        // PERF-07: only prune when the full window has elapsed to avoid O(n) on every call
+        if ((now - lastPrune_) >= std::chrono::seconds(kWindowSeconds)) {
+            prune_(now);
+            lastPrune_ = now;
+        }
         auto& entry = table_[ip];
         if (entry.count >= kMaxAttempts &&
             (now - entry.windowStart) < std::chrono::seconds(kWindowSeconds))
@@ -646,6 +664,7 @@ private:
         }
     }
 
+    Clock::time_point                       lastPrune_ = Clock::now();
     std::mutex                              mutex_;
     std::unordered_map<std::string, Entry>  table_;
 };

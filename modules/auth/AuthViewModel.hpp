@@ -2,6 +2,7 @@
 #include "BaseViewModel.hpp"
 #include "AuthService.hpp"
 #include "SessionManager.hpp"
+#include "Groups.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <string>
@@ -67,6 +68,28 @@ private:
     std::shared_ptr<infrastructure::SessionManager> sessions_;
     std::shared_ptr<infrastructure::DbConnection>   db_;
     std::string                                     dbName_;
+
+    // ----------------------------------------------------------
+    // Authorization helper — resolve the caller's session from context
+    // ----------------------------------------------------------
+    infrastructure::Session callerSession_(const core::CallKwArgs& call) const {
+        const std::string sid = call.kwargs.contains("context")
+            ? call.kwargs["context"].value("session_id", std::string{})
+            : std::string{};
+        if (!sid.empty()) {
+            auto s = sessions_->get(sid);
+            if (s) return *s;
+        }
+        return infrastructure::Session{};
+    }
+
+    void requireAdmin_(const core::CallKwArgs& call) const {
+        const auto s = callerSession_(call);
+        if (!s.isAdmin && !s.hasGroup(Groups::SETTINGS_CONFIGURATION))
+            throw std::runtime_error(
+                "Access denied: user management requires Administrator or "
+                "Settings / Configuration group");
+    }
 
     // ----------------------------------------------------------
     // authenticate — args[0]=db, args[1]=login, args[2]=password
@@ -201,6 +224,7 @@ private:
     //  prevent it being sent to the client — so we must INSERT it manually)
     // ----------------------------------------------------------
     nlohmann::json handleCreate(const core::CallKwArgs& call) {
+        requireAdmin_(call);
         auto vals = call.arg(0).is_object() ? call.arg(0) : nlohmann::json::object();
         const std::string pw    = vals.value("password", std::string{});
         const std::string login = vals.value("login", std::string{});
@@ -266,6 +290,18 @@ private:
     }
 
     nlohmann::json handleWrite(const core::CallKwArgs& call) {
+        const auto session = callerSession_(call);
+        const auto ids = call.ids();
+        if (!session.isAdmin) {
+            // Non-admin: can only write their own record and cannot modify groups or password
+            if (ids.size() != 1 || ids[0] != session.uid)
+                throw std::runtime_error("Access denied: cannot modify other users");
+            const auto& v = call.arg(1);
+            if (v.is_object() && v.contains("groups_id"))
+                throw std::runtime_error("Access denied: cannot modify group memberships");
+            if (v.is_object() && v.contains("password"))
+                throw std::runtime_error("Access denied: use change_password to update your password");
+        }
         auto vals = call.arg(1).is_object() ? call.arg(1) : nlohmann::json::object();
 
         // Handle password directly — BaseModel::write() skips it because
@@ -331,6 +367,14 @@ private:
     }
 
     nlohmann::json handleUnlink(const core::CallKwArgs& call) {
+        const auto session = callerSession_(call);
+        if (!session.isAdmin && !session.hasGroup(Groups::SETTINGS_CONFIGURATION))
+            throw std::runtime_error(
+                "Access denied: user management requires Administrator or "
+                "Settings / Configuration group");
+        for (int id : call.ids())
+            if (id == session.uid)
+                throw std::runtime_error("Cannot delete your own user account");
         ResUsers proto(db_);
         return proto.unlink(call.ids());
     }
@@ -339,6 +383,7 @@ private:
     // search_read — list of users with optional groups_id
     // ----------------------------------------------------------
     nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
+        requireAdmin_(call);
         ResUsers proto(db_);
         const auto fields = call.fields();
         auto result = proto.searchRead(call.domain(), fields,

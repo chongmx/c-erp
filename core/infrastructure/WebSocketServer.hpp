@@ -1,5 +1,6 @@
 #pragma once
 #include "HttpServer.hpp"
+#include "SessionManager.hpp"
 #include <drogon/WebSocketController.h>
 #include <nlohmann/json.hpp>
 #include <memory>
@@ -48,6 +49,7 @@ public:
     // Called once from WebSocketServer::registerRoutes() before the
     // server starts accepting connections.
     static void setService(WebSocketServer* svc) { service_ = svc; }
+    static void setSessionManager(SessionManager* sm) { sessionManager_ = sm; }
 
     // ---- Drogon callbacks (correct signatures) ----
     void handleNewMessage(const drogon::WebSocketConnectionPtr& conn,
@@ -61,10 +63,12 @@ public:
 
 private:
     static WebSocketServer* service_;
+    static SessionManager*  sessionManager_;
 };
 
-// Static member definition (in header — ODR-safe with inline)
-inline WebSocketServer* BusController::service_ = nullptr;
+// Static member definitions (in header — ODR-safe with inline)
+inline WebSocketServer* BusController::service_        = nullptr;
+inline SessionManager*  BusController::sessionManager_ = nullptr;
 
 
 // ================================================================
@@ -76,7 +80,8 @@ public:
     using Channel = std::string;
     using Payload = nlohmann::json;
 
-    WebSocketServer() = default;
+    explicit WebSocketServer(std::shared_ptr<SessionManager> sessions = nullptr)
+        : sessions_(std::move(sessions)) {}
     WebSocketServer(const WebSocketServer&)            = delete;
     WebSocketServer& operator=(const WebSocketServer&) = delete;
 
@@ -88,6 +93,7 @@ public:
         // BusController is registered automatically by Drogon via the
         // WS_PATH_LIST macros; we only need to inject the service pointer.
         BusController::setService(this);
+        if (sessions_) BusController::setSessionManager(sessions_.get());
     }
 
     // ----------------------------------------------------------
@@ -191,6 +197,7 @@ private:
             try { conn->send(msg); } catch (...) {}
     }
 
+    std::shared_ptr<SessionManager>                          sessions_;
     mutable std::mutex mutex_;
     std::unordered_set<ConnPtr>                              allConnections_;
     std::unordered_map<Channel, std::unordered_set<ConnPtr>> subscribers_;
@@ -202,9 +209,26 @@ private:
 // BusController method definitions (after WebSocketServer is complete)
 // ================================================================
 inline void BusController::handleNewConnection(
-    const drogon::HttpRequestPtr&,
+    const drogon::HttpRequestPtr&         req,
     const drogon::WebSocketConnectionPtr& conn)
 {
+    // SEC-11: validate session before accepting the WebSocket connection
+    if (sessionManager_) {
+        const std::string sid = req->getCookie(SessionManager::cookieName());
+        bool authorized = false;
+        if (!sid.empty()) {
+            auto s = sessionManager_->get(sid);
+            authorized = s.has_value() && s->isAuthenticated();
+        }
+        if (!authorized) {
+            conn->send(nlohmann::json{
+                {"type",    "error"},
+                {"message", "Unauthorized: valid session required"},
+            }.dump());
+            conn->shutdown();
+            return;
+        }
+    }
     if (service_) service_->onConnect(conn);
 }
 

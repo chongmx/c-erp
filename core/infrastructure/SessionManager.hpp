@@ -3,11 +3,9 @@
 #include <openssl/rand.h>
 #include <algorithm>
 #include <chrono>
-#include <iomanip>
 #include <mutex>
 #include <shared_mutex>
 #include <optional>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -249,16 +247,19 @@ private:
         return (Session::Clock::now() - s.accessedAt) > ttl_;
     }
 
+    // PERF-08: direct hex lookup avoids ostringstream construction per session
     static std::string generateId_() {
-        // 128-bit cryptographically random hex token via OpenSSL CSPRNG
+        static constexpr char kHex[] = "0123456789abcdef";
         unsigned char buf[16];
         if (RAND_bytes(buf, sizeof(buf)) != 1)
             throw std::runtime_error("SessionManager: RAND_bytes failed");
-        std::ostringstream ss;
-        ss << std::hex << std::setfill('0');
-        for (unsigned char b : buf)
-            ss << std::setw(2) << static_cast<unsigned>(b);
-        return ss.str();
+        std::string id;
+        id.reserve(32);
+        for (unsigned char b : buf) {
+            id += kHex[b >> 4];
+            id += kHex[b & 0x0f];
+        }
+        return id;
     }
 
     // Refresh accessedAt at most once per kTouchInterval to keep get() on the shared-lock

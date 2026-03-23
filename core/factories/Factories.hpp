@@ -9,8 +9,11 @@
 #include <string>
 #include <vector>
 
-// Forward declaration — avoids pulling in libpqxx headers everywhere.
-namespace odoo::infrastructure { class DbConnection; }
+// Forward declarations — avoids pulling in heavy headers everywhere.
+namespace odoo::infrastructure {
+    class DbConnection;
+    class SessionManager;
+}
 
 namespace odoo::core {
 
@@ -92,10 +95,12 @@ class ServiceFactory : public BaseFactory<IService> {
 public:
     explicit ServiceFactory(std::shared_ptr<infrastructure::DbConnection> db,
                             bool devMode       = false,
-                            bool secureCookies = false)
+                            bool secureCookies = false,
+                            std::shared_ptr<infrastructure::SessionManager> sessions = nullptr)
         : db_(std::move(db))
         , devMode_(devMode)
         , secureCookies_(secureCookies)
+        , sessions_(std::move(sessions))
     {}
 
     using BaseFactory<IService>::registerCreator;
@@ -122,14 +127,16 @@ public:
         }
     }
 
-    std::shared_ptr<infrastructure::DbConnection> db()            const { return db_; }
-    bool                                          devMode()       const { return devMode_; }
-    bool                                          secureCookies() const { return secureCookies_; }
+    std::shared_ptr<infrastructure::DbConnection>  db()            const { return db_; }
+    bool                                           devMode()       const { return devMode_; }
+    bool                                           secureCookies() const { return secureCookies_; }
+    std::shared_ptr<infrastructure::SessionManager> sessions()     const { return sessions_; }
 
 private:
-    std::shared_ptr<infrastructure::DbConnection> db_;
+    std::shared_ptr<infrastructure::DbConnection>  db_;
     bool devMode_       = false;
     bool secureCookies_ = false;
+    std::shared_ptr<infrastructure::SessionManager> sessions_;
 };
 
 
