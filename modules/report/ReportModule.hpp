@@ -20,6 +20,7 @@
 #include "BaseView.hpp"
 #include "BaseViewModel.hpp"
 #include "DbConnection.hpp"
+#include "SessionManager.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <drogon/drogon.h>
@@ -30,6 +31,9 @@
 #include <sstream>
 #include <iomanip>
 #include <cmath>
+#include <fstream>
+#include <cstdlib>
+#include <cstdio>
 
 namespace odoo::modules::report {
 
@@ -184,7 +188,8 @@ static const std::string SHARED_CSS = R"CSS(
 <style>
 @page { size: A4; margin: 0; }
 * { box-sizing: border-box; }
-body { font-family: Arial, Helvetica, sans-serif; font-size: 10pt; color: #333333; line-height: 1.5; margin: 0; padding: 15mm 18mm 20mm 18mm; position: relative; min-height: 257mm; }
+body { font-family: Arial, Helvetica, sans-serif; font-size: 10pt; color: #333333; line-height: 1.5; margin: 0; padding: 15mm 18mm 20mm 18mm; display: flex; flex-direction: column; min-height: 257mm; }
+.page-fill-spacer { flex: 1; }
 .clearfix { overflow: hidden; }
 .hdr-left { float: left; width: 40%; }
 .hdr-right { float: right; width: 58%; }
@@ -578,12 +583,20 @@ private:
         if (modelFilter.empty()) {
             rows = txn.exec(
                 "SELECT id, name, model, paper_format, orientation, active, "
-                "decimal_qty, decimal_price, decimal_subtotal "
+                "decimal_qty, decimal_price, decimal_subtotal, "
+                "COALESCE(margin_top,15)::float AS margin_top, COALESCE(margin_right,18)::float AS margin_right, "
+                "COALESCE(margin_bottom,18)::float AS margin_bottom, COALESCE(margin_left,18)::float AS margin_left, "
+                "COALESCE(font_size,10) AS font_size, COALESCE(font_color,'#333333') AS font_color, "
+                "COALESCE(line_height,1.5)::float AS line_height, COALESCE(footer_text,'') AS footer_text "
                 "FROM ir_report_template WHERE active=true ORDER BY id");
         } else {
             rows = txn.exec(
                 "SELECT id, name, model, paper_format, orientation, active, "
-                "decimal_qty, decimal_price, decimal_subtotal "
+                "decimal_qty, decimal_price, decimal_subtotal, "
+                "COALESCE(margin_top,15)::float AS margin_top, COALESCE(margin_right,18)::float AS margin_right, "
+                "COALESCE(margin_bottom,18)::float AS margin_bottom, COALESCE(margin_left,18)::float AS margin_left, "
+                "COALESCE(font_size,10) AS font_size, COALESCE(font_color,'#333333') AS font_color, "
+                "COALESCE(line_height,1.5)::float AS line_height, COALESCE(footer_text,'') AS footer_text "
                 "FROM ir_report_template WHERE active=true AND model=$1 ORDER BY id LIMIT 1",
                 pqxx::params{modelFilter});
         }
@@ -600,6 +613,14 @@ private:
             rec["decimal_qty"]      = row["decimal_qty"].is_null()      ? 2 : row["decimal_qty"].as<int>();
             rec["decimal_price"]    = row["decimal_price"].is_null()    ? 2 : row["decimal_price"].as<int>();
             rec["decimal_subtotal"] = row["decimal_subtotal"].is_null() ? 2 : row["decimal_subtotal"].as<int>();
+            rec["margin_top"]       = row["margin_top"].as<double>(15);
+            rec["margin_right"]     = row["margin_right"].as<double>(18);
+            rec["margin_bottom"]    = row["margin_bottom"].as<double>(18);
+            rec["margin_left"]      = row["margin_left"].as<double>(18);
+            rec["font_size"]        = row["font_size"].as<int>(10);
+            rec["font_color"]       = safeStr(row["font_color"]);
+            rec["line_height"]      = row["line_height"].as<double>(1.5);
+            rec["footer_text"]      = safeStr(row["footer_text"]);
             result.push_back(rec);
         }
         return result;
@@ -631,7 +652,11 @@ private:
         pqxx::work txn{conn.get()};
         auto rows = txn.exec(
             "SELECT id, name, model, template_html, paper_format, orientation, active, "
-            "decimal_qty, decimal_price, decimal_subtotal "
+            "decimal_qty, decimal_price, decimal_subtotal, "
+            "COALESCE(margin_top,15)::float AS margin_top, COALESCE(margin_right,18)::float AS margin_right, "
+            "COALESCE(margin_bottom,18)::float AS margin_bottom, COALESCE(margin_left,18)::float AS margin_left, "
+            "COALESCE(font_size,10) AS font_size, COALESCE(font_color,'#333333') AS font_color, "
+            "COALESCE(line_height,1.5)::float AS line_height, COALESCE(footer_text,'') AS footer_text "
             "FROM ir_report_template WHERE id IN (" + inClause + ") ORDER BY id");
 
         nlohmann::json result = nlohmann::json::array();
@@ -647,6 +672,14 @@ private:
             rec["decimal_qty"]      = row["decimal_qty"].is_null()      ? 2 : row["decimal_qty"].as<int>();
             rec["decimal_price"]    = row["decimal_price"].is_null()    ? 2 : row["decimal_price"].as<int>();
             rec["decimal_subtotal"] = row["decimal_subtotal"].is_null() ? 2 : row["decimal_subtotal"].as<int>();
+            rec["margin_top"]       = row["margin_top"].as<double>(15);
+            rec["margin_right"]     = row["margin_right"].as<double>(18);
+            rec["margin_bottom"]    = row["margin_bottom"].as<double>(18);
+            rec["margin_left"]      = row["margin_left"].as<double>(18);
+            rec["font_size"]        = row["font_size"].as<int>(10);
+            rec["font_color"]       = safeStr(row["font_color"]);
+            rec["line_height"]      = row["line_height"].as<double>(1.5);
+            rec["footer_text"]      = safeStr(row["footer_text"]);
             result.push_back(rec);
         }
         return result;
@@ -679,6 +712,14 @@ private:
         int decQty  = std::max(0, decimalQty      < 0 ? 2 : decimalQty);
         int decPrc  = std::max(0, decimalPrice    < 0 ? 2 : decimalPrice);
         int decSub  = std::max(0, decimalSubtotal < 0 ? 2 : decimalSubtotal);
+        double marginTop    = vals.contains("margin_top")    && vals["margin_top"].is_number()    ? vals["margin_top"].get<double>()    : 15.0;
+        double marginRight  = vals.contains("margin_right")  && vals["margin_right"].is_number()  ? vals["margin_right"].get<double>()  : 18.0;
+        double marginBottom = vals.contains("margin_bottom") && vals["margin_bottom"].is_number() ? vals["margin_bottom"].get<double>() : 18.0;
+        double marginLeft   = vals.contains("margin_left")   && vals["margin_left"].is_number()   ? vals["margin_left"].get<double>()   : 18.0;
+        int    fontSize     = vals.contains("font_size")     && vals["font_size"].is_number_integer() ? vals["font_size"].get<int>()    : 10;
+        std::string fontColor  = vals.value("font_color",   "#333333");
+        double lineHeight   = vals.contains("line_height")   && vals["line_height"].is_number()   ? vals["line_height"].get<double>()   : 1.5;
+        std::string footerText = vals.value("footer_text",  "");
 
         std::string inClause;
         for (size_t i = 0; i < ids.size(); ++i) {
@@ -693,16 +734,24 @@ private:
             txn.exec(
                 "UPDATE ir_report_template SET "
                 "template_html=$1, paper_format=$2, orientation=$3, name=$4, "
-                "decimal_qty=$5, decimal_price=$6, decimal_subtotal=$7 "
+                "decimal_qty=$5, decimal_price=$6, decimal_subtotal=$7, "
+                "margin_top=$8, margin_right=$9, margin_bottom=$10, margin_left=$11, "
+                "font_size=$12, font_color=$13, line_height=$14, footer_text=$15 "
                 "WHERE id IN (" + inClause + ")",
-                pqxx::params{templateHtml, paperFormat, orientation, name, decQty, decPrc, decSub});
+                pqxx::params{templateHtml, paperFormat, orientation, name, decQty, decPrc, decSub,
+                             marginTop, marginRight, marginBottom, marginLeft,
+                             fontSize, fontColor, lineHeight, footerText});
         } else {
             txn.exec(
                 "UPDATE ir_report_template SET "
                 "template_html=$1, paper_format=$2, orientation=$3, "
-                "decimal_qty=$4, decimal_price=$5, decimal_subtotal=$6 "
+                "decimal_qty=$4, decimal_price=$5, decimal_subtotal=$6, "
+                "margin_top=$7, margin_right=$8, margin_bottom=$9, margin_left=$10, "
+                "font_size=$11, font_color=$12, line_height=$13, footer_text=$14 "
                 "WHERE id IN (" + inClause + ")",
-                pqxx::params{templateHtml, paperFormat, orientation, decQty, decPrc, decSub});
+                pqxx::params{templateHtml, paperFormat, orientation, decQty, decPrc, decSub,
+                             marginTop, marginRight, marginBottom, marginLeft,
+                             fontSize, fontColor, lineHeight, footerText});
         }
         txn.commit();
         return true;
@@ -755,73 +804,59 @@ public:
         });
     }
 
-    void registerRoutes() override {
-        auto db = db_;
+    // ---------------------------------------------------------------
+    // renderDoc_ — renders a document record to HTML.
+    // Called by both /report/html/ and /report/pdf/ routes.
+    // Throws std::runtime_error on record-not-found or bad model.
+    // ---------------------------------------------------------------
+    static std::string renderDoc_(
+        pqxx::work& txn,
+        const std::string& model,
+        int recordId)
+    {
+        // Load template
+        auto tplRows = txn.exec(
+            "SELECT template_html, paper_format, orientation, "
+            "COALESCE(decimal_qty, 2) AS decimal_qty, "
+            "COALESCE(decimal_price, 2) AS decimal_price, "
+            "COALESCE(decimal_subtotal, 2) AS decimal_subtotal "
+            "FROM ir_report_template "
+            "WHERE model=$1 AND active=true ORDER BY id LIMIT 1",
+            pqxx::params{model});
 
-        // Report route — handles all 4 model types
-        drogon::app().registerHandler(
-            "/report/html/{1}/{2}",
-            [db](const drogon::HttpRequestPtr& req,
-                 std::function<void(const drogon::HttpResponsePtr&)>&& cb,
-                 const std::string& model,
-                 const std::string& idStr)
-            {
-                int recordId = 0;
-                try { recordId = std::stoi(idStr); } catch (...) {
-                    cb(htmlError(400, "Invalid record id"));
-                    return;
-                }
+        if (tplRows.empty())
+            throw std::runtime_error("No template found for model: " + model);
 
-                try {
-                    auto conn = db->acquire();
-                    pqxx::work txn{conn.get()};
+        std::string tplHtml     = safeStr(tplRows[0]["template_html"]);
+        std::string paperFormat = safeStr(tplRows[0]["paper_format"]);
+        std::string orientation = safeStr(tplRows[0]["orientation"]);
+        if (paperFormat.empty()) paperFormat = "A4";
+        if (orientation.empty()) orientation = "portrait";
+        const int qtyPrec = tplRows[0]["decimal_qty"].as<int>(2);
+        const int prcPrec = tplRows[0]["decimal_price"].as<int>(2);
+        const int subPrec = tplRows[0]["decimal_subtotal"].as<int>(2);
 
-                    // ---- Load template ----
-                    auto tplRows = txn.exec(
-                        "SELECT template_html, paper_format, orientation, "
-                        "COALESCE(decimal_qty, 2) AS decimal_qty, "
-                        "COALESCE(decimal_price, 2) AS decimal_price, "
-                        "COALESCE(decimal_subtotal, 2) AS decimal_subtotal "
-                        "FROM ir_report_template "
-                        "WHERE model=$1 AND active=true ORDER BY id LIMIT 1",
-                        pqxx::params{model});
+        std::map<std::string, std::string> vars;
+        std::vector<std::map<std::string, std::string>> lines;
 
-                    if (tplRows.empty()) {
-                        cb(htmlError(404, "No template found for model: " + model));
-                        return;
-                    }
+        vars["paper_format"] = paperFormat;
+        vars["orientation"]  = orientation;
 
-                    std::string tplHtml     = safeStr(tplRows[0]["template_html"]);
-                    std::string paperFormat = safeStr(tplRows[0]["paper_format"]);
-                    std::string orientation = safeStr(tplRows[0]["orientation"]);
-                    if (paperFormat.empty()) paperFormat = "A4";
-                    if (orientation.empty()) orientation = "portrait";
-                    const int qtyPrec = tplRows[0]["decimal_qty"].as<int>(2);
-                    const int prcPrec = tplRows[0]["decimal_price"].as<int>(2);
-                    const int subPrec = tplRows[0]["decimal_subtotal"].as<int>(2);
+        auto loadCfg = [&](const std::string& key, const std::string& def = "") -> std::string {
+            try {
+                auto r = txn.exec(
+                    "SELECT value FROM ir_config_parameter WHERE key=$1",
+                    pqxx::params{key});
+                if (!r.empty() && !r[0]["value"].is_null())
+                    return r[0]["value"].c_str();
+            } catch (...) {}
+            return def;
+        };
 
-                    std::map<std::string, std::string> vars;
-                    std::vector<std::map<std::string, std::string>> lines;
+        int companyId = 1;
+        int partnerId = 0;
 
-                    vars["paper_format"] = paperFormat;
-                    vars["orientation"]  = orientation;
-
-                    // Helper: load a config param from ir_config_parameter
-                    auto loadCfg = [&](const std::string& key, const std::string& def = "") -> std::string {
-                        try {
-                            auto r = txn.exec(
-                                "SELECT value FROM ir_config_parameter WHERE key=$1",
-                                pqxx::params{key});
-                            if (!r.empty() && !r[0]["value"].is_null())
-                                return r[0]["value"].c_str();
-                        } catch (...) {}
-                        return def;
-                    };
-
-                    int companyId = 1;
-                    int partnerId = 0;
-
-                    if (model == "sale.order") {
+        if (model == "sale.order") {
                         auto rows = txn.exec(
                             "SELECT so.name, so.state, "
                             "to_char(so.date_order AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date_order, "
@@ -833,7 +868,7 @@ public:
                             "so.partner_id, so.company_id "
                             "FROM sale_order so WHERE so.id=$1",
                             pqxx::params{recordId});
-                        if (rows.empty()) { cb(htmlError(404, "Sale order not found")); return; }
+                        if (rows.empty()) throw std::runtime_error("Sale order not found: " + std::to_string(recordId));
                         const auto& r = rows[0];
                         companyId = r["company_id"].is_null() ? 1 : r["company_id"].as<int>();
                         partnerId = r["partner_id"].is_null() ? 0 : r["partner_id"].as<int>();
@@ -880,7 +915,7 @@ public:
                             "am.partner_id, am.company_id "
                             "FROM account_move am WHERE am.id=$1",
                             pqxx::params{recordId});
-                        if (rows.empty()) { cb(htmlError(404, "Invoice not found")); return; }
+                        if (rows.empty()) throw std::runtime_error("Invoice not found: " + std::to_string(recordId));
                         const auto& r = rows[0];
                         companyId = r["company_id"].is_null() ? 1 : r["company_id"].as<int>();
                         partnerId = r["partner_id"].is_null() ? 0 : r["partner_id"].as<int>();
@@ -932,7 +967,7 @@ public:
                             "po.partner_id, po.company_id "
                             "FROM purchase_order po WHERE po.id=$1",
                             pqxx::params{recordId});
-                        if (rows.empty()) { cb(htmlError(404, "Purchase order not found")); return; }
+                        if (rows.empty()) throw std::runtime_error("Purchase order not found: " + std::to_string(recordId));
                         const auto& r = rows[0];
                         companyId = r["company_id"].is_null() ? 1 : r["company_id"].as<int>();
                         partnerId = r["partner_id"].is_null() ? 0 : r["partner_id"].as<int>();
@@ -978,7 +1013,7 @@ public:
                             "LEFT JOIN stock_picking_type spt ON spt.id = sp.picking_type_id "
                             "WHERE sp.id=$1",
                             pqxx::params{recordId});
-                        if (rows.empty()) { cb(htmlError(404, "Transfer not found")); return; }
+                        if (rows.empty()) throw std::runtime_error("Transfer not found: " + std::to_string(recordId));
                         const auto& r = rows[0];
                         companyId = r["company_id"].is_null() ? 1 : r["company_id"].as<int>();
                         partnerId = r["partner_id"].is_null() ? 0 : r["partner_id"].as<int>();
@@ -1028,8 +1063,7 @@ public:
                             lines.push_back(line);
                         }
                     } else {
-                        cb(htmlError(404, "Unsupported model: " + model));
-                        return;
+                        throw std::runtime_error("Unsupported model: " + model);
                     }
 
                     // ---- Company info ----
@@ -1121,14 +1155,198 @@ public:
                         vars["attn_name"]      = "";
                     }
 
-                    std::string rendered = TemplateRenderer::render(tplHtml, vars, lines);
+                    return TemplateRenderer::render(tplHtml, vars, lines);
+    }
 
+    // ---------------------------------------------------------------
+    // registerRoutes — HTTP route registration
+    // ---------------------------------------------------------------
+    void registerRoutes() override {
+        auto db       = db_;
+        auto sessions = services_.sessions();
+
+        auto checkAuth = [sessions](const drogon::HttpRequestPtr& req) -> bool {
+            if (!sessions) return false;
+            const std::string sid = req->getCookie(SessionManager::cookieName());
+            if (sid.empty()) return false;
+            auto s = sessions->get(sid);
+            return s.has_value() && s->isAuthenticated();
+        };
+
+        auto authRedirect = []() -> drogon::HttpResponsePtr {
+            auto r = drogon::HttpResponse::newHttpResponse();
+            r->setStatusCode(drogon::k302Found);
+            r->addHeader("Location", "/#/login");
+            return r;
+        };
+
+        // HTML route
+        drogon::app().registerHandler(
+            "/report/html/{1}/{2}",
+            [db, checkAuth, authRedirect](const drogon::HttpRequestPtr& req,
+                 std::function<void(const drogon::HttpResponsePtr&)>&& cb,
+                 const std::string& model,
+                 const std::string& idStr)
+            {
+                if (!checkAuth(req)) { cb(authRedirect()); return; }
+                int recordId = 0;
+                try { recordId = std::stoi(idStr); } catch (...) { cb(htmlError(400, "Invalid record id")); return; }
+                try {
+                    auto conn = db->acquire();
+                    pqxx::work txn{conn.get()};
+                    std::string html = renderDoc_(txn, model, recordId);
+                    txn.commit();
                     auto resp = drogon::HttpResponse::newHttpResponse();
                     resp->setStatusCode(drogon::k200OK);
                     resp->setContentTypeCode(drogon::CT_TEXT_HTML);
-                    resp->setBody(rendered);
+                    resp->setBody(html);
+                    cb(resp);
+                } catch (const std::runtime_error& ex) {
+                    cb(htmlError(404, ex.what()));
+                } catch (const std::exception& ex) {
+                    cb(htmlError(500, std::string("Internal error: ") + ex.what()));
+                }
+            },
+            {drogon::Get}
+        );
+
+        // PDF route
+        drogon::app().registerHandler(
+            "/report/pdf/{1}/{2}",
+            [db, checkAuth, authRedirect](const drogon::HttpRequestPtr& req,
+                 std::function<void(const drogon::HttpResponsePtr&)>&& cb,
+                 const std::string& model,
+                 const std::string& idStr)
+            {
+                if (!checkAuth(req)) { cb(authRedirect()); return; }
+                int recordId = 0;
+                try { recordId = std::stoi(idStr); } catch (...) { cb(htmlError(400, "Invalid record id")); return; }
+                try {
+                    auto conn = db->acquire();
+                    pqxx::work txn{conn.get()};
+                    std::string html = renderDoc_(txn, model, recordId);
+
+                    // Read template layout settings for PDF generation
+                    double pdfMarginTop = 15, pdfMarginRight = 18, pdfMarginBottom = 18, pdfMarginLeft = 18;
+                    int    pdfFontSize  = 10;
+                    std::string pdfFontColor = "#333333";
+                    double pdfLineHeight = 1.5;
+                    std::string pdfPaperFormat = "A4";
+                    std::string pdfFooterOverride;
+                    try {
+                        auto srows = txn.exec(
+                            "SELECT COALESCE(margin_top,15)::float AS mt, COALESCE(margin_right,18)::float AS mr, "
+                            "COALESCE(margin_bottom,18)::float AS mb, COALESCE(margin_left,18)::float AS ml, "
+                            "COALESCE(font_size,10) AS fs, COALESCE(font_color,'#333333') AS fc, "
+                            "COALESCE(line_height,1.5)::float AS lh, COALESCE(paper_format,'A4') AS pf, "
+                            "COALESCE(footer_text,'') AS ft "
+                            "FROM ir_report_template WHERE model=$1 AND active=true ORDER BY id LIMIT 1",
+                            pqxx::params{model});
+                        if (!srows.empty()) {
+                            pdfMarginTop    = srows[0]["mt"].as<double>(15);
+                            pdfMarginRight  = srows[0]["mr"].as<double>(18);
+                            pdfMarginBottom = srows[0]["mb"].as<double>(18);
+                            pdfMarginLeft   = srows[0]["ml"].as<double>(18);
+                            pdfFontSize     = srows[0]["fs"].as<int>(10);
+                            pdfFontColor    = safeStr(srows[0]["fc"]);
+                            pdfLineHeight   = srows[0]["lh"].as<double>(1.5);
+                            pdfPaperFormat  = safeStr(srows[0]["pf"]);
+                            pdfFooterOverride = safeStr(srows[0]["ft"]);
+                        }
+                    } catch (...) {}
+                    txn.commit();
+
+                    std::string tmpBase   = "/tmp/erp_report_" + model + "_" + idStr;
+                    std::string tmpHtml   = tmpBase + ".html";
+                    std::string tmpPdf    = tmpBase + ".pdf";
+
+                    // --- If template settings include a footer_text override, inject a
+                    //     page-footer div into the HTML if none is already present.
+                    //     wkhtmltopdf 0.12.6 (unpatched Qt) silently ignores --footer-html,
+                    //     so the footer lives in the main HTML as position:fixed;bottom:0.
+                    {
+                        const std::string marker = "class=\"page-footer\"";
+                        if (!pdfFooterOverride.empty() && html.find(marker) == std::string::npos) {
+                            // No footer block in template — inject one from template settings
+                            const std::string inject =
+                                "<div class=\"page-footer\">" + pdfFooterOverride + "</div>\n";
+                            size_t bodyEnd = html.find("</body>");
+                            if (bodyEnd != std::string::npos)
+                                html.insert(bodyEnd, inject);
+                        }
+                    }
+
+                    // --- Inject PDF-specific CSS overrides before </head> ---
+                    // Remove body padding (wkhtmltopdf --margin-* handle margins externally).
+                    // Do NOT override min-height: the template CSS sets min-height:257mm which
+                    // keeps the wkhtmltopdf viewport at full page height, so position:fixed;bottom:0
+                    // anchors to the page bottom rather than the content bottom.
+                    // padding-bottom reserves space so content doesn't slide under the fixed footer.
+                    std::ostringstream cssOss;
+                    cssOss << "<style>"
+                           << "body{padding:0!important;padding-bottom:12mm!important;"
+                           << "font-size:" << pdfFontSize << "pt!important;"
+                           << "color:" << pdfFontColor << "!important;"
+                           << "line-height:" << std::fixed << std::setprecision(2) << pdfLineHeight << "!important;}"
+                           << ".page-footer{position:fixed!important;bottom:0!important;"
+                           << "left:0!important;right:0!important;width:100%!important;"
+                           << "display:block!important;}"
+                           << ".print-btn{display:none!important;}"
+                           << "</style>";
+                    const std::string pdfCss = cssOss.str();
+                    {
+                        size_t hEnd = html.find("</head>");
+                        if (hEnd != std::string::npos) html.insert(hEnd, pdfCss);
+                    }
+
+                    // --- Write main HTML ---
+                    { std::ofstream f(tmpHtml); f << html; }
+
+                    // --- Run wkhtmltopdf ---
+                    // --margin-* controls the page margins (printable area).
+                    // Footer is embedded in HTML as position:fixed;bottom:0 because
+                    // wkhtmltopdf 0.12.6 (unpatched Qt) does not support --footer-html.
+                    auto mmStr = [](double v) {
+                        std::ostringstream s;
+                        s << std::fixed << std::setprecision(1) << v << "mm";
+                        return s.str();
+                    };
+                    std::string cmd = std::string("wkhtmltopdf --quiet")
+                        + " --page-size "    + (pdfPaperFormat.empty() ? "A4" : pdfPaperFormat)
+                        + " --margin-top "   + mmStr(pdfMarginTop)
+                        + " --margin-right " + mmStr(pdfMarginRight)
+                        + " --margin-bottom "+ mmStr(pdfMarginBottom)
+                        + " --margin-left "  + mmStr(pdfMarginLeft)
+                        + " --enable-local-file-access"
+                        + " \"" + tmpHtml + "\""
+                        + " \"" + tmpPdf  + "\""
+                        + " 2>/dev/null";
+                    int ret = std::system(cmd.c_str());
+                    std::remove(tmpHtml.c_str());
+
+                    if (ret != 0) {
+                        std::remove(tmpPdf.c_str());
+                        cb(htmlError(503, "PDF generation failed. Ensure wkhtmltopdf is installed on the server."));
+                        return;
+                    }
+
+                    // --- Read and return PDF ---
+                    std::ifstream pdfFile(tmpPdf, std::ios::binary);
+                    std::string pdfData((std::istreambuf_iterator<char>(pdfFile)),
+                                        std::istreambuf_iterator<char>());
+                    pdfFile.close();
+                    std::remove(tmpPdf.c_str());
+
+                    auto resp = drogon::HttpResponse::newHttpResponse();
+                    resp->setStatusCode(drogon::k200OK);
+                    resp->setContentTypeString("application/pdf");
+                    resp->addHeader("Content-Disposition",
+                        "inline; filename=\"" + model + "_" + idStr + ".pdf\"");
+                    resp->setBody(pdfData);
                     cb(resp);
 
+                } catch (const std::runtime_error& ex) {
+                    cb(htmlError(404, ex.what()));
                 } catch (const std::exception& ex) {
                     cb(htmlError(500, std::string("Internal error: ") + ex.what()));
                 }
@@ -1317,6 +1535,15 @@ private:
         txn.exec(
             "ALTER TABLE ir_report_template "
             "ADD COLUMN IF NOT EXISTS decimal_subtotal INTEGER NOT NULL DEFAULT 2");
+        // Page layout settings
+        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS margin_top     NUMERIC(6,2) NOT NULL DEFAULT 15");
+        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS margin_right   NUMERIC(6,2) NOT NULL DEFAULT 18");
+        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS margin_bottom  NUMERIC(6,2) NOT NULL DEFAULT 18");
+        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS margin_left    NUMERIC(6,2) NOT NULL DEFAULT 18");
+        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS font_size      INTEGER      NOT NULL DEFAULT 10");
+        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS font_color     TEXT         NOT NULL DEFAULT '#333333'");
+        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS line_height    NUMERIC(4,2) NOT NULL DEFAULT 1.5");
+        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS footer_text    TEXT         NOT NULL DEFAULT ''");
         txn.commit();
     }
 

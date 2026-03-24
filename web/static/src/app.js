@@ -618,12 +618,33 @@ class InvoiceFormView extends Component {
                     <div class="pay-dialog" t-on-click.stop="">
                         <div class="pay-dialog-title">Register Payment</div>
                         <div class="so-field-row" style="margin-bottom:4px;">
+                            <label class="so-field-lbl">Journal</label>
+                            <select class="form-input"
+                                    t-att-value="state.payJournalId"
+                                    t-on-change="ev => state.payJournalId = parseInt(ev.target.value) || null">
+                                <option value="">— select —</option>
+                                <t t-foreach="state.payJournals" t-as="j" t-key="j.id">
+                                    <option t-att-value="j.id"
+                                            t-att-selected="state.payJournalId === j.id ? true : undefined"
+                                            t-esc="j.name"/>
+                                </t>
+                            </select>
+                        </div>
+                        <div class="so-field-row" style="margin-bottom:4px;">
+                            <label class="so-field-lbl">Amount</label>
+                            <input class="form-input" type="number" step="0.01" min="0.01"
+                                   t-att-value="state.payAmount"
+                                   t-on-input="ev => state.payAmount = ev.target.value"/>
+                        </div>
+                        <div class="so-field-row" style="margin-bottom:4px;">
                             <label class="so-field-lbl">Payment Date</label>
                             <DatePicker value="state.payDate" onSelect.bind="setPayDate"/>
                         </div>
-                        <div class="so-field-row">
-                            <label class="so-field-lbl">Amount</label>
-                            <span class="so-field-val" t-esc="formatMoney(state.record.amount_residual)"/>
+                        <div class="so-field-row" style="margin-bottom:4px;">
+                            <label class="so-field-lbl">Memo</label>
+                            <input class="form-input" type="text"
+                                   t-att-value="state.payMemo"
+                                   t-on-input="ev => state.payMemo = ev.target.value"/>
                         </div>
                         <t t-if="state.payError">
                             <div class="pay-dialog-error" t-esc="state.payError"/>
@@ -915,6 +936,10 @@ class InvoiceFormView extends Component {
             payDialogOpen:  false,
             payDate:        '',
             payError:       '',
+            payJournals:    [],
+            payJournalId:   null,
+            payAmount:      '',
+            payMemo:        '',
         });
         this._nextKey   = 1;
         this._lineDefaults = {};   // account_id, journal_id, company_id, date, partner_id
@@ -1227,15 +1252,26 @@ class InvoiceFormView extends Component {
 
     onBack() { this.props.onBack(); }
 
-    onPrint() { window.open('/report/html/account.move/' + this.state.record.id, '_blank'); }
+    onPrint() { window.open('/report/pdf/account.move/' + this.state.record.id, '_blank'); }
 
     // ---- Register Payment ----
-    onOpenPayDialog() {
-        // Default to today's date
+    async onOpenPayDialog() {
         const today = new Date().toISOString().slice(0, 10);
-        this.state.payDate     = today;
-        this.state.payError    = '';
+        this.state.payDate      = today;
+        this.state.payError     = '';
+        this.state.payAmount    = String(this.state.record.amount_residual || 0);
+        this.state.payMemo      = this.state.record.name || '';
+        this.state.payJournalId = null;
+        this.state.payJournals  = [];
         this.state.payDialogOpen = true;
+        try {
+            const journals = await RpcService.searchRead(
+                'account.journal',
+                [['type', 'in', ['bank', 'cash']]],
+                ['id', 'name'], 0, 50);
+            this.state.payJournals  = journals;
+            if (journals.length) this.state.payJournalId = journals[0].id;
+        } catch (_) {}
     }
 
     onClosePayDialog() {
@@ -1246,16 +1282,21 @@ class InvoiceFormView extends Component {
     setPayDate(v) { this.state.payDate = v; }
 
     async onConfirmPayment() {
-        if (!this.state.payDate) {
-            this.state.payError = 'Please select a payment date.';
-            return;
-        }
+        if (!this.state.payDate)      { this.state.payError = 'Please select a payment date.'; return; }
+        if (!this.state.payJournalId) { this.state.payError = 'Please select a journal.'; return; }
+        const amount = parseFloat(this.state.payAmount);
+        if (isNaN(amount) || amount <= 0) { this.state.payError = 'Enter a valid amount.'; return; }
         try {
             this.state.payError = '';
             await RpcService.call(
                 'account.move', 'action_register_payment',
                 [[this.state.record.id]],
-                { payment_date: this.state.payDate });
+                {
+                    payment_date: this.state.payDate,
+                    journal_id:   this.state.payJournalId,
+                    amount:       amount,
+                    memo:         this.state.payMemo,
+                });
             this.state.payDialogOpen = false;
             this.state.chatRefreshKey++;
             await this.load();
@@ -2174,7 +2215,7 @@ class SaleOrderFormView extends Component {
         this.state.invoiceMode = { invoiceId: this.state.invoiceList[newIdx].id, idx: newIdx, fromList: cur.fromList };
     }
 
-    onPrint() { window.open('/report/html/sale.order/' + this.state.record.id, '_blank'); }
+    onPrint() { window.open('/report/pdf/sale.order/' + this.state.record.id, '_blank'); }
 }
 
 // ----------------------------------------------------------------
@@ -2792,7 +2833,7 @@ class PurchaseOrderFormView extends Component {
     setDateOrder(v)   { this.state.record.date_order   = v; }
     setDatePlanned(v) { this.state.record.date_planned = v; }
 
-    onPrint() { window.open('/report/html/purchase.order/' + this.state.record.id, '_blank'); }
+    onPrint() { window.open('/report/pdf/purchase.order/' + this.state.record.id, '_blank'); }
 
     async onCreateBill() {
         try {
@@ -3332,7 +3373,7 @@ class TransferFormView extends Component {
 
     onBack() { this.props.onBack(); }
 
-    onPrint() { window.open('/report/html/stock.picking/' + this.state.record.id, '_blank'); }
+    onPrint() { window.open('/report/pdf/stock.picking/' + this.state.record.id, '_blank'); }
 }
 
 // ----------------------------------------------------------------
@@ -5440,6 +5481,8 @@ const DLE_BLOCK_DEFS = [
     { type:'notes',         label:'Notes',              icon:'\u270E', group:'content' },
     { type:'text_block',    label:'Text Block',         icon:'\u00B6', group:'content' },
     { type:'footer_bar',    label:'Footer Bar',         icon:'\u25AC', group:'content' },
+    { type:'footer_sep',    label:'Footer Separator',   icon:'\u2501', group:'content' },
+    { type:'page_fill',     label:'Page Fill Spacer',   icon:'\u21F3', group:'layout' },
     // Layout blocks
     { type:'separator',     label:'Separator Line',     icon:'\u2015', group:'layout' },
     { type:'spacer',        label:'Spacer / Gap',       icon:'\u2B1C', group:'layout' },
@@ -5466,7 +5509,8 @@ const DLE_DOC_TYPES = [
 const DLE_CSS = `<style>
 @page { size: A4; margin: 0; }
 * { box-sizing: border-box; }
-body { font-family: Arial, Helvetica, sans-serif; font-size: 10pt; color: #333333; line-height: 1.5; margin: 0; padding: 15mm 18mm 20mm 18mm; position: relative; min-height: 257mm; }
+body { font-family: Arial, Helvetica, sans-serif; font-size: 10pt; color: #333333; line-height: 1.5; margin: 0; padding: 15mm 18mm 20mm 18mm; display: flex; flex-direction: column; min-height: 257mm; }
+.page-fill-spacer { flex: 1; }
 .clearfix { overflow: hidden; }
 .hdr-left { float: left; width: 40%; }
 .hdr-right { float: right; width: 58%; }
@@ -5590,13 +5634,30 @@ const DLE_PROP_DEFS = {
         { key:'content', label:'Text Content', type:'textarea' },
         ..._typo(), ..._spac(), ..._bgbd(), ..._layout(),
     ],
-    footer_bar: [..._typo(), ..._spac(), ..._bgbd()],
+    footer_bar: [
+        _D('Content'),
+        { key: 'content',        label: 'Footer Text',      type: 'text',    placeholder: 'Leave empty to use company website' },
+        _D('Separator Line'),
+        { key: 'top_sep',        label: 'Show Top Line',    type: 'boolean' },
+        { key: 'top_sep_color',  label: 'Line Color',       type: 'color'   },
+        ..._typo(), ..._spac(), ..._bgbd()
+    ],
     separator: [
         _D('Line Style'),
         { key:'color',         label:'Color',        type:'color' },
         { key:'thickness',     label:'Thickness',    type:'number', unit:'pt', min:0.5, max:10 },
         { key:'margin_top',    label:'Margin Top',   type:'number', unit:'mm', min:0,   max:20 },
         { key:'margin_bottom', label:'Margin Below', type:'number', unit:'mm', min:0,   max:20 },
+    ],
+    footer_sep: [
+        _D('Line Style'),
+        { key:'color',         label:'Color',          type:'color' },
+        { key:'thickness',     label:'Thickness',      type:'number', unit:'pt',  min:0.5, max:10 },
+        { key:'above_footer',  label:'Above Footer',   type:'number', unit:'mm',  min:4,   max:30 },
+    ],
+    page_fill: [
+        _D('Page Fill Spacer'),
+        { key:'_info', label:'Fills remaining page space above the footer. Place it just before the Footer Bar block.', type:'label' },
     ],
     spacer:    [_D('Size'), { key:'height', label:'Height', type:'number', unit:'mm', min:1, max:80 }],
     row_start: [_D('Row'), { key:'flex', label:'1st Column Width', type:'number', unit:'flex', min:1, max:10 },
@@ -5761,6 +5822,15 @@ ${lines}
             return `<hr style="border:none;border-top:${thick}pt solid ${color};margin:${mt}mm 0 ${mb}mm;">`;
         }
 
+        case 'footer_sep': {
+            // A separator line fixed just above the footer bar.
+            // Uses position:fixed so it stays at the bottom of every page above the footer.
+            const color = props.color     || '#888888';
+            const thick = props.thickness || 0.5;
+            const above = (props.above_footer != null && props.above_footer !== '') ? props.above_footer : 8;
+            return `<hr style="position:fixed;left:0;right:0;bottom:${above}mm;border:none;border-top:${thick}pt solid ${color};margin:0;width:100%;z-index:99;">`;
+        }
+
         case 'spacer':
             return `<div class="doc-spacer"></div>`; // height handled in dleBuildHtml
 
@@ -5769,14 +5839,32 @@ ${lines}
             return `<div class="text-block"${sa}>${content}</div>`;
         }
 
+        case 'page_fill':
+            // Adaptive spacer: grows to consume remaining vertical space on the page,
+            // pushing the footer_bar to the bottom. Uses flex-grow inside a flex body.
+            return `<div class="page-fill-spacer"></div>`;
+
         case 'row_start':
         case 'col_break':
         case 'row_end':
             return '';
 
-        case 'footer_bar':
-            return `<div class="page-footer"${sa}>{{company_website}}</div>
+        case 'footer_bar': {
+            const footerContent = props.content || '{{company_website}}';
+            // Build combined style: base props + optional top separator line
+            let fStyle = st;
+            if (props.top_sep) {
+                const sepCol = props.top_sep_color || '#888888';
+                fStyle = (fStyle ? fStyle + ';' : '') + `border-top:1.5pt solid ${sepCol}`;
+            }
+            const fSa   = fStyle ? ` style="${fStyle}"` : '';
+            // Embed separator info as data attrs so the PDF backend can replicate it in --footer-html
+            const dataSep = props.top_sep
+                ? ` data-top-sep="1" data-top-sep-color="${props.top_sep_color || '#888888'}"`
+                : '';
+            return `<div class="page-footer"${fSa}${dataSep}>${footerContent}</div>
 <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>`;
+        }
 
         default:
             return '';
@@ -6079,7 +6167,11 @@ class DocumentLayoutEditor extends Component {
                                     </div>
                                     <t t-if="isPropSectOpen(grp.label)">
                                         <t t-foreach="grp.items" t-as="pd" t-key="pd.key">
-                                            <div class="dle-prop-row">
+                                            <!-- info label: spans full width, no input -->
+                                            <t t-if="pd.type === 'label'">
+                                                <div class="dle-prop-row" style="display:block;font-size:.72rem;color:#aaa;padding:4px 0;line-height:1.3;" t-esc="pd.label"/>
+                                            </t>
+                                            <div t-else="" class="dle-prop-row">
                                                 <label t-esc="pd.label"/>
                                                 <!-- number -->
                                                 <t t-if="pd.type === 'number'">
@@ -6126,6 +6218,7 @@ class DocumentLayoutEditor extends Component {
                                                 <t t-if="pd.type === 'text'">
                                                     <input type="text" class="dle-prop-input"
                                                            t-att-value="state.blocks[state.selectedBlock].props[pd.key] || ''"
+                                                           t-att-placeholder="pd.placeholder || ''"
                                                            t-on-input="onPropInput"
                                                            t-att-data-prop="pd.key"/>
                                                 </t>
@@ -6186,49 +6279,132 @@ class DocumentLayoutEditor extends Component {
                             </t>
                             <t t-else="">
                                 <div class="dle-props-title">Document Settings</div>
-                                <div class="dle-prop-row">
-                                    <label>Paper Format</label>
-                                    <select class="dle-prop-input" t-model="state.docSettings.paper_format">
-                                        <option value="A4">A4</option>
-                                        <option value="Letter">Letter</option>
-                                        <option value="A3">A3</option>
-                                        <option value="Legal">Legal</option>
-                                    </select>
+
+                                <!-- Format -->
+                                <div class="dle-acc-hdr" style="font-size:.73rem;padding:5px 10px;"
+                                     t-on-click="()=>this.togglePropSect('DS_Format')">
+                                    <span>Format</span>
+                                    <span class="dle-acc-icon" t-esc="isPropSectOpen('DS_Format') ? '\u25BE' : '\u25B8'"/>
                                 </div>
-                                <div class="dle-prop-row">
-                                    <label>Orientation</label>
-                                    <select class="dle-prop-input" t-model="state.docSettings.orientation">
-                                        <option value="portrait">Portrait</option>
-                                        <option value="landscape">Landscape</option>
-                                    </select>
-                                </div>
-                                <div class="dle-prop-row">
-                                    <label>Font Family</label>
-                                    <select class="dle-prop-input" t-model="state.docSettings.font_family">
-                                        <option value="Arial, sans-serif">Arial</option>
-                                        <option value="'Times New Roman', serif">Times New Roman</option>
-                                        <option value="Helvetica, sans-serif">Helvetica</option>
-                                        <option value="Georgia, serif">Georgia</option>
-                                        <option value="'Courier New', monospace">Courier New</option>
-                                    </select>
-                                </div>
-                                <div class="dle-prop-row">
-                                    <label>Accent Color</label>
-                                    <div class="dle-color-row">
-                                        <input type="color" class="dle-color-pick"
-                                               t-att-value="state.docSettings.accent_color"
-                                               t-on-input="onAccentColorInput"/>
-                                        <input type="text" class="dle-prop-input dle-color-text"
-                                               t-att-value="state.docSettings.accent_color"
-                                               t-on-input="onAccentColorInput"/>
+                                <t t-if="isPropSectOpen('DS_Format')">
+                                    <div class="dle-prop-row">
+                                        <label>Paper Format</label>
+                                        <select class="dle-prop-input" t-model="state.docSettings.paper_format">
+                                            <option value="A4">A4</option>
+                                            <option value="Letter">Letter</option>
+                                            <option value="A3">A3</option>
+                                            <option value="Legal">Legal</option>
+                                        </select>
                                     </div>
+                                    <div class="dle-prop-row">
+                                        <label>Orientation</label>
+                                        <select class="dle-prop-input" t-model="state.docSettings.orientation">
+                                            <option value="portrait">Portrait</option>
+                                            <option value="landscape">Landscape</option>
+                                        </select>
+                                    </div>
+                                </t>
+
+                                <!-- Page Margins -->
+                                <div class="dle-acc-hdr" style="font-size:.73rem;padding:5px 10px;"
+                                     t-on-click="()=>this.togglePropSect('DS_Margins')">
+                                    <span>Page Margins (mm)</span>
+                                    <span class="dle-acc-icon" t-esc="isPropSectOpen('DS_Margins') ? '\u25BE' : '\u25B8'"/>
                                 </div>
-                                <div class="dle-prop-row">
-                                    <label>Preview Record ID</label>
-                                    <input type="text" class="dle-prop-input" placeholder="optional — opens in new tab"
-                                           t-att-value="state.previewRecordId"
-                                           t-on-input="ev=>this.state.previewRecordId=ev.target.value"/>
+                                <t t-if="isPropSectOpen('DS_Margins')">
+                                    <div class="dle-prop-row">
+                                        <label>Top</label>
+                                        <input type="number" class="dle-prop-input" min="0" max="50" step="1"
+                                               t-att-value="state.docSettings.margin_top"
+                                               t-on-input="ev=>{ this.state.docSettings.margin_top = parseFloat(ev.target.value)||0; }"/>
+                                    </div>
+                                    <div class="dle-prop-row">
+                                        <label>Right</label>
+                                        <input type="number" class="dle-prop-input" min="0" max="50" step="1"
+                                               t-att-value="state.docSettings.margin_right"
+                                               t-on-input="ev=>{ this.state.docSettings.margin_right = parseFloat(ev.target.value)||0; }"/>
+                                    </div>
+                                    <div class="dle-prop-row">
+                                        <label>Bottom</label>
+                                        <input type="number" class="dle-prop-input" min="0" max="50" step="1"
+                                               t-att-value="state.docSettings.margin_bottom"
+                                               t-on-input="ev=>{ this.state.docSettings.margin_bottom = parseFloat(ev.target.value)||0; }"/>
+                                    </div>
+                                    <div class="dle-prop-row">
+                                        <label>Left</label>
+                                        <input type="number" class="dle-prop-input" min="0" max="50" step="1"
+                                               t-att-value="state.docSettings.margin_left"
+                                               t-on-input="ev=>{ this.state.docSettings.margin_left = parseFloat(ev.target.value)||0; }"/>
+                                    </div>
+                                </t>
+
+                                <!-- Typography -->
+                                <div class="dle-acc-hdr" style="font-size:.73rem;padding:5px 10px;"
+                                     t-on-click="()=>this.togglePropSect('DS_Typography')">
+                                    <span>Typography</span>
+                                    <span class="dle-acc-icon" t-esc="isPropSectOpen('DS_Typography') ? '\u25BE' : '\u25B8'"/>
                                 </div>
+                                <t t-if="isPropSectOpen('DS_Typography')">
+                                    <div class="dle-prop-row">
+                                        <label>Font Family</label>
+                                        <select class="dle-prop-input" t-model="state.docSettings.font_family">
+                                            <option value="Arial, sans-serif">Arial</option>
+                                            <option value="'Times New Roman', serif">Times New Roman</option>
+                                            <option value="Helvetica, sans-serif">Helvetica</option>
+                                            <option value="Georgia, serif">Georgia</option>
+                                            <option value="'Courier New', monospace">Courier New</option>
+                                        </select>
+                                    </div>
+                                    <div class="dle-prop-row">
+                                        <label>Font Size (pt)</label>
+                                        <input type="number" class="dle-prop-input" min="6" max="24" step="1"
+                                               t-att-value="state.docSettings.font_size"
+                                               t-on-input="ev=>{ this.state.docSettings.font_size = parseInt(ev.target.value)||10; }"/>
+                                    </div>
+                                    <div class="dle-prop-row">
+                                        <label>Font Color</label>
+                                        <div class="dle-color-row">
+                                            <input type="color" class="dle-color-pick"
+                                                   t-att-value="state.docSettings.font_color"
+                                                   t-on-input="ev=>{ this.state.docSettings.font_color = ev.target.value; }"/>
+                                            <input type="text" class="dle-prop-input dle-color-text"
+                                                   t-att-value="state.docSettings.font_color"
+                                                   t-on-input="ev=>{ this.state.docSettings.font_color = ev.target.value; }"/>
+                                        </div>
+                                    </div>
+                                    <div class="dle-prop-row">
+                                        <label>Accent Color</label>
+                                        <div class="dle-color-row">
+                                            <input type="color" class="dle-color-pick"
+                                                   t-att-value="state.docSettings.accent_color"
+                                                   t-on-input="onAccentColorInput"/>
+                                            <input type="text" class="dle-prop-input dle-color-text"
+                                                   t-att-value="state.docSettings.accent_color"
+                                                   t-on-input="onAccentColorInput"/>
+                                        </div>
+                                    </div>
+                                    <div class="dle-prop-row">
+                                        <label>Line Height</label>
+                                        <input type="number" class="dle-prop-input" min="1" max="3" step="0.1"
+                                               t-att-value="state.docSettings.line_height"
+                                               t-on-input="ev=>{ this.state.docSettings.line_height = parseFloat(ev.target.value)||1.5; }"/>
+                                    </div>
+                                </t>
+
+                                <!-- Preview -->
+                                <div class="dle-acc-hdr" style="font-size:.73rem;padding:5px 10px;"
+                                     t-on-click="()=>this.togglePropSect('DS_Preview')">
+                                    <span>Preview</span>
+                                    <span class="dle-acc-icon" t-esc="isPropSectOpen('DS_Preview') ? '\u25BE' : '\u25B8'"/>
+                                </div>
+                                <t t-if="isPropSectOpen('DS_Preview')">
+                                    <div class="dle-prop-row">
+                                        <label>Record ID</label>
+                                        <input type="text" class="dle-prop-input" placeholder="optional — opens in new tab"
+                                               t-att-value="state.previewRecordId"
+                                               t-on-input="ev=>this.state.previewRecordId=ev.target.value"/>
+                                    </div>
+                                </t>
                             </t>
                         </div>
                     </t>
@@ -6295,7 +6471,7 @@ class DocumentLayoutEditor extends Component {
             previewRecordId: '',
             saving:          false,
             saved:           false,
-            docSettings:     { paper_format:'A4', orientation:'portrait', font_family:'Arial, sans-serif', accent_color:'#4a4a4a', decimal_qty:2, decimal_price:2, decimal_subtotal:2 },
+            docSettings:     { paper_format:'A4', orientation:'portrait', font_family:'Arial, sans-serif', accent_color:'#4a4a4a', decimal_qty:2, decimal_price:2, decimal_subtotal:2, margin_top:15, margin_right:18, margin_bottom:18, margin_left:18, font_size:10, font_color:'#333333', line_height:1.5, footer_text:'' },
             loadingTemplate: false,
             docTypes:        DLE_DOC_TYPES,
             blockDefs:       DLE_BLOCK_DEFS,
@@ -6571,7 +6747,7 @@ class DocumentLayoutEditor extends Component {
         try {
             const tpls = await RpcService.call('ir.report.template', 'search_read',
                 [[['model', '=', model]]],
-                { fields: ['id', 'paper_format', 'orientation', 'decimal_qty', 'decimal_price', 'decimal_subtotal'], limit: 1 });
+                { fields: ['id', 'paper_format', 'orientation', 'decimal_qty', 'decimal_price', 'decimal_subtotal', 'margin_top', 'margin_right', 'margin_bottom', 'margin_left', 'font_size', 'font_color', 'line_height', 'footer_text'], limit: 1 });
             if (tpls && tpls.length > 0) {
                 this.state.templateId = tpls[0].id;
                 this.state.docSettings.paper_format      = tpls[0].paper_format      || 'A4';
@@ -6579,6 +6755,14 @@ class DocumentLayoutEditor extends Component {
                 this.state.docSettings.decimal_qty       = tpls[0].decimal_qty       ?? 2;
                 this.state.docSettings.decimal_price     = tpls[0].decimal_price     ?? 2;
                 this.state.docSettings.decimal_subtotal  = tpls[0].decimal_subtotal  ?? 2;
+                this.state.docSettings.margin_top        = tpls[0].margin_top        ?? 15;
+                this.state.docSettings.margin_right      = tpls[0].margin_right      ?? 18;
+                this.state.docSettings.margin_bottom     = tpls[0].margin_bottom     ?? 18;
+                this.state.docSettings.margin_left       = tpls[0].margin_left       ?? 18;
+                this.state.docSettings.font_size         = tpls[0].font_size         ?? 10;
+                this.state.docSettings.font_color        = tpls[0].font_color        || '#333333';
+                this.state.docSettings.line_height       = tpls[0].line_height       ?? 1.5;
+                this.state.docSettings.footer_text       = tpls[0].footer_text       || '';
             }
         } catch (e) { console.error(e); }
         // Load block config
@@ -6630,6 +6814,14 @@ class DocumentLayoutEditor extends Component {
                         decimal_qty:      Number.isInteger(this.state.docSettings.decimal_qty)      ? this.state.docSettings.decimal_qty      : 2,
                         decimal_price:    Number.isInteger(this.state.docSettings.decimal_price)    ? this.state.docSettings.decimal_price    : 2,
                         decimal_subtotal: Number.isInteger(this.state.docSettings.decimal_subtotal) ? this.state.docSettings.decimal_subtotal : 2,
+                        margin_top:       parseFloat(this.state.docSettings.margin_top)    || 15,
+                        margin_right:     parseFloat(this.state.docSettings.margin_right)  || 18,
+                        margin_bottom:    parseFloat(this.state.docSettings.margin_bottom) || 18,
+                        margin_left:      parseFloat(this.state.docSettings.margin_left)   || 18,
+                        font_size:        parseInt(this.state.docSettings.font_size)       || 10,
+                        font_color:       this.state.docSettings.font_color  || '#333333',
+                        line_height:      parseFloat(this.state.docSettings.line_height)   || 1.5,
+                        footer_text:      this.state.docSettings.footer_text || '',
                     }], {});
             }
             // Save block config
@@ -7053,7 +7245,7 @@ class ReportSettingsView extends Component {
     onPreview() {
         if (!this.state.template) return;
         const id = this.state.previewId || '1';
-        window.open('/report/html/' + this.state.template.model + '/' + id, '_blank');
+        window.open('/report/pdf/' + this.state.template.model + '/' + id, '_blank');
     }
 }
 

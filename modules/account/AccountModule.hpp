@@ -19,6 +19,7 @@
 #include "DbConnection.hpp"
 #include "AccountViews.hpp"
 #include "MailHelpers.hpp"
+#include "Errors.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <memory>
@@ -28,6 +29,7 @@
 #include <iomanip>
 #include <sstream>
 #include <cmath>
+#include <algorithm>
 
 namespace odoo::modules::account {
 
@@ -779,35 +781,197 @@ private:
         const auto ids = call.ids();
         if (ids.empty()) return true;
 
-        // payment_date is passed as a kwarg from the frontend
+        // --- Extract kwargs ---
         std::string payDate;
         if (call.kwargs.contains("payment_date") && call.kwargs["payment_date"].is_string())
             payDate = call.kwargs["payment_date"].get<std::string>();
-
-        // Fallback: today
         if (payDate.empty()) {
-            auto t  = std::time(nullptr);
-            auto tm = *std::localtime(&t);
-            char buf[11];
-            std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+            auto t = std::time(nullptr); auto tm = *std::localtime(&t);
+            char buf[11]; std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
             payDate = buf;
         }
 
+        int    kwJournalId = 0;
+        double kwAmount    = -1.0;   // -1 = use full residual
+        std::string kwMemo;
+        if (call.kwargs.contains("journal_id") && call.kwargs["journal_id"].is_number_integer())
+            kwJournalId = call.kwargs["journal_id"].get<int>();
+        if (call.kwargs.contains("amount") && call.kwargs["amount"].is_number())
+            kwAmount = call.kwargs["amount"].get<double>();
+        if (call.kwargs.contains("memo") && call.kwargs["memo"].is_string())
+            kwMemo = call.kwargs["memo"].get<std::string>();
+
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
+        nlohmann::json result = nlohmann::json::array();
 
         for (int id : ids) {
-            txn.exec(
-                "UPDATE account_move "
-                "SET payment_state='paid', amount_residual=0, write_date=now() "
-                "WHERE id=$1 AND state='posted'",
+            // --- Read invoice ---
+            auto invRow = txn.exec(
+                "SELECT amount_total, amount_residual, partner_id, company_id, currency_id, "
+                "       move_type, name, state, payment_state "
+                "FROM account_move WHERE id=$1",
                 pqxx::params{id});
-            odoo::modules::mail::postLog(txn, "account.move", id, 0,
-                "Payment registered on " + payDate + ".", "log_note");
+            if (invRow.empty())
+                throw std::runtime_error("Invoice not found: " + std::to_string(id));
+
+            std::string invState   = invRow[0]["state"].c_str();
+            std::string payState   = invRow[0]["payment_state"].c_str();
+            if (invState != "posted")
+                throw odoo::infrastructure::AccessDeniedError(
+                    "Payment can only be registered on posted invoices");
+            if (payState == "paid")
+                throw odoo::infrastructure::AccessDeniedError(
+                    "Invoice is already fully paid");
+
+            double amountResidual = invRow[0]["amount_residual"].as<double>(0.0);
+            int    partnerId      = invRow[0]["partner_id"].is_null()  ? 0 : invRow[0]["partner_id"].as<int>();
+            int    companyId      = invRow[0]["company_id"].is_null()  ? 1 : invRow[0]["company_id"].as<int>();
+            int    currencyId     = invRow[0]["currency_id"].is_null() ? 0 : invRow[0]["currency_id"].as<int>();
+            std::string moveType  = invRow[0]["move_type"].c_str();
+            std::string invName   = invRow[0]["name"].c_str();
+
+            double payAmount = (kwAmount > 0)
+                ? std::min(kwAmount, amountResidual)
+                : amountResidual;
+            if (payAmount <= 0) payAmount = amountResidual;
+
+            std::string memo = kwMemo.empty() ? invName : kwMemo;
+
+            bool isOutInvoice   = (moveType == "out_invoice" || moveType == "out_refund");
+            std::string payType = isOutInvoice ? "inbound"  : "outbound";
+            std::string partType= isOutInvoice ? "customer" : "supplier";
+
+            // --- Resolve journal ---
+            int journalId = kwJournalId;
+            if (journalId <= 0) {
+                auto jdefRow = txn.exec(
+                    "SELECT id FROM account_journal "
+                    "WHERE type IN ('bank','cash') AND company_id=$1 "
+                    "ORDER BY (type='bank') DESC, id LIMIT 1",
+                    pqxx::params{companyId});
+                if (jdefRow.empty())
+                    throw std::runtime_error("No bank or cash journal found");
+                journalId = jdefRow[0][0].as<int>();
+            }
+
+            // --- Cash/bank account for the journal ---
+            auto jrow = txn.exec(
+                "SELECT code, default_account_id FROM account_journal WHERE id=$1",
+                pqxx::params{journalId});
+            if (jrow.empty()) throw std::runtime_error("Journal not found");
+            std::string jcode         = jrow[0][0].c_str();
+            int         cashAccountId = jrow[0][1].is_null() ? 0 : jrow[0][1].as<int>();
+            if (cashAccountId == 0) {
+                auto arow = txn.exec(
+                    "SELECT id FROM account_account "
+                    "WHERE account_type='asset_cash' AND company_id=$1 AND active=TRUE LIMIT 1",
+                    pqxx::params{companyId});
+                if (!arow.empty()) cashAccountId = arow[0][0].as<int>();
+            }
+
+            // --- Partner (receivable/payable) account ---
+            std::string accType = isOutInvoice ? "asset_receivable" : "liability_payable";
+            auto arow = txn.exec(
+                "SELECT id FROM account_account "
+                "WHERE account_type=$1 AND company_id=$2 AND active=TRUE LIMIT 1",
+                pqxx::params{accType, companyId});
+            int partnerAccId = arow.empty() ? cashAccountId : arow[0][0].as<int>();
+
+            // --- Create account_payment ---
+            pqxx::params pp;
+            pp.append(payDate); pp.append(journalId);
+            if (partnerId > 0) pp.append(partnerId); else pp.append(nullptr);
+            pp.append(companyId);
+            if (currencyId > 0) pp.append(currencyId); else pp.append(nullptr);
+            pp.append(payAmount); pp.append(payType); pp.append(partType); pp.append(memo);
+
+            auto pmtRow = txn.exec(
+                "INSERT INTO account_payment "
+                "(date, journal_id, partner_id, company_id, currency_id, "
+                " amount, payment_type, partner_type, memo, state) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft') RETURNING id",
+                pp);
+            int pmtId = pmtRow[0][0].as<int>();
+
+            // --- Generate journal entry name ---
+            std::string year = payDate.size() >= 4 ? payDate.substr(0, 4) : "2026";
+            auto cnt = txn.exec(
+                "SELECT COUNT(*) FROM account_move "
+                "WHERE journal_id=$1 AND state='posted' "
+                "AND EXTRACT(YEAR FROM date::date)=$2::int",
+                pqxx::params{journalId, std::stoi(year)});
+            int seq = cnt[0][0].as<int>() + 1;
+            std::ostringstream ss;
+            ss << jcode << "/" << year << "/" << std::setfill('0') << std::setw(4) << seq;
+
+            // --- Create journal entry ---
+            pqxx::params mp;
+            mp.append(ss.str()); mp.append(payDate); mp.append(journalId);
+            if (partnerId > 0) mp.append(partnerId); else mp.append(nullptr);
+            mp.append(companyId);
+            if (currencyId > 0) mp.append(currencyId); else mp.append(nullptr);
+            mp.append(memo);
+
+            auto moveRow = txn.exec(
+                "INSERT INTO account_move "
+                "(name, move_type, state, date, journal_id, partner_id, "
+                " company_id, currency_id, narration) "
+                "VALUES ($1,'entry','posted',$2,$3,$4,$5,$6,$7) RETURNING id",
+                mp);
+            int moveId = moveRow[0][0].as<int>();
+
+            // DR: cash account (inbound) or payable (outbound)
+            // CR: receivable (inbound) or cash account (outbound)
+            int drAccId = isOutInvoice ? cashAccountId : partnerAccId;
+            int crAccId = isOutInvoice ? partnerAccId  : cashAccountId;
+
+            auto insertLine = [&](int acctId, double debit, double credit) {
+                pqxx::params lp;
+                lp.append(moveId); lp.append(acctId); lp.append(journalId);
+                lp.append(companyId); lp.append(payDate); lp.append(memo);
+                if (partnerId > 0) lp.append(partnerId); else lp.append(nullptr);
+                lp.append(debit); lp.append(credit);
+                txn.exec(
+                    "INSERT INTO account_move_line "
+                    "(move_id, account_id, journal_id, company_id, date, name, "
+                    " partner_id, debit, credit) "
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)", lp);
+            };
+            insertLine(drAccId, payAmount, 0.0);
+            insertLine(crAccId, 0.0, payAmount);
+
+            // Link payment → move
+            txn.exec(
+                "UPDATE account_payment SET state='posted', move_id=$1, name=$2, write_date=now() "
+                "WHERE id=$3",
+                pqxx::params{moveId, ss.str(), pmtId});
+
+            // --- Update invoice ---
+            double newResidual = std::max(0.0, amountResidual - payAmount);
+            std::string newPayState = (newResidual < 0.001) ? "paid" : "partial";
+            txn.exec(
+                "UPDATE account_move SET payment_state=$1, amount_residual=$2, write_date=now() "
+                "WHERE id=$3 AND state='posted'",
+                pqxx::params{newPayState, newResidual, id});
+
+            // Chatter
+            std::ostringstream logMsg;
+            logMsg << std::fixed << std::setprecision(2)
+                   << "Payment of " << payAmount << " registered on " << payDate << ".";
+            if (!memo.empty() && memo != invName)
+                logMsg << " Ref: " << memo;
+            odoo::modules::mail::postLog(txn, "account.move", id, 0, logMsg.str(), "log_note");
+
+            result.push_back({
+                {"payment_id",      pmtId},
+                {"payment_state",   newPayState},
+                {"amount_residual", newResidual}
+            });
         }
 
         txn.commit();
-        return true;
+        return (result.size() == 1) ? result[0] : result;
     }
 
     nlohmann::json handleButtonDraft(const core::CallKwArgs& call) {

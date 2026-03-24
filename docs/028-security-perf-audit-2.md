@@ -201,3 +201,27 @@ When adding a new model that contains sensitive data, add it to the `kRequired` 
 
 ### PortalSessionManager is now the same pattern as SessionManager
 Both use `shared_mutex` + two-phase `get()`. Any future session store should follow this pattern.
+
+---
+
+## SEC-27 — Report Routes Were Unauthenticated (Fixed 2026-03-24)
+
+**Root cause:** `GET /report/html/{model}/{id}` in `ReportModule` had no session check.
+Any client could fetch any document by guessing model + record ID.
+
+**Fix (`modules/report/ReportModule.hpp`):**
+- Added `#include "SessionManager.hpp"`
+- Captured `sessions = services_.sessions()` in `registerRoutes()`
+- Both `/report/html/` and `/report/pdf/` routes validate the session cookie via
+  `SessionManager::cookieName()` / `sessions->get(sid)`
+- Unauthenticated requests receive `302 → /#/login`
+- The `/report/preview/` route (template editor preview with dummy data) remains open;
+  it contains no real customer data
+
+**Also added in this fix:**
+- `GET /report/pdf/{model}/{id}` — new route that renders HTML via `renderDoc_()` (shared
+  static helper), injects `<style>.print-btn{display:none!important}</style>`, writes to
+  `/tmp/`, runs `wkhtmltopdf --quiet`, returns `application/pdf`; returns HTTP 503 if
+  wkhtmltopdf is not installed
+- All form view "Print" buttons updated from `/report/html/` to `/report/pdf/`
+- `renderDoc_()` static member factored out of the old inline lambda — both routes call it
