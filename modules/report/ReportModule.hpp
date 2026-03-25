@@ -656,7 +656,12 @@ private:
             "COALESCE(margin_top,15)::float AS margin_top, COALESCE(margin_right,18)::float AS margin_right, "
             "COALESCE(margin_bottom,18)::float AS margin_bottom, COALESCE(margin_left,18)::float AS margin_left, "
             "COALESCE(font_size,10) AS font_size, COALESCE(font_color,'#333333') AS font_color, "
-            "COALESCE(line_height,1.5)::float AS line_height, COALESCE(footer_text,'') AS footer_text "
+            "COALESCE(line_height,1.5)::float AS line_height, COALESCE(footer_text,'') AS footer_text, "
+            "COALESCE(footer_show_page_num,true) AS footer_show_page_num, "
+            "COALESCE(footer_page_num_fmt,'Page {p} of {t}') AS footer_page_num_fmt, "
+            "COALESCE(footer_text_source,'custom') AS footer_text_source, "
+            "COALESCE(footer_line_color,'#cccccc') AS footer_line_color, "
+            "COALESCE(footer_line_width,0.5)::float AS footer_line_width "
             "FROM ir_report_template WHERE id IN (" + inClause + ") ORDER BY id");
 
         nlohmann::json result = nlohmann::json::array();
@@ -679,7 +684,12 @@ private:
             rec["font_size"]        = row["font_size"].as<int>(10);
             rec["font_color"]       = safeStr(row["font_color"]);
             rec["line_height"]      = row["line_height"].as<double>(1.5);
-            rec["footer_text"]      = safeStr(row["footer_text"]);
+            rec["footer_text"]          = safeStr(row["footer_text"]);
+            rec["footer_show_page_num"] = row["footer_show_page_num"].is_null() ? true : row["footer_show_page_num"].as<bool>();
+            rec["footer_page_num_fmt"]  = safeStr(row["footer_page_num_fmt"]);
+            rec["footer_text_source"]   = safeStr(row["footer_text_source"]);
+            rec["footer_line_color"]    = safeStr(row["footer_line_color"]);
+            rec["footer_line_width"]    = row["footer_line_width"].as<double>(0.5);
             result.push_back(rec);
         }
         return result;
@@ -719,7 +729,14 @@ private:
         int    fontSize     = vals.contains("font_size")     && vals["font_size"].is_number_integer() ? vals["font_size"].get<int>()    : 10;
         std::string fontColor  = vals.value("font_color",   "#333333");
         double lineHeight   = vals.contains("line_height")   && vals["line_height"].is_number()   ? vals["line_height"].get<double>()   : 1.5;
-        std::string footerText = vals.value("footer_text",  "");
+        std::string footerText      = vals.value("footer_text", "");
+        bool footerShowPageNum = vals.contains("footer_show_page_num") && vals["footer_show_page_num"].is_boolean()
+                                 ? vals["footer_show_page_num"].get<bool>() : true;
+        std::string footerPageNumFmt = vals.value("footer_page_num_fmt", "Page {p} of {t}");
+        std::string footerTextSource = vals.value("footer_text_source",  "custom");
+        std::string footerLineColor  = vals.value("footer_line_color",   "#cccccc");
+        double footerLineWidth = vals.contains("footer_line_width") && vals["footer_line_width"].is_number()
+                                 ? vals["footer_line_width"].get<double>() : 0.5;
 
         std::string inClause;
         for (size_t i = 0; i < ids.size(); ++i) {
@@ -736,22 +753,30 @@ private:
                 "template_html=$1, paper_format=$2, orientation=$3, name=$4, "
                 "decimal_qty=$5, decimal_price=$6, decimal_subtotal=$7, "
                 "margin_top=$8, margin_right=$9, margin_bottom=$10, margin_left=$11, "
-                "font_size=$12, font_color=$13, line_height=$14, footer_text=$15 "
+                "font_size=$12, font_color=$13, line_height=$14, footer_text=$15, "
+                "footer_show_page_num=$16, footer_page_num_fmt=$17, footer_text_source=$18, "
+                "footer_line_color=$19, footer_line_width=$20 "
                 "WHERE id IN (" + inClause + ")",
                 pqxx::params{templateHtml, paperFormat, orientation, name, decQty, decPrc, decSub,
                              marginTop, marginRight, marginBottom, marginLeft,
-                             fontSize, fontColor, lineHeight, footerText});
+                             fontSize, fontColor, lineHeight, footerText,
+                             footerShowPageNum, footerPageNumFmt, footerTextSource,
+                             footerLineColor, footerLineWidth});
         } else {
             txn.exec(
                 "UPDATE ir_report_template SET "
                 "template_html=$1, paper_format=$2, orientation=$3, "
                 "decimal_qty=$4, decimal_price=$5, decimal_subtotal=$6, "
                 "margin_top=$7, margin_right=$8, margin_bottom=$9, margin_left=$10, "
-                "font_size=$11, font_color=$12, line_height=$13, footer_text=$14 "
+                "font_size=$11, font_color=$12, line_height=$13, footer_text=$14, "
+                "footer_show_page_num=$15, footer_page_num_fmt=$16, footer_text_source=$17, "
+                "footer_line_color=$18, footer_line_width=$19 "
                 "WHERE id IN (" + inClause + ")",
                 pqxx::params{templateHtml, paperFormat, orientation, decQty, decPrc, decSub,
                              marginTop, marginRight, marginBottom, marginLeft,
-                             fontSize, fontColor, lineHeight, footerText});
+                             fontSize, fontColor, lineHeight, footerText,
+                             footerShowPageNum, footerPageNumFmt, footerTextSource,
+                             footerLineColor, footerLineWidth});
         }
         txn.commit();
         return true;
@@ -1232,97 +1257,153 @@ public:
                     std::string pdfFontColor = "#333333";
                     double pdfLineHeight = 1.5;
                     std::string pdfPaperFormat = "A4";
-                    std::string pdfFooterOverride;
+                    std::string pdfFooterText;
+                    bool        pdfFooterShowPageNum = true;
+                    std::string pdfFooterPageNumFmt  = "Page {p} of {t}";
+                    std::string pdfFooterTextSource  = "custom";
+                    std::string pdfFooterLineColor   = "#cccccc";
+                    double      pdfFooterLineWidth   = 0.5;
                     try {
                         auto srows = txn.exec(
                             "SELECT COALESCE(margin_top,15)::float AS mt, COALESCE(margin_right,18)::float AS mr, "
                             "COALESCE(margin_bottom,18)::float AS mb, COALESCE(margin_left,18)::float AS ml, "
                             "COALESCE(font_size,10) AS fs, COALESCE(font_color,'#333333') AS fc, "
                             "COALESCE(line_height,1.5)::float AS lh, COALESCE(paper_format,'A4') AS pf, "
-                            "COALESCE(footer_text,'') AS ft "
+                            "COALESCE(footer_text,'') AS ft, "
+                            "COALESCE(footer_show_page_num,true) AS fspn, "
+                            "COALESCE(footer_page_num_fmt,'Page {p} of {t}') AS fpnf, "
+                            "COALESCE(footer_text_source,'custom') AS fts, "
+                            "COALESCE(footer_line_color,'#cccccc') AS flc, "
+                            "COALESCE(footer_line_width,0.5)::float AS flw "
                             "FROM ir_report_template WHERE model=$1 AND active=true ORDER BY id LIMIT 1",
                             pqxx::params{model});
                         if (!srows.empty()) {
-                            pdfMarginTop    = srows[0]["mt"].as<double>(15);
-                            pdfMarginRight  = srows[0]["mr"].as<double>(18);
-                            pdfMarginBottom = srows[0]["mb"].as<double>(18);
-                            pdfMarginLeft   = srows[0]["ml"].as<double>(18);
-                            pdfFontSize     = srows[0]["fs"].as<int>(10);
-                            pdfFontColor    = safeStr(srows[0]["fc"]);
-                            pdfLineHeight   = srows[0]["lh"].as<double>(1.5);
-                            pdfPaperFormat  = safeStr(srows[0]["pf"]);
-                            pdfFooterOverride = safeStr(srows[0]["ft"]);
+                            pdfMarginTop          = srows[0]["mt"].as<double>(15);
+                            pdfMarginRight        = srows[0]["mr"].as<double>(18);
+                            pdfMarginBottom       = srows[0]["mb"].as<double>(18);
+                            pdfMarginLeft         = srows[0]["ml"].as<double>(18);
+                            pdfFontSize           = srows[0]["fs"].as<int>(10);
+                            pdfFontColor          = safeStr(srows[0]["fc"]);
+                            pdfLineHeight         = srows[0]["lh"].as<double>(1.5);
+                            pdfPaperFormat        = safeStr(srows[0]["pf"]);
+                            pdfFooterText         = safeStr(srows[0]["ft"]);
+                            pdfFooterShowPageNum  = srows[0]["fspn"].is_null() ? true : srows[0]["fspn"].as<bool>();
+                            pdfFooterPageNumFmt   = safeStr(srows[0]["fpnf"]);
+                            pdfFooterTextSource   = safeStr(srows[0]["fts"]);
+                            pdfFooterLineColor    = safeStr(srows[0]["flc"]);
+                            pdfFooterLineWidth    = srows[0]["flw"].as<double>(0.5);
                         }
                     } catch (...) {}
                     txn.commit();
 
                     std::string tmpBase   = "/tmp/erp_report_" + model + "_" + idStr;
                     std::string tmpHtml   = tmpBase + ".html";
+                    std::string tmpFooter = tmpBase + "_footer.html";
                     std::string tmpPdf    = tmpBase + ".pdf";
 
-                    // --- If template settings include a footer_text override, inject a
-                    //     page-footer div into the HTML if none is already present.
-                    //     wkhtmltopdf 0.12.6 (unpatched Qt) silently ignores --footer-html,
-                    //     so the footer lives in the main HTML as position:fixed;bottom:0.
-                    {
-                        const std::string marker = "class=\"page-footer\"";
-                        if (!pdfFooterOverride.empty() && html.find(marker) == std::string::npos) {
-                            // No footer block in template — inject one from template settings
-                            const std::string inject =
-                                "<div class=\"page-footer\">" + pdfFooterOverride + "</div>\n";
-                            size_t bodyEnd = html.find("</body>");
-                            if (bodyEnd != std::string::npos)
-                                html.insert(bodyEnd, inject);
+                    // --- Determine footer text based on source setting ---
+                    std::string footerContent;
+                    if (pdfFooterTextSource == "website") {
+                        try {
+                            auto wrows = txn.exec(
+                                "SELECT value FROM ir_config_parameter WHERE key='report.website' LIMIT 1");
+                            if (!wrows.empty()) footerContent = safeStr(wrows[0]["value"]);
+                        } catch (...) {}
+                    } else if (pdfFooterTextSource == "custom") {
+                        if (!pdfFooterText.empty()) {
+                            footerContent = pdfFooterText;
+                        } else {
+                            // Fall back to page-footer div in rendered HTML
+                            const std::string marker = "class=\"page-footer\"";
+                            size_t pos = html.find(marker);
+                            if (pos != std::string::npos) {
+                                size_t gt = html.find('>', pos);
+                                size_t lt = html.find("</div>", gt);
+                                if (gt != std::string::npos && lt != std::string::npos)
+                                    footerContent = html.substr(gt + 1, lt - gt - 1);
+                            }
                         }
                     }
+                    // 'none' => footerContent stays empty
+
+                    bool hasFooter = !footerContent.empty() || pdfFooterShowPageNum;
 
                     // --- Inject PDF-specific CSS overrides before </head> ---
-                    // Remove body padding (wkhtmltopdf --margin-* handle margins externally).
-                    // Do NOT override min-height: the template CSS sets min-height:257mm which
-                    // keeps the wkhtmltopdf viewport at full page height, so position:fixed;bottom:0
-                    // anchors to the page bottom rather than the content bottom.
-                    // padding-bottom reserves space so content doesn't slide under the fixed footer.
-                    std::ostringstream cssOss;
-                    cssOss << "<style>"
-                           << "body{padding:0!important;padding-bottom:12mm!important;"
-                           << "font-size:" << pdfFontSize << "pt!important;"
-                           << "color:" << pdfFontColor << "!important;"
-                           << "line-height:" << std::fixed << std::setprecision(2) << pdfLineHeight << "!important;}"
-                           << ".page-footer{position:fixed!important;bottom:0!important;"
-                           << "left:0!important;right:0!important;width:100%!important;"
-                           << "display:block!important;}"
-                           << ".print-btn{display:none!important;}"
-                           << "</style>";
-                    const std::string pdfCss = cssOss.str();
+                    // With wkhtmltopdf 0.12.6.1-2 (patched Qt), --footer-html works correctly.
+                    // Hide the in-body .page-footer since it is replaced by --footer-html.
                     {
+                        std::ostringstream cssOss;
+                        cssOss << "<style>"
+                               << "body{font-size:" << pdfFontSize << "pt!important;"
+                               << "color:" << pdfFontColor << "!important;"
+                               << "line-height:" << std::fixed << std::setprecision(2) << pdfLineHeight << "!important;}"
+                               << ".page-footer{display:none!important;}"
+                               << ".print-btn{display:none!important;}"
+                               << "</style>";
                         size_t hEnd = html.find("</head>");
-                        if (hEnd != std::string::npos) html.insert(hEnd, pdfCss);
+                        if (hEnd != std::string::npos) html.insert(hEnd, cssOss.str());
                     }
 
                     // --- Write main HTML ---
                     { std::ofstream f(tmpHtml); f << html; }
 
+                    // --- Write footer HTML using configured settings ---
+                    if (hasFooter) {
+                        // Convert {p}/{t} placeholder notation to wkhtmltopdf's [page]/[toPage]
+                        std::string pageNumHtml = pdfFooterPageNumFmt;
+                        {
+                            size_t p;
+                            while ((p = pageNumHtml.find("{p}")) != std::string::npos)
+                                pageNumHtml.replace(p, 3, "[page]");
+                            while ((p = pageNumHtml.find("{t}")) != std::string::npos)
+                                pageNumHtml.replace(p, 3, "[toPage]");
+                        }
+
+                        std::ostringstream fw;
+                        fw << std::fixed << std::setprecision(2);
+                        fw << "<!DOCTYPE html><html><head><style>"
+                           << "body{border-top:" << pdfFooterLineWidth << "pt solid " << pdfFooterLineColor << ";"
+                           << "margin:0;padding-top:4px;"
+                           << "font-family:Arial,Helvetica,sans-serif;font-size:9pt;color:#333333;"
+                           << "overflow:hidden;}"
+                           << ".footer-text{float:left;}"
+                           << ".page-num{float:right;}"
+                           << "</style></head><body>";
+                        if (!footerContent.empty())
+                            fw << "<span class=\"footer-text\">" << footerContent << "</span>";
+                        if (pdfFooterShowPageNum)
+                            fw << "<span class=\"page-num\">" << pageNumHtml << "</span>";
+                        fw << "</body></html>";
+
+                        std::ofstream ff(tmpFooter);
+                        ff << fw.str();
+                    }
+
                     // --- Run wkhtmltopdf ---
-                    // --margin-* controls the page margins (printable area).
-                    // Footer is embedded in HTML as position:fixed;bottom:0 because
-                    // wkhtmltopdf 0.12.6 (unpatched Qt) does not support --footer-html.
+                    // --footer-html requires wkhtmltopdf built with patched Qt (0.12.6.1-2.jammy).
+                    // --margin-bottom provides the safe zone for the footer strip.
                     auto mmStr = [](double v) {
                         std::ostringstream s;
                         s << std::fixed << std::setprecision(1) << v << "mm";
                         return s.str();
                     };
+                    double effectiveMarginBottom = hasFooter
+                        ? std::max(pdfMarginBottom, 20.0)
+                        : pdfMarginBottom;
                     std::string cmd = std::string("wkhtmltopdf --quiet")
                         + " --page-size "    + (pdfPaperFormat.empty() ? "A4" : pdfPaperFormat)
                         + " --margin-top "   + mmStr(pdfMarginTop)
                         + " --margin-right " + mmStr(pdfMarginRight)
-                        + " --margin-bottom "+ mmStr(pdfMarginBottom)
+                        + " --margin-bottom "+ mmStr(effectiveMarginBottom)
                         + " --margin-left "  + mmStr(pdfMarginLeft)
+                        + (hasFooter ? " --footer-html \"" + tmpFooter + "\" --footer-spacing 5" : "")
                         + " --enable-local-file-access"
                         + " \"" + tmpHtml + "\""
                         + " \"" + tmpPdf  + "\""
                         + " 2>/dev/null";
                     int ret = std::system(cmd.c_str());
                     std::remove(tmpHtml.c_str());
+                    if (hasFooter) std::remove(tmpFooter.c_str());
 
                     if (ret != 0) {
                         std::remove(tmpPdf.c_str());
@@ -1543,7 +1624,12 @@ private:
         txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS font_size      INTEGER      NOT NULL DEFAULT 10");
         txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS font_color     TEXT         NOT NULL DEFAULT '#333333'");
         txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS line_height    NUMERIC(4,2) NOT NULL DEFAULT 1.5");
-        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS footer_text    TEXT         NOT NULL DEFAULT ''");
+        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS footer_text          TEXT         NOT NULL DEFAULT ''");
+        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS footer_show_page_num BOOLEAN      NOT NULL DEFAULT true");
+        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS footer_page_num_fmt  TEXT         NOT NULL DEFAULT 'Page {p} of {t}'");
+        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS footer_text_source   TEXT         NOT NULL DEFAULT 'custom'");
+        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS footer_line_color    TEXT         NOT NULL DEFAULT '#cccccc'");
+        txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS footer_line_width    NUMERIC(4,2) NOT NULL DEFAULT 0.5");
         txn.commit();
     }
 

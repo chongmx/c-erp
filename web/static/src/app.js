@@ -6906,49 +6906,207 @@ class ReportSettingsView extends Component {
                             <div class="loading">Loading template…</div>
                         </t>
                         <t t-else="">
-                            <h3 t-esc="state.template ? state.template.name : ''"/>
-
-                            <!-- Format row -->
-                            <div class="report-format-row">
-                                <label>Paper Format:</label>
-                                <select t-on-change="onPaperFormatChange">
-                                    <option value="A4" t-att-selected="state.template.paper_format === 'A4' ? true : undefined">A4</option>
-                                    <option value="Letter" t-att-selected="state.template.paper_format === 'Letter' ? true : undefined">Letter</option>
-                                    <option value="A3" t-att-selected="state.template.paper_format === 'A3' ? true : undefined">A3</option>
-                                    <option value="Legal" t-att-selected="state.template.paper_format === 'Legal' ? true : undefined">Legal</option>
-                                </select>
-                                <label>Orientation:</label>
-                                <select t-on-change="onOrientationChange">
-                                    <option value="portrait" t-att-selected="state.template.orientation === 'portrait' ? true : undefined">Portrait</option>
-                                    <option value="landscape" t-att-selected="state.template.orientation === 'landscape' ? true : undefined">Landscape</option>
-                                </select>
-                                <button class="btn btn-primary"
-                                        t-att-disabled="state.saving ? true : undefined"
-                                        t-on-click="onSave">
-                                    <t t-if="state.saving">Saving…</t>
-                                    <t t-else="">Save</t>
-                                </button>
-                                <t t-if="state.dirty">
-                                    <span style="color:var(--muted);font-size:.8rem;">Unsaved changes</span>
-                                </t>
-                                <t t-if="state.saved">
-                                    <span style="color:var(--ok);font-size:.8rem;">Saved!</span>
-                                </t>
+                            <!-- Header row: name + save/preview actions -->
+                            <div class="rpt-editor-header">
+                                <h3 t-esc="state.template ? state.template.name : ''"/>
+                                <div class="rpt-editor-actions">
+                                    <input type="number" min="1" t-model="state.previewId"
+                                           placeholder="Record ID" class="rpt-preview-id"/>
+                                    <button class="btn" t-on-click="onPreview">Preview PDF</button>
+                                    <button class="btn btn-primary"
+                                            t-att-disabled="state.saving ? true : undefined"
+                                            t-on-click="onSave">
+                                        <t t-if="state.saving">Saving…</t>
+                                        <t t-else="">Save</t>
+                                    </button>
+                                    <t t-if="state.dirty">
+                                        <span class="rpt-status muted">Unsaved changes</span>
+                                    </t>
+                                    <t t-if="state.saved">
+                                        <span class="rpt-status ok">Saved!</span>
+                                    </t>
+                                </div>
                             </div>
 
-                            <!-- Preview row -->
-                            <div class="report-preview-row">
-                                <label>Preview Record ID:</label>
-                                <input type="number" min="1" t-model="state.previewId" placeholder="Record ID"/>
-                                <button class="btn" t-on-click="onPreview">Preview in New Tab</button>
+                            <!-- Page Setup -->
+                            <div class="rpt-section">
+                                <div class="rpt-section-title">Page Setup</div>
+                                <div class="rpt-grid rpt-grid-4">
+                                    <div class="rpt-field">
+                                        <label>Paper Format</label>
+                                        <select t-on-change="onPaperFormatChange">
+                                            <option value="A4" t-att-selected="state.template.paper_format === 'A4' ? true : undefined">A4</option>
+                                            <option value="Letter" t-att-selected="state.template.paper_format === 'Letter' ? true : undefined">Letter</option>
+                                            <option value="A3" t-att-selected="state.template.paper_format === 'A3' ? true : undefined">A3</option>
+                                            <option value="Legal" t-att-selected="state.template.paper_format === 'Legal' ? true : undefined">Legal</option>
+                                        </select>
+                                    </div>
+                                    <div class="rpt-field">
+                                        <label>Orientation</label>
+                                        <select t-on-change="onOrientationChange">
+                                            <option value="portrait" t-att-selected="state.template.orientation === 'portrait' ? true : undefined">Portrait</option>
+                                            <option value="landscape" t-att-selected="state.template.orientation === 'landscape' ? true : undefined">Landscape</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="rpt-grid rpt-grid-4" style="margin-top:8px;">
+                                    <div class="rpt-field">
+                                        <label>Top Margin (mm)</label>
+                                        <input type="number" step="0.5" min="0"
+                                               t-att-value="state.template.margin_top"
+                                               t-on-change="(e) => this.onNumField(e, 'margin_top')"/>
+                                    </div>
+                                    <div class="rpt-field">
+                                        <label>Right (mm)</label>
+                                        <input type="number" step="0.5" min="0"
+                                               t-att-value="state.template.margin_right"
+                                               t-on-change="(e) => this.onNumField(e, 'margin_right')"/>
+                                    </div>
+                                    <div class="rpt-field">
+                                        <label>Bottom (mm)</label>
+                                        <input type="number" step="0.5" min="0"
+                                               t-att-value="state.template.margin_bottom"
+                                               t-on-change="(e) => this.onNumField(e, 'margin_bottom')"/>
+                                    </div>
+                                    <div class="rpt-field">
+                                        <label>Left (mm)</label>
+                                        <input type="number" step="0.5" min="0"
+                                               t-att-value="state.template.margin_left"
+                                               t-on-change="(e) => this.onNumField(e, 'margin_left')"/>
+                                    </div>
+                                </div>
                             </div>
 
-                            <!-- HTML editor -->
-                            <textarea class="report-template-editor"
-                                      t-on-input="onEditorInput"
-                                      t-ref="editorRef">
-                                <t t-esc="state.template.template_html"/>
-                            </textarea>
+                            <!-- Typography -->
+                            <div class="rpt-section">
+                                <div class="rpt-section-title">Typography</div>
+                                <div class="rpt-grid rpt-grid-4">
+                                    <div class="rpt-field">
+                                        <label>Font Size (pt)</label>
+                                        <input type="number" step="1" min="6" max="24"
+                                               t-att-value="state.template.font_size"
+                                               t-on-change="(e) => this.onNumField(e, 'font_size')"/>
+                                    </div>
+                                    <div class="rpt-field">
+                                        <label>Font Color</label>
+                                        <div class="rpt-color-row">
+                                            <input type="color"
+                                                   t-att-value="state.template.font_color || '#333333'"
+                                                   t-on-input="(e) => this.onColorField(e, 'font_color')"/>
+                                            <input type="text"
+                                                   t-att-value="state.template.font_color"
+                                                   t-on-change="(e) => this.onTextField(e, 'font_color')"/>
+                                        </div>
+                                    </div>
+                                    <div class="rpt-field">
+                                        <label>Line Height</label>
+                                        <input type="number" step="0.1" min="1" max="3"
+                                               t-att-value="state.template.line_height"
+                                               t-on-change="(e) => this.onNumField(e, 'line_height')"/>
+                                    </div>
+                                </div>
+                                <div class="rpt-grid rpt-grid-4" style="margin-top:8px;">
+                                    <div class="rpt-field">
+                                        <label>Qty Decimals</label>
+                                        <input type="number" step="1" min="0" max="6"
+                                               t-att-value="state.template.decimal_qty"
+                                               t-on-change="(e) => this.onIntField(e, 'decimal_qty')"/>
+                                    </div>
+                                    <div class="rpt-field">
+                                        <label>Price Decimals</label>
+                                        <input type="number" step="1" min="0" max="6"
+                                               t-att-value="state.template.decimal_price"
+                                               t-on-change="(e) => this.onIntField(e, 'decimal_price')"/>
+                                    </div>
+                                    <div class="rpt-field">
+                                        <label>Subtotal Decimals</label>
+                                        <input type="number" step="1" min="0" max="6"
+                                               t-att-value="state.template.decimal_subtotal"
+                                               t-on-change="(e) => this.onIntField(e, 'decimal_subtotal')"/>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Footer -->
+                            <div class="rpt-section">
+                                <div class="rpt-section-title">Footer</div>
+                                <div class="rpt-grid rpt-grid-4">
+                                    <div class="rpt-field">
+                                        <label>Text Source</label>
+                                        <select t-on-change="(e) => this.onTextField(e, 'footer_text_source')">
+                                            <option value="none"
+                                                    t-att-selected="state.template.footer_text_source === 'none' ? true : undefined">None</option>
+                                            <option value="custom"
+                                                    t-att-selected="(!state.template.footer_text_source || state.template.footer_text_source === 'custom') ? true : undefined">Custom Text</option>
+                                            <option value="website"
+                                                    t-att-selected="state.template.footer_text_source === 'website' ? true : undefined">Website (Report Settings)</option>
+                                        </select>
+                                    </div>
+                                    <t t-if="!state.template.footer_text_source || state.template.footer_text_source === 'custom'">
+                                        <div class="rpt-field rpt-span3">
+                                            <label>Custom Text</label>
+                                            <input type="text"
+                                                   t-att-value="state.template.footer_text"
+                                                   t-on-change="(e) => this.onTextField(e, 'footer_text')"
+                                                   placeholder="e.g. www.example.com or company tagline"/>
+                                        </div>
+                                    </t>
+                                </div>
+                                <div class="rpt-grid rpt-grid-4" style="margin-top:8px;">
+                                    <div class="rpt-field rpt-field-check">
+                                        <label>
+                                            <input type="checkbox"
+                                                   t-att-checked="state.template.footer_show_page_num ? true : undefined"
+                                                   t-on-change="(e) => this.onCheckField(e, 'footer_show_page_num')"/>
+                                            Show Page Numbers
+                                        </label>
+                                    </div>
+                                    <t t-if="state.template.footer_show_page_num">
+                                        <div class="rpt-field">
+                                            <label>Format</label>
+                                            <select t-on-change="(e) => this.onTextField(e, 'footer_page_num_fmt')">
+                                                <option value="Page {p} of {t}"
+                                                        t-att-selected="(!state.template.footer_page_num_fmt || state.template.footer_page_num_fmt === 'Page {p} of {t}') ? true : undefined">Page X of Y</option>
+                                                <option value="{p} / {t}"
+                                                        t-att-selected="state.template.footer_page_num_fmt === '{p} / {t}' ? true : undefined">X / Y</option>
+                                                <option value="Page {p}"
+                                                        t-att-selected="state.template.footer_page_num_fmt === 'Page {p}' ? true : undefined">Page X</option>
+                                                <option value="{p}"
+                                                        t-att-selected="state.template.footer_page_num_fmt === '{p}' ? true : undefined">X only</option>
+                                            </select>
+                                        </div>
+                                    </t>
+                                </div>
+                                <div class="rpt-grid rpt-grid-4" style="margin-top:8px;">
+                                    <div class="rpt-field">
+                                        <label>Separator Color</label>
+                                        <div class="rpt-color-row">
+                                            <input type="color"
+                                                   t-att-value="state.template.footer_line_color || '#cccccc'"
+                                                   t-on-input="(e) => this.onColorField(e, 'footer_line_color')"/>
+                                            <input type="text"
+                                                   t-att-value="state.template.footer_line_color"
+                                                   t-on-change="(e) => this.onTextField(e, 'footer_line_color')"/>
+                                        </div>
+                                    </div>
+                                    <div class="rpt-field">
+                                        <label>Separator Weight (pt)</label>
+                                        <input type="number" step="0.25" min="0" max="4"
+                                               t-att-value="state.template.footer_line_width"
+                                               t-on-change="(e) => this.onNumField(e, 'footer_line_width')"/>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- HTML Template editor -->
+                            <div class="rpt-section">
+                                <div class="rpt-section-title">HTML Template</div>
+                                <textarea class="report-template-editor"
+                                          t-on-input="onEditorInput"
+                                          t-ref="editorRef">
+                                    <t t-esc="state.template.template_html"/>
+                                </textarea>
+                            </div>
                         </t>
                     </div>
                 </div>
@@ -6970,6 +7128,10 @@ class ReportSettingsView extends Component {
                                 <tr>
                                     <td><label>Company Registration No.</label></td>
                                     <td><input type="text" t-model="state.cfg['report.reg_number']"/></td>
+                                </tr>
+                                <tr>
+                                    <td><label>Company Website</label></td>
+                                    <td><input type="text" t-model="state.cfg['report.website']" placeholder="e.g. www.example.com"/></td>
                                 </tr>
                                 <tr>
                                     <td><label>Address Line 1</label></td>
@@ -7041,6 +7203,7 @@ class ReportSettingsView extends Component {
     // Config param keys we manage
     static CFG_KEYS = [
         'report.reg_number',
+        'report.website',
         'report.addr1',
         'report.addr2',
         'report.addr3',
@@ -7173,7 +7336,16 @@ class ReportSettingsView extends Component {
             const recs = await RpcService.call(
                 'ir.report.template', 'read', [[id]], {});
             if (Array.isArray(recs) && recs.length > 0) {
-                this.state.template = { ...recs[0] };
+                const tpl = { ...recs[0] };
+                // Defaults for new footer fields (in case DB has NULLs)
+                if (tpl.footer_show_page_num === null || tpl.footer_show_page_num === undefined)
+                    tpl.footer_show_page_num = true;
+                if (!tpl.footer_page_num_fmt) tpl.footer_page_num_fmt = 'Page {p} of {t}';
+                if (!tpl.footer_text_source)  tpl.footer_text_source  = 'custom';
+                if (!tpl.footer_line_color)   tpl.footer_line_color   = '#cccccc';
+                if (tpl.footer_line_width === null || tpl.footer_line_width === undefined)
+                    tpl.footer_line_width = 0.5;
+                this.state.template = tpl;
                 // After render, set textarea value and auto-size
                 setTimeout(() => {
                     const el = this.editorRef.el;
@@ -7217,20 +7389,79 @@ class ReportSettingsView extends Component {
         }
     }
 
+    // Generic field setters used by arrow-function handlers in the template
+    onNumField(e, field) {
+        if (this.state.template) {
+            const v = parseFloat(e.target.value);
+            this.state.template[field] = isNaN(v) ? 0 : v;
+            this.state.dirty = true;
+            this.state.saved = false;
+        }
+    }
+
+    onIntField(e, field) {
+        if (this.state.template) {
+            const v = parseInt(e.target.value, 10);
+            this.state.template[field] = isNaN(v) ? 0 : v;
+            this.state.dirty = true;
+            this.state.saved = false;
+        }
+    }
+
+    onTextField(e, field) {
+        if (this.state.template) {
+            this.state.template[field] = e.target.value;
+            this.state.dirty = true;
+            this.state.saved = false;
+        }
+    }
+
+    onColorField(e, field) {
+        if (this.state.template) {
+            this.state.template[field] = e.target.value;
+            this.state.dirty = true;
+            this.state.saved = false;
+        }
+    }
+
+    onCheckField(e, field) {
+        if (this.state.template) {
+            this.state.template[field] = e.target.checked;
+            this.state.dirty = true;
+            this.state.saved = false;
+        }
+    }
+
     async onSave() {
         if (!this.state.template || !this.state.selectedId) return;
         this.state.saving = true;
         try {
-            // Get current textarea value directly
             const el = this.editorRef.el;
             if (el) this.state.template.template_html = el.value;
 
+            const t = this.state.template;
             await RpcService.call(
                 'ir.report.template', 'write',
                 [[this.state.selectedId], {
-                    template_html: this.state.template.template_html,
-                    paper_format:  this.state.template.paper_format,
-                    orientation:   this.state.template.orientation,
+                    template_html:         t.template_html,
+                    paper_format:          t.paper_format,
+                    orientation:           t.orientation,
+                    margin_top:            t.margin_top,
+                    margin_right:          t.margin_right,
+                    margin_bottom:         t.margin_bottom,
+                    margin_left:           t.margin_left,
+                    font_size:             t.font_size,
+                    font_color:            t.font_color,
+                    line_height:           t.line_height,
+                    decimal_qty:           t.decimal_qty,
+                    decimal_price:         t.decimal_price,
+                    decimal_subtotal:      t.decimal_subtotal,
+                    footer_text:           t.footer_text,
+                    footer_show_page_num:  t.footer_show_page_num,
+                    footer_page_num_fmt:   t.footer_page_num_fmt,
+                    footer_text_source:    t.footer_text_source,
+                    footer_line_color:     t.footer_line_color,
+                    footer_line_width:     t.footer_line_width,
                 }], {});
             this.state.dirty = false;
             this.state.saved = true;

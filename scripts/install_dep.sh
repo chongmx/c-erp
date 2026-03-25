@@ -94,7 +94,31 @@ else
 fi
 
 # ============================================================
-# 5. Wipe stale CMake cache
+# 5. wkhtmltopdf (patched Qt build — required for --footer-html support)
+# ============================================================
+WKHTML_URL="https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-2/wkhtmltox_0.12.6.1-2.jammy_amd64.deb"
+WKHTML_PKG="wkhtmltox_0.12.6.1-2.jammy_amd64.deb"
+WKHTML_CACHE="3rdparty/wkhtmltox_0.12.6.1-2.jammy_amd64.deb"
+
+info "Installing wkhtmltopdf (patched Qt build)..."
+
+# Use a cached copy from 3rdparty/ if present (avoids re-downloading)
+if [ -f "$WKHTML_CACHE" ]; then
+    info "Using cached package at ${WKHTML_CACHE}..."
+    cp "$WKHTML_CACHE" "/tmp/${WKHTML_PKG}"
+elif [ -f "/tmp/${WKHTML_PKG}" ]; then
+    info "Package already in /tmp, skipping download..."
+else
+    info "Downloading wkhtmltopdf package..."
+    wget -q -O "/tmp/${WKHTML_PKG}" "$WKHTML_URL"
+fi
+
+sudo apt-get update -q
+sudo apt-get install -y "/tmp/${WKHTML_PKG}"
+success "wkhtmltopdf $(wkhtmltopdf --version 2>&1 | head -1) installed."
+
+# ============================================================
+# 6. Wipe stale CMake cache
 #
 #    Any previous configure run may have cached the now-removed
 #    system libpqxx path.  The cache must be deleted so CMake
@@ -107,7 +131,7 @@ if [ -d "build" ]; then
 fi
 
 # ============================================================
-# 6. Sanity checks
+# 7. Sanity checks
 # ============================================================
 echo ""
 info "Verifying libpq (system)..."
@@ -126,7 +150,7 @@ dpkg -l libpqxx-dev 2>/dev/null | grep -q "^ii" \
     || success "libpqxx-dev not installed (correct)."
 
 # ============================================================
-# 7. Done
+# 8. Done
 # ============================================================
 echo ""
 echo "================================================================"
