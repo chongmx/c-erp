@@ -34,6 +34,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <cstdio>
+#include <set>
 
 namespace odoo::modules::report {
 
@@ -1189,6 +1190,7 @@ public:
     void registerRoutes() override {
         auto db       = db_;
         auto sessions = services_.sessions();
+        bool devMode  = services_.devMode();  // SEC-28: gate ex.what() disclosure
 
         auto checkAuth = [sessions](const drogon::HttpRequestPtr& req) -> bool {
             if (!sessions) return false;
@@ -1208,7 +1210,7 @@ public:
         // HTML route
         drogon::app().registerHandler(
             "/report/html/{1}/{2}",
-            [db, checkAuth, authRedirect](const drogon::HttpRequestPtr& req,
+            [db, checkAuth, authRedirect, devMode](const drogon::HttpRequestPtr& req,
                  std::function<void(const drogon::HttpResponsePtr&)>&& cb,
                  const std::string& model,
                  const std::string& idStr)
@@ -1227,9 +1229,12 @@ public:
                     resp->setBody(html);
                     cb(resp);
                 } catch (const std::runtime_error& ex) {
-                    cb(htmlError(404, ex.what()));
+                    // SEC-28: record-not-found messages are safe; gate anyway for consistency
+                    cb(htmlError(404, devMode ? ex.what() : "Record not found"));
                 } catch (const std::exception& ex) {
-                    cb(htmlError(500, std::string("Internal error: ") + ex.what()));
+                    // SEC-28: may contain SQL details — never expose in production
+                    LOG_ERROR << "[report/html] " << ex.what();
+                    cb(htmlError(500, devMode ? ex.what() : "An internal error occurred"));
                 }
             },
             {drogon::Get}
@@ -1238,7 +1243,7 @@ public:
         // PDF route
         drogon::app().registerHandler(
             "/report/pdf/{1}/{2}",
-            [db, checkAuth, authRedirect](const drogon::HttpRequestPtr& req,
+            [db, checkAuth, authRedirect, devMode](const drogon::HttpRequestPtr& req,
                  std::function<void(const drogon::HttpResponsePtr&)>&& cb,
                  const std::string& model,
                  const std::string& idStr)
@@ -1411,8 +1416,15 @@ public:
                     double effectiveMarginBottom = hasFooter
                         ? std::max(pdfMarginBottom, 20.0)
                         : pdfMarginBottom;
+                    // SEC-29: validate paper format against allowlist before shell interpolation
+                    static const std::set<std::string> kAllowedFormats = {
+                        "A3", "A4", "A5", "Letter", "Legal"
+                    };
+                    const std::string safePaperFormat =
+                        kAllowedFormats.count(pdfPaperFormat) ? pdfPaperFormat : "A4";
+
                     std::string cmd = std::string("wkhtmltopdf --quiet")
-                        + " --page-size "    + (pdfPaperFormat.empty() ? "A4" : pdfPaperFormat)
+                        + " --page-size "    + safePaperFormat
                         + " --margin-top "   + mmStr(pdfMarginTop)
                         + " --margin-right " + mmStr(pdfMarginRight)
                         + " --margin-bottom "+ mmStr(effectiveMarginBottom)
@@ -1448,9 +1460,12 @@ public:
                     cb(resp);
 
                 } catch (const std::runtime_error& ex) {
-                    cb(htmlError(404, ex.what()));
+                    // SEC-28: record-not-found messages are safe; gate anyway for consistency
+                    cb(htmlError(404, devMode ? ex.what() : "Record not found"));
                 } catch (const std::exception& ex) {
-                    cb(htmlError(500, std::string("Internal error: ") + ex.what()));
+                    // SEC-28: may contain SQL details — never expose in production
+                    LOG_ERROR << "[report/pdf] " << ex.what();
+                    cb(htmlError(500, devMode ? ex.what() : "An internal error occurred"));
                 }
             },
             {drogon::Get}
@@ -1460,7 +1475,7 @@ public:
         // NOTE: uses /report/preview/ (not /report/html/) to avoid collision with /report/html/{model}/{id}
         drogon::app().registerHandler(
             "/report/preview/{1}",
-            [db](const drogon::HttpRequestPtr& req,
+            [db, devMode](const drogon::HttpRequestPtr& req,
                  std::function<void(const drogon::HttpResponsePtr&)>&& cb,
                  const std::string& model)
             {
@@ -1592,7 +1607,9 @@ public:
                     cb(resp);
 
                 } catch (const std::exception& ex) {
-                    cb(htmlError(500, std::string("Internal error: ") + ex.what()));
+                    // SEC-28: may contain SQL details — never expose in production
+                    LOG_ERROR << "[report/preview] " << ex.what();
+                    cb(htmlError(500, devMode ? ex.what() : "An internal error occurred"));
                 }
             },
             {drogon::Get}

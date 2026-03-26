@@ -28,3 +28,39 @@ rm -rf ./build
 - Frontend is plain JS/OWL — edit `web/static/src/app.js` directly, no npm/webpack needed
 - Database: PostgreSQL; schema is created/migrated automatically on startup via `ensureSchema_()` in each module
 - Config: `config.json` at project root (DB credentials, HTTP port, devMode flag)
+
+## Security rules (mandatory — apply to every new file)
+
+### SEC-28: Never expose `ex.what()` unconditionally in HTTP responses
+
+Every catch block that writes to an HTTP response MUST gate the error detail behind `devMode`:
+
+```cpp
+// In registerRoutes(): capture devMode ONCE before the lambda
+bool devMode = services_.devMode();
+
+// In every catch block:
+} catch (const std::runtime_error& ex) {
+    cb(htmlError(404, devMode ? ex.what() : "Record not found"));
+} catch (const std::exception& ex) {
+    LOG_ERROR << "[module/route] " << ex.what();   // always log
+    cb(htmlError(500, devMode ? ex.what() : "An internal error occurred"));
+}
+```
+
+`ex.what()` from pqxx contains full SQL text, table names, and schema details.
+Exposing it enables information-disclosure attacks. See `docs/security-error-handling.md`.
+
+`AccessDeniedError` is the **only** exception that is always passed through (user must know why access was denied).
+
+### SEC-29: Allowlist-validate any DB value used in shell commands
+
+Any field read from the database that is interpolated into a shell command must be
+validated against a fixed allowlist first:
+
+```cpp
+static const std::set<std::string> kAllowed = {"A3","A4","A5","Letter","Legal"};
+const std::string safe = kAllowed.count(dbValue) ? dbValue : "default";
+```
+
+Never use raw DB values in `std::system()` calls via string concatenation.

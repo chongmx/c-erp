@@ -3535,10 +3535,10 @@ class ProductFormView extends Component {
                                     <label class="so-field-lbl">Product Category</label>
                                     <select class="form-input" data-field="categ_id">
                                         <option value="0">—</option>
-                                        <t t-foreach="state.categories" t-as="cat" t-key="cat.id">
+                                        <t t-foreach="categoriesByPath" t-as="cat" t-key="cat.id">
                                             <option t-att-value="cat.id"
                                                     t-att-selected="m2oId(state.record.categ_id)===cat.id?true:undefined"
-                                                    t-esc="cat.name"/>
+                                                    t-esc="cat.fullPath"/>
                                         </t>
                                     </select>
                                 </div>
@@ -3845,13 +3845,21 @@ class ProductFormView extends Component {
 
     get isNew() { return !this.props.recordId; }
 
+    get categoriesByPath() {
+        const cats = this.state.categories || [];
+        const paths = buildCategoryPaths(cats);
+        return cats
+            .map(c => ({ ...c, fullPath: paths.get(c.id) || c.name }))
+            .sort((a, b) => a.fullPath.localeCompare(b.fullPath));
+    }
+
     async load() {
         this.state.loading = true;
         this.state.error   = null;
         try {
             const [cats, uoms, accs] = await Promise.all([
                 RpcService.call('product.category', 'search_read',
-                    [[]], { fields: ['id','name'], limit: 200 }),
+                    [[]], { fields: ['id','name','parent_id'], limit: 500 }),
                 RpcService.call('uom.uom', 'search_read',
                     [[]], { fields: ['id','name'], limit: 100 }),
                 RpcService.call('account.account', 'search_read',
@@ -8255,6 +8263,296 @@ class GroupsListView extends Component {
 }
 
 // ----------------------------------------------------------------
+// buildCategoryPaths — compute full path strings from flat list
+// returns Map<id, "Root > Parent > Child">
+// ----------------------------------------------------------------
+function buildCategoryPaths(cats) {
+    const byId = new Map(cats.map(c => [c.id, c]));
+    const cache = new Map();
+    function pathFor(id) {
+        if (cache.has(id)) return cache.get(id);
+        const c = byId.get(id);
+        if (!c) return '';
+        const parentId = Array.isArray(c.parent_id) ? c.parent_id[0] : 0;
+        const p = parentId ? pathFor(parentId) + ' > ' + c.name : c.name;
+        cache.set(id, p);
+        return p;
+    }
+    cats.forEach(c => pathFor(c.id));
+    return cache;
+}
+
+// ----------------------------------------------------------------
+// ProductCategoryTree — collapsible left-panel tree component
+// ----------------------------------------------------------------
+class ProductCategoryTree extends Component {
+    static template = xml`
+        <div class="cat-tree">
+            <div class="cat-tree-header">Categories</div>
+            <!-- "All" root node -->
+            <div class="cat-tree-item"
+                 t-att-class="{'selected': state.selectedId === null}"
+                 t-on-click="() => this.select(null)">
+                <span class="cat-tree-leaf-gap"/>
+                <span class="cat-tree-label">All Products</span>
+            </div>
+            <t t-foreach="visibleNodes" t-as="node" t-key="node.id">
+                <div class="cat-tree-item"
+                     t-att-class="{'selected': state.selectedId === node.id}"
+                     t-att-style="'padding-left:' + (node.depth * 14 + 12) + 'px'"
+                     t-on-click="() => this.select(node.id)">
+                    <span class="cat-tree-toggle"
+                          t-if="node.hasChildren"
+                          t-on-click.stop="() => this.toggle(node.id)">
+                        <t t-if="state.expanded.has(node.id)">▾</t>
+                        <t t-else="">▸</t>
+                    </span>
+                    <span class="cat-tree-leaf-gap" t-else=""/>
+                    <span class="cat-tree-label" t-esc="node.name"/>
+                    <span class="cat-tree-count"
+                          t-if="node.productCount > 0"
+                          t-esc="'(' + node.productCount + ')'"/>
+                </div>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({ expanded: new Set(), selectedId: null });
+        onMounted(() => {
+            // Auto-expand the first depth level
+            const cats = this.props.categories || [];
+            cats.forEach(c => {
+                const parentId = Array.isArray(c.parent_id) ? c.parent_id[0] : 0;
+                if (!parentId) this.state.expanded.add(c.id);
+            });
+        });
+    }
+
+    get visibleNodes() {
+        const cats = this.props.categories || [];
+        // Build children map
+        const children = new Map();
+        cats.forEach(c => {
+            const pid = Array.isArray(c.parent_id) ? c.parent_id[0] : 0;
+            if (!children.has(pid)) children.set(pid, []);
+            children.get(pid).push(c);
+        });
+        // Child counts (all descendants, not just direct)
+        const hasChildrenOf = id => (children.get(id) || []).length > 0;
+
+        // Walk tree, only include visible nodes (parent is expanded)
+        const result = [];
+        const walk = (parentId, depth) => {
+            const kids = (children.get(parentId) || [])
+                .slice().sort((a, b) => a.name.localeCompare(b.name));
+            for (const c of kids) {
+                result.push({
+                    id:           c.id,
+                    name:         c.name,
+                    depth,
+                    hasChildren:  hasChildrenOf(c.id),
+                    productCount: c.product_count || 0,
+                });
+                if (this.state.expanded.has(c.id)) walk(c.id, depth + 1);
+            }
+        };
+        // Root nodes = those whose parent is not in this set (handles both null and missing)
+        const allIds = new Set(cats.map(c => c.id));
+        const rootParentId = (() => {
+            // Find the common root (typically id=1 "All") — nodes whose parent is not in the list
+            const roots = cats.filter(c => {
+                const pid = Array.isArray(c.parent_id) ? c.parent_id[0] : 0;
+                return !pid || !allIds.has(pid);
+            });
+            return roots.length > 0 ? 0 : 0;
+        })();
+        // Collect all parentIds that are not in our cat list → treat as root
+        const isRoot = c => {
+            const pid = Array.isArray(c.parent_id) ? c.parent_id[0] : 0;
+            return !pid || !allIds.has(pid);
+        };
+        const roots = cats.filter(isRoot).sort((a, b) => a.name.localeCompare(b.name));
+        for (const root of roots) {
+            result.push({
+                id:           root.id,
+                name:         root.name,
+                depth:        0,
+                hasChildren:  hasChildrenOf(root.id),
+                productCount: root.product_count || 0,
+            });
+            if (this.state.expanded.has(root.id)) walk(root.id, 1);
+        }
+        return result;
+    }
+
+    toggle(id) {
+        if (this.state.expanded.has(id)) this.state.expanded.delete(id);
+        else                              this.state.expanded.add(id);
+    }
+
+    select(id) {
+        this.state.selectedId = id;
+        if (this.props.onSelect) this.props.onSelect(id);
+    }
+}
+
+// ----------------------------------------------------------------
+// ProductCategoryListView — category configurator (tree table)
+// ----------------------------------------------------------------
+class ProductCategoryListView extends Component {
+    static template = xml`
+        <div class="list-view-wrap">
+            <div class="list-toolbar">
+                <span class="list-title">Product Categories</span>
+                <button class="btn btn-primary" t-on-click="newCategory">+ New Category</button>
+            </div>
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.editId !== null">
+                <!-- Inline form -->
+                <div class="form-card" style="max-width:520px;margin:20px auto">
+                    <div class="form-card-title" t-esc="state.editId === 0 ? 'New Category' : 'Edit Category'"/>
+                    <div class="field-row" style="margin-bottom:12px">
+                        <label>Name</label>
+                        <input class="field-input" t-att-value="state.form.name"
+                               t-on-input="e => state.form.name = e.target.value" placeholder="Category name"/>
+                    </div>
+                    <div class="field-row" style="margin-bottom:12px">
+                        <label>Parent Category</label>
+                        <select class="form-input"
+                                t-on-change="onParentChange">
+                            <option value="0">— (no parent)</option>
+                            <t t-foreach="sortedByPath" t-as="cat" t-key="cat.id">
+                                <t t-if="cat.id !== state.editId">
+                                    <option t-att-value="cat.id"
+                                            t-att-selected="state.form.parentId === cat.id ? true : undefined"
+                                            t-esc="paths.get(cat.id) || cat.name"/>
+                                </t>
+                            </t>
+                        </select>
+                    </div>
+                    <div class="field-row" style="margin-bottom:16px">
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                            <input type="checkbox"
+                                   t-att-checked="state.form.active"
+                                   t-on-change="e => state.form.active = e.target.checked"/>
+                            Active
+                        </label>
+                    </div>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn btn-primary" t-on-click="saveCategory">Save</button>
+                        <button class="btn" t-on-click="cancelEdit">Cancel</button>
+                        <button class="btn" style="margin-left:auto;color:#ef4444"
+                                t-if="state.editId !== 0"
+                                t-on-click="deleteCategory">Delete</button>
+                    </div>
+                </div>
+            </t>
+            <t t-else="">
+                <table class="list-table">
+                    <thead>
+                        <tr>
+                            <th>Full Path</th>
+                            <th style="width:90px;text-align:center">Children</th>
+                            <th style="width:90px;text-align:center">Products</th>
+                            <th style="width:60px"/>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <t t-foreach="sortedByPath" t-as="cat" t-key="cat.id">
+                            <tr>
+                                <td>
+                                    <span class="cat-config-path" t-esc="paths.get(cat.id) || cat.name"/>
+                                </td>
+                                <td style="text-align:center">
+                                    <span t-if="cat.child_count > 0"
+                                          class="cat-config-badge"
+                                          t-esc="cat.child_count"/>
+                                </td>
+                                <td style="text-align:center">
+                                    <span t-if="cat.product_count > 0"
+                                          class="cat-config-badge"
+                                          t-esc="cat.product_count"/>
+                                </td>
+                                <td>
+                                    <button class="btn" style="padding:2px 10px;font-size:.78rem"
+                                            t-on-click="() => this.editCategory(cat)">Edit</button>
+                                </td>
+                            </tr>
+                        </t>
+                    </tbody>
+                </table>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({
+            loading: true,
+            categories: [],
+            editId: null,      // null=list, 0=new, N=editing id N
+            form: { name: '', parentId: 0, active: true },
+        });
+        onMounted(() => this.load());
+    }
+
+    async load() {
+        this.state.loading = true;
+        try {
+            this.state.categories = await RpcService.call(
+                'product.category', 'search_read', [[]],
+                { fields: ['id','name','parent_id','child_count','product_count'], limit: 500 }
+            ) || [];
+        } finally { this.state.loading = false; }
+    }
+
+    get paths() { return buildCategoryPaths(this.state.categories); }
+
+    get sortedByPath() {
+        const p = this.paths;
+        return [...this.state.categories].sort((a, b) =>
+            (p.get(a.id) || a.name).localeCompare(p.get(b.id) || b.name));
+    }
+
+    newCategory() {
+        this.state.form   = { name: '', parentId: 0, active: true };
+        this.state.editId = 0;
+    }
+
+    editCategory(cat) {
+        const parentId = Array.isArray(cat.parent_id) ? cat.parent_id[0] : 0;
+        this.state.form   = { name: cat.name, parentId, active: cat.active };
+        this.state.editId = cat.id;
+    }
+
+    cancelEdit() { this.state.editId = null; }
+
+    onParentChange(ev) { this.state.form.parentId = parseInt(ev.target.value) || 0; }
+
+    async saveCategory() {
+        const vals = {
+            name:      this.state.form.name,
+            parent_id: this.state.form.parentId || false,
+            active:    this.state.form.active,
+        };
+        if (this.state.editId === 0) {
+            await RpcService.call('product.category', 'create', [vals]);
+        } else {
+            await RpcService.call('product.category', 'write', [[this.state.editId], vals]);
+        }
+        this.state.editId = null;
+        await this.load();
+    }
+
+    async deleteCategory() {
+        if (!confirm('Delete this category? Products using it will be unassigned.')) return;
+        await RpcService.call('product.category', 'unlink', [[this.state.editId]]);
+        this.state.editId = null;
+        await this.load();
+    }
+}
+
+// ----------------------------------------------------------------
 // ActionView — orchestrates list ↔ form switching
 // ----------------------------------------------------------------
 class ActionView extends Component {
@@ -8276,7 +8574,27 @@ class ActionView extends Component {
                 <GroupsListView/>
             </t>
             <t t-elif="state.mode === 'list'">
-                <t t-if="isPartnerModel">
+                <t t-if="isCategoryModel">
+                    <ProductCategoryListView/>
+                </t>
+                <t t-elif="isProductModel">
+                    <div class="product-browser">
+                        <div class="product-browser-sidebar"
+                             t-att-style="'width:' + state.catSidebarWidth + 'px'">
+                            <ProductCategoryTree
+                                categories="state.allCategories"
+                                onSelect.bind="onCategorySelect"/>
+                        </div>
+                        <div class="product-browser-resizer"
+                             t-on-mousedown="onCatSidebarResizeStart"/>
+                        <div class="product-browser-content">
+                            <ListView action="productFilteredAction"
+                                      viewDef="state.listView"
+                                      onOpenForm.bind="openForm"/>
+                        </div>
+                    </div>
+                </t>
+                <t t-elif="isPartnerModel">
                     <div class="contact-filter-bar">
                         <button t-attf-class="btn{{state.contactFilter==='all'?' btn-primary':''}}"
                                 t-on-click.stop="()=>this.setContactFilter('all')">All</button>
@@ -8358,7 +8676,7 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor, PortalUserListView, UserFormView, GroupsListView };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor, PortalUserListView, UserFormView, GroupsListView, ProductCategoryTree, ProductCategoryListView };
 
     // Use overrideAction when navigateTo() has been called, else fall back to props.action
     get currentAction()          { return this.state.overrideAction || this.props.action; }
@@ -8377,8 +8695,50 @@ class ActionView extends Component {
     get isPortalPartnerModel()   { return this.currentAction.res_model === 'portal.partner'; }
     get isUsersModel()           { return this.currentAction.res_model === 'res.users'; }
     get isGroupsModel()          { return this.currentAction.res_model === 'res.groups'; }
+    get isCategoryModel()        { return this.currentAction.res_model === 'product.category'; }
 
     setContactFilter(f) { this.state.contactFilter = f; }
+
+    onCategorySelect(id) { this.state.selectedCategoryId = id; }
+
+    onCatSidebarResizeStart(ev) {
+        ev.preventDefault();
+        const startX     = ev.clientX;
+        const startWidth = this.state.catSidebarWidth;
+        document.body.style.userSelect = 'none';
+        const onMove = (e) => {
+            const delta = e.clientX - startX;   // drag right → widens sidebar
+            this.state.catSidebarWidth = Math.max(160, Math.min(520, startWidth + delta));
+        };
+        const onUp = () => {
+            document.body.style.userSelect = '';
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup',   onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup',   onUp);
+    }
+
+    // Collect id + all descendant ids for a category (for categ_id IN [...] filter)
+    categoryDescendantIds(id) {
+        const cats = this.state.allCategories;
+        const result = [id];
+        const walk = (parentId) => {
+            cats.forEach(c => {
+                const pid = Array.isArray(c.parent_id) ? c.parent_id[0] : 0;
+                if (pid === parentId) { result.push(c.id); walk(c.id); }
+            });
+        };
+        walk(id);
+        return result;
+    }
+
+    get productFilteredAction() {
+        const selId = this.state.selectedCategoryId;
+        if (!selId) return this.currentAction;
+        const ids = this.categoryDescendantIds(selId);
+        return { ...this.currentAction, domain: [['categ_id','in',ids]] };
+    }
 
     get partnerFilteredAction() {
         let domain = [];
@@ -8395,13 +8755,16 @@ class ActionView extends Component {
 
     setup() {
         this.state = useState({
-            loading:        true,
-            mode:           'list',
-            recordId:       null,
-            listView:       null,
-            formView:       null,
-            overrideAction: null,   // set by navigateTo() to browse a different model
-            contactFilter:  'all',
+            loading:            true,
+            mode:               'list',
+            recordId:           null,
+            listView:           null,
+            formView:           null,
+            overrideAction:     null,   // set by navigateTo() to browse a different model
+            contactFilter:      'all',
+            allCategories:      [],     // loaded for product browser tree
+            selectedCategoryId: null,   // category filter for product browser
+            catSidebarWidth:    260,    // draggable sidebar width (px)
         });
         onMounted(() => this.loadViews());
     }
@@ -8409,11 +8772,18 @@ class ActionView extends Component {
     async loadViews() {
         this.state.loading = true;
         try {
-            const result = await RpcService.getViews(
-                this.props.action.res_model,
-                [[false, 'list'], [false, 'form']]);
+            const model = this.props.action.res_model;
+            const result = await RpcService.getViews(model, [[false, 'list'], [false, 'form']]);
             this.state.listView = result.views?.list || null;
             this.state.formView = result.views?.form || null;
+            // Load all categories for the product browser tree
+            if (model === 'product.product') {
+                this.state.allCategories = await RpcService.call(
+                    'product.category', 'search_read', [[]],
+                    { fields: ['id','name','parent_id','child_count','product_count'], limit: 500 }
+                ) || [];
+                this.state.selectedCategoryId = null;
+            }
         } catch (e) {
             console.error('get_views failed:', e);
         } finally {

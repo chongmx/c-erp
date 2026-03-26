@@ -387,7 +387,255 @@ public:
 
 
 // ================================================================
-// 3. MODULE
+// 3. PRODUCT CATEGORY VIEW MODEL
+//    Enriches search_read / read with parent name, child_count,
+//    and product_count — all computed via SQL JOINs/subqueries.
+// ================================================================
+
+class ProductCategoryViewModel : public core::BaseViewModel {
+public:
+    explicit ProductCategoryViewModel(std::shared_ptr<DbConnection> db)
+        : db_(std::move(db))
+    {
+        REGISTER_METHOD("search_read",     handleSearchRead)
+        REGISTER_METHOD("web_search_read", handleSearchRead)
+        REGISTER_METHOD("read",            handleRead)
+        REGISTER_METHOD("web_read",        handleRead)
+        REGISTER_METHOD("create",          handleCreate)
+        REGISTER_METHOD("write",           handleWrite)
+        REGISTER_METHOD("unlink",          handleUnlink)
+        REGISTER_METHOD("fields_get",      handleFieldsGet)
+        REGISTER_METHOD("name_search",     handleNameSearch)
+        REGISTER_METHOD("search",          handleSearch)
+    }
+
+    std::string modelName() const override { return "product.category"; }
+
+    nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        // Domain filter — support [["active","=",true]] and empty
+        std::string whereClause = "1=1";
+        const auto& domain = call.domain();
+        if (domain.is_array()) {
+            for (const auto& leaf : domain) {
+                if (!leaf.is_array() || leaf.size() < 3) continue;
+                std::string field = leaf[0].get<std::string>();
+                std::string op    = leaf[1].get<std::string>();
+                if (field == "active" && op == "=" && leaf[2].is_boolean()) {
+                    whereClause += leaf[2].get<bool>()
+                        ? " AND pc.active = TRUE"
+                        : " AND pc.active = FALSE";
+                } else if (field == "parent_id" && op == "=") {
+                    if (leaf[2].is_null() || leaf[2] == false) {
+                        whereClause += " AND pc.parent_id IS NULL";
+                    } else if (leaf[2].is_number_integer()) {
+                        whereClause += " AND pc.parent_id = " + std::to_string(leaf[2].get<int>());
+                    }
+                }
+            }
+        }
+
+        int limit  = call.limit()  > 0 ? call.limit()  : 500;
+        int offset = call.offset();
+
+        auto rows = txn.exec(
+            "SELECT pc.id, pc.name, pc.active, pc.parent_id, "
+            "COALESCE(par.name,'') AS parent_name, "
+            "(SELECT COUNT(*) FROM product_category c2 WHERE c2.parent_id = pc.id) AS child_count, "
+            "(SELECT COUNT(*) FROM product_product pp WHERE pp.categ_id = pc.id) AS product_count "
+            "FROM product_category pc "
+            "LEFT JOIN product_category par ON par.id = pc.parent_id "
+            "WHERE " + whereClause + " "
+            "ORDER BY pc.name "
+            "LIMIT " + std::to_string(limit) + " OFFSET " + std::to_string(offset)
+        );
+
+        nlohmann::json result = nlohmann::json::array();
+        for (const auto& r : rows) result.push_back(serializeRow_(r));
+        return result;
+    }
+
+    nlohmann::json handleRead(const core::CallKwArgs& call) {
+        auto ids = call.ids();
+        if (ids.empty()) return nlohmann::json::array();
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        std::string inList;
+        for (size_t i = 0; i < ids.size(); ++i) {
+            if (i) inList += ",";
+            inList += std::to_string(ids[i]);
+        }
+
+        auto rows = txn.exec(
+            "SELECT pc.id, pc.name, pc.active, pc.parent_id, "
+            "COALESCE(par.name,'') AS parent_name, "
+            "(SELECT COUNT(*) FROM product_category c2 WHERE c2.parent_id = pc.id) AS child_count, "
+            "(SELECT COUNT(*) FROM product_product pp WHERE pp.categ_id = pc.id) AS product_count "
+            "FROM product_category pc "
+            "LEFT JOIN product_category par ON par.id = pc.parent_id "
+            "WHERE pc.id IN (" + inList + ") ORDER BY pc.name"
+        );
+
+        nlohmann::json result = nlohmann::json::array();
+        for (const auto& r : rows) result.push_back(serializeRow_(r));
+        return result;
+    }
+
+    nlohmann::json handleCreate(const core::CallKwArgs& call) {
+        const auto vals = call.arg(0);
+        if (!vals.is_object()) throw std::runtime_error("create: args[0] must be a dict");
+        std::string name   = vals.value("name", std::string(""));
+        bool        active = vals.value("active", true);
+        int parentId = 0;
+        if (vals.contains("parent_id")) {
+            const auto& v = vals["parent_id"];
+            if (v.is_number_integer())          parentId = v.get<int>();
+            else if (v.is_array() && v.size() >= 1 && v[0].is_number_integer())
+                                                parentId = v[0].get<int>();
+        }
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        pqxx::result r;
+        if (parentId > 0) {
+            r = txn.exec(
+                "INSERT INTO product_category (name, parent_id, active, write_date) "
+                "VALUES ($1, $2, $3, now()) RETURNING id",
+                pqxx::params{name, parentId, active});
+        } else {
+            r = txn.exec(
+                "INSERT INTO product_category (name, parent_id, active, write_date) "
+                "VALUES ($1, NULL, $2, now()) RETURNING id",
+                pqxx::params{name, active});
+        }
+        txn.commit();
+        int newId = r[0]["id"].as<int>();
+        return nlohmann::json(newId);
+    }
+
+    nlohmann::json handleWrite(const core::CallKwArgs& call) {
+        auto ids = call.ids();
+        if (ids.empty()) return nlohmann::json(true);
+        const auto vals = call.arg(1);
+        if (!vals.is_object()) throw std::runtime_error("write: args[1] must be a dict");
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        for (int id : ids) {
+            if (vals.contains("name") && vals["name"].is_string())
+                txn.exec("UPDATE product_category SET name=$1, write_date=now() WHERE id=$2",
+                         pqxx::params{vals["name"].get<std::string>(), id});
+            if (vals.contains("active") && vals["active"].is_boolean())
+                txn.exec("UPDATE product_category SET active=$1, write_date=now() WHERE id=$2",
+                         pqxx::params{vals["active"].get<bool>(), id});
+            if (vals.contains("parent_id")) {
+                const auto& v = vals["parent_id"];
+                int parentId = 0;
+                if (v.is_number_integer()) parentId = v.get<int>();
+                else if (v.is_array() && v.size() >= 1 && v[0].is_number_integer())
+                    parentId = v[0].get<int>();
+                if (parentId > 0)
+                    txn.exec("UPDATE product_category SET parent_id=$1, write_date=now() WHERE id=$2",
+                             pqxx::params{parentId, id});
+                else
+                    txn.exec("UPDATE product_category SET parent_id=NULL, write_date=now() WHERE id=$1",
+                             pqxx::params{id});
+            }
+        }
+        txn.commit();
+        return nlohmann::json(true);
+    }
+
+    nlohmann::json handleUnlink(const core::CallKwArgs& call) {
+        auto ids = call.ids();
+        if (ids.empty()) return nlohmann::json(true);
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        for (int id : ids)
+            txn.exec("DELETE FROM product_category WHERE id=$1", pqxx::params{id});
+        txn.commit();
+        return nlohmann::json(true);
+    }
+
+    nlohmann::json handleFieldsGet(const core::CallKwArgs&) {
+        return {
+            {"id",            {{"type","integer"}, {"string","ID"}}},
+            {"name",          {{"type","char"},    {"string","Name"}}},
+            {"parent_id",     {{"type","many2one"},{"string","Parent Category"},{"relation","product.category"}}},
+            {"active",        {{"type","boolean"}, {"string","Active"}}},
+            {"child_count",   {{"type","integer"}, {"string","Subcategories"}}},
+            {"product_count", {{"type","integer"}, {"string","Products"}}},
+        };
+    }
+
+    // name_search — supports Many2one autocomplete
+    nlohmann::json handleNameSearch(const core::CallKwArgs& call) {
+        // name_search: args[0] = name string, kwargs["limit"]
+        std::string name;
+        if (call.args.is_array() && !call.args.empty() && call.args[0].is_string())
+            name = call.args[0].get<std::string>();
+        int lim = call.limit() > 0 ? call.limit() : 20;
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        auto rows = txn.exec(
+            "SELECT id, name FROM product_category "
+            "WHERE name ILIKE $1 AND active = TRUE ORDER BY name LIMIT $2",
+            pqxx::params{"%" + name + "%", lim});
+        nlohmann::json result = nlohmann::json::array();
+        for (const auto& r : rows)
+            result.push_back(nlohmann::json::array({r["id"].as<int>(), r["name"].as<std::string>()}));
+        return result;
+    }
+
+    nlohmann::json handleSearch(const core::CallKwArgs& call) {
+        // Returns array of ids matching domain
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        std::string whereClause = "active = TRUE";
+        const auto& domain = call.domain();
+        if (domain.is_array()) {
+            for (const auto& leaf : domain) {
+                if (!leaf.is_array() || leaf.size() < 3) continue;
+                std::string field = leaf[0].get<std::string>();
+                std::string op    = leaf[1].get<std::string>();
+                if (field == "parent_id" && op == "=" && leaf[2].is_number_integer())
+                    whereClause += " AND parent_id = " + std::to_string(leaf[2].get<int>());
+            }
+        }
+        int lim = call.limit() > 0 ? call.limit() : 500;
+        auto rows = txn.exec(
+            "SELECT id FROM product_category WHERE " + whereClause +
+            " ORDER BY name LIMIT " + std::to_string(lim));
+        nlohmann::json result = nlohmann::json::array();
+        for (const auto& r : rows) result.push_back(r["id"].as<int>());
+        return result;
+    }
+
+private:
+    std::shared_ptr<DbConnection> db_;
+
+    static nlohmann::json serializeRow_(const pqxx::row& r) {
+        int parentId = r["parent_id"].is_null() ? 0 : r["parent_id"].as<int>();
+        std::string parentName = r["parent_name"].as<std::string>("");
+        return {
+            {"id",            r["id"].as<int>()},
+            {"name",          r["name"].as<std::string>()},
+            {"display_name",  r["name"].as<std::string>()},
+            {"active",        r["active"].as<bool>(true)},
+            {"parent_id",     parentId > 0
+                                ? nlohmann::json::array({parentId, parentName})
+                                : nlohmann::json(false)},
+            {"child_count",   r["child_count"].as<int>(0)},
+            {"product_count", r["product_count"].as<int>(0)},
+        };
+    }
+};
+
+
+// ================================================================
+// 4. MODULE
 // ================================================================
 
 class ProductModule : public core::IModule {
@@ -413,8 +661,9 @@ public:
 
     void registerViewModels() override {
         auto db = services_.db();
+        // Custom VM — returns parent name, child_count, product_count
         viewModels_.registerCreator("product.category", [db]{
-            return std::make_shared<GenericViewModel<ProductCategory>>(db);
+            return std::make_shared<ProductCategoryViewModel>(db);
         });
         viewModels_.registerCreator("product.product", [db]{
             return std::make_shared<GenericViewModel<ProductProduct>>(db);
@@ -505,12 +754,15 @@ private:
     }
 
     // ----------------------------------------------------------
-    // Seeds — 3 default product categories
+    // Seeds — default product categories (flat + electronics tree)
+    // IDs 1-9: reserved (All/Goods/Services + buffer)
+    // IDs 10+: Electronics hierarchy
     // ----------------------------------------------------------
     void seedCategories_() {
         auto conn = services_.db()->acquire();
         pqxx::work txn{conn.get()};
 
+        // Root + basic categories (existing)
         txn.exec(R"(
             INSERT INTO product_category (id, name, parent_id) VALUES
                 (1, 'All',      NULL),
@@ -518,7 +770,169 @@ private:
                 (3, 'Services', 1)
             ON CONFLICT (id) DO NOTHING
         )");
-        txn.exec("SELECT setval('product_category_id_seq', (SELECT MAX(id) FROM product_category), true)");
+
+        // Electronics top-level (parent = 1 = All)
+        txn.exec(R"(
+            INSERT INTO product_category (id, name, parent_id) VALUES
+                (10, 'Electronics',          1),
+                (41, 'Mechanical & Hardware',1),
+                (45, 'PCB & Fabrication',    1),
+                (48, 'Cables & Wire',        1)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Electronics > Passives (parent=10)
+        txn.exec(R"(
+            INSERT INTO product_category (id, name, parent_id) VALUES
+                (11, 'Passives',             10),
+                (12, 'Resistors',            11),
+                (13, 'Capacitors',           11),
+                (14, 'Inductors & Coils',    11),
+                (15, 'Crystals & Oscillators',11)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Electronics > Semiconductors (parent=10)
+        txn.exec(R"(
+            INSERT INTO product_category (id, name, parent_id) VALUES
+                (16, 'Semiconductors',       10),
+                (17, 'Diodes',               16),
+                (18, 'Transistors',          16),
+                (19, 'Voltage Regulators',   16),
+                (20, 'Operational Amplifiers',16),
+                (21, 'Logic ICs',            16),
+                (22, 'Microcontrollers',     16),
+                (23, 'Memory ICs',           16),
+                (24, 'Interface ICs',        16),
+                (25, 'RF & Wireless',        16),
+                (26, 'Sensors',              16),
+                (38, 'Power Management ICs', 16),
+                (39, 'Optocouplers',         16)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Electronics > Display & LED (parent=10)
+        txn.exec(R"(
+            INSERT INTO product_category (id, name, parent_id) VALUES
+                (27, 'Display & LED',        10),
+                (28, 'Discrete LEDs',        27),
+                (29, 'LED Drivers',          27),
+                (30, 'Display Modules',      27)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Electronics > Electromechanical (parent=10)
+        txn.exec(R"(
+            INSERT INTO product_category (id, name, parent_id) VALUES
+                (31, 'Electromechanical',    10),
+                (32, 'Relays',               31),
+                (33, 'Switches & Buttons',   31),
+                (34, 'Connectors',           31),
+                (35, 'Motors & Actuators',   31),
+                (36, 'Fuses & Protection',   31)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Electronics > Power (parent=10)
+        txn.exec(R"(
+            INSERT INTO product_category (id, name, parent_id) VALUES
+                (37, 'Power',                10),
+                (40, 'Power Modules',        37)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Resistor sub-types (parent=12)
+        txn.exec(R"(
+            INSERT INTO product_category (id, name, parent_id) VALUES
+                (51, 'Through-Hole Resistors', 12),
+                (52, 'SMD Resistors',           12),
+                (53, 'Potentiometers',          12),
+                (54, 'Resistor Networks',       12)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Capacitor sub-types (parent=13)
+        txn.exec(R"(
+            INSERT INTO product_category (id, name, parent_id) VALUES
+                (55, 'Ceramic Capacitors (MLCC)', 13),
+                (56, 'Electrolytic Capacitors',   13),
+                (57, 'Tantalum Capacitors',        13),
+                (58, 'Film Capacitors',            13),
+                (59, 'Supercapacitors',            13)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Diode sub-types (parent=17)
+        txn.exec(R"(
+            INSERT INTO product_category (id, name, parent_id) VALUES
+                (60, 'Signal / Switching Diodes', 17),
+                (61, 'Rectifier Diodes',           17),
+                (62, 'Schottky Diodes',            17),
+                (63, 'Zener Diodes',               17),
+                (64, 'TVS / ESD Protection',       17)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Transistor sub-types (parent=18)
+        txn.exec(R"(
+            INSERT INTO product_category (id, name, parent_id) VALUES
+                (65, 'NPN BJT',          18),
+                (66, 'PNP BJT',          18),
+                (67, 'N-Channel MOSFET', 18),
+                (68, 'P-Channel MOSFET', 18),
+                (69, 'JFET',             18)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Voltage regulator sub-types (parent=19)
+        txn.exec(R"(
+            INSERT INTO product_category (id, name, parent_id) VALUES
+                (70, 'Linear Regulators (LDO)', 19),
+                (71, 'Buck Regulators',          19),
+                (72, 'Boost Regulators',         19),
+                (73, 'Buck-Boost Regulators',    19),
+                (74, 'Voltage References',        19)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Sensor sub-types (parent=26)
+        txn.exec(R"(
+            INSERT INTO product_category (id, name, parent_id) VALUES
+                (75, 'Temperature Sensors',   26),
+                (76, 'Humidity Sensors',      26),
+                (77, 'Pressure Sensors',      26),
+                (78, 'IMU / Accelerometer',   26),
+                (79, 'Magnetic / Hall Effect',26),
+                (80, 'Light / Proximity',     26),
+                (81, 'Current Monitors',      26)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Mechanical sub-types
+        txn.exec(R"(
+            INSERT INTO product_category (id, name, parent_id) VALUES
+                (42, 'Fasteners',          41),
+                (43, 'Heatsinks & Thermal',41),
+                (44, 'Enclosures',         41),
+                (46, 'Blank PCBs',         45),
+                (47, 'Prototyping Board',  45),
+                (49, 'Hook-Up Wire',       48),
+                (50, 'Cables & Adapters',  48)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        // Connector sub-types (parent=34)
+        txn.exec(R"(
+            INSERT INTO product_category (id, name, parent_id) VALUES
+                (82, 'Pin Headers',          34),
+                (83, 'JST Connectors',       34),
+                (84, 'USB Connectors',       34),
+                (85, 'Screw Terminals',      34),
+                (86, 'Audio / RF Connectors',34)
+            ON CONFLICT (id) DO NOTHING
+        )");
+
+        txn.exec("SELECT setval('product_category_id_seq', GREATEST((SELECT MAX(id) FROM product_category), 100), true)");
 
         // ir_act_window entries — IDs 9/10 are owned by product; account uses 32/33 for invoices/bills
         txn.exec(R"(

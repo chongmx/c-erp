@@ -2148,3 +2148,109 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 .field-row label { display: block; font-weight: 600; font-size: .8rem; color: #475569; margin-bottom: 4px; }
 .field-input { width: 100%; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: .875rem; outline: none; }
 .field-input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
+
+/* ================================================================
+   Product Browser — category tree + product list split layout
+   ================================================================ */
+.product-browser {
+    display: flex;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+}
+.product-browser-sidebar {
+    /* width is set inline via catSidebarWidth state */
+    min-width: 160px;
+    max-width: 520px;
+    border-right: 1px solid rgba(255,255,255,0.08);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: rgba(0,0,0,0.12);
+    flex-shrink: 0;
+}
+.product-browser-resizer {
+    width: 5px;
+    flex-shrink: 0;
+    cursor: col-resize;
+    background: transparent;
+    transition: background .15s;
+    z-index: 1;
+}
+.product-browser-resizer:hover,
+.product-browser-resizer:active { background: var(--accent); }
+.product-browser-content {
+    flex: 1;
+    min-width: 0;
+    overflow: auto;
+}
+
+/* Category Tree */
+.cat-tree {
+    display: flex;
+    flex-direction: column;
+    overflow: auto;         /* scroll both axes */
+    height: 100%;
+    min-height: 0;
+    padding-bottom: 12px;
+    min-width: 0;
+}
+.cat-tree-header {
+    font-size: .7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--muted);
+    padding: 12px 14px 6px;
+}
+.cat-tree-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 10px 5px 12px;
+    cursor: pointer;
+    font-size: .84rem;
+    color: var(--text);
+    border-radius: 5px;
+    margin: 1px 4px;
+    user-select: none;
+    white-space: nowrap;   /* keeps items on one line so x-scroll works */
+    transition: background .12s;
+}
+.cat-tree-item:hover { background: rgba(255,255,255,0.06); }
+.cat-tree-item.selected {
+    background: rgba(99,102,241,0.18);
+    color: #818cf8;
+    font-weight: 600;
+}
+.cat-tree-toggle {
+    flex-shrink: 0;
+    width: 14px;
+    font-size: .65rem;
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.cat-tree-leaf-gap { flex-shrink: 0; width: 14px; }
+.cat-tree-label { flex: 1; white-space: nowrap; }
+.cat-tree-count {
+    flex-shrink: 0;
+    font-size: .7rem;
+    color: var(--muted);
+    margin-left: 4px;
+}
+
+/* Category configurator list */
+.cat-config-path {
+    color: var(--muted);
+    font-size: .78rem;
+}
+.cat-config-badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 10px;
+    font-size: .72rem;
+    background: rgba(99,102,241,0.15);
+    color: #818cf8;
+}
