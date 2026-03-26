@@ -5636,10 +5636,24 @@ const DLE_PROP_DEFS = {
     ],
     footer_bar: [
         _D('Content'),
-        { key: 'content',        label: 'Footer Text',      type: 'text',    placeholder: 'Leave empty to use company website' },
+        { key: 'text_source', label: 'Text Source', type: 'select', options: [
+            { v: 'custom',  l: 'Custom Text' },
+            { v: 'website', l: 'Website (from Report Settings)' },
+            { v: 'none',    l: 'None (page numbers only)' },
+        ]},
+        { key: 'content', label: 'Custom Text', type: 'text', placeholder: 'e.g. www.example.com' },
+        _D('Page Numbers'),
+        { key: 'show_page_num', label: 'Show Page Numbers', type: 'boolean' },
+        { key: 'page_num_fmt',  label: 'Format', type: 'select', options: [
+            { v: 'Page {p} of {t}', l: 'Page X of Y' },
+            { v: '{p} / {t}',       l: 'X / Y' },
+            { v: 'Page {p}',        l: 'Page X' },
+            { v: '{p}',             l: 'X only' },
+        ]},
         _D('Separator Line'),
-        { key: 'top_sep',        label: 'Show Top Line',    type: 'boolean' },
-        { key: 'top_sep_color',  label: 'Line Color',       type: 'color'   },
+        { key: 'top_sep',       label: 'Show Line',   type: 'boolean' },
+        { key: 'top_sep_color', label: 'Line Color',  type: 'color'   },
+        { key: 'line_width',    label: 'Line Weight', type: 'number', unit: 'pt', min: 0.25, max: 4 },
         ..._typo(), ..._spac(), ..._bgbd()
     ],
     separator: [
@@ -5850,19 +5864,47 @@ ${lines}
             return '';
 
         case 'footer_bar': {
-            const footerContent = props.content || '{{company_website}}';
-            // Build combined style: base props + optional top separator line
+            const textSource   = props.text_source || 'custom';
+            const showPageNum  = props.show_page_num !== false; // default true
+            const pageNumFmt   = props.page_num_fmt  || 'Page {p} of {t}';
+            const lineWidth    = props.line_width    || 1.5;
+
+            // Determine visible text (this is the ONLY content inside .page-footer —
+            // the PDF backend extracts it cleanly without any preview spans).
+            let footerText = '';
+            if (textSource === 'custom')       footerText = props.content || '{{company_website}}';
+            else if (textSource === 'website') footerText = '{{company_website}}';
+            // 'none' → no text
+
+            // Build separator line style on the div
             let fStyle = st;
             if (props.top_sep) {
                 const sepCol = props.top_sep_color || '#888888';
-                fStyle = (fStyle ? fStyle + ';' : '') + `border-top:1.5pt solid ${sepCol}`;
+                fStyle = (fStyle ? fStyle + ';' : '') + `border-top:${lineWidth}pt solid ${sepCol}`;
             }
-            const fSa   = fStyle ? ` style="${fStyle}"` : '';
-            // Embed separator info as data attrs so the PDF backend can replicate it in --footer-html
-            const dataSep = props.top_sep
-                ? ` data-top-sep="1" data-top-sep-color="${props.top_sep_color || '#888888'}"`
+            const fSa = fStyle ? ` style="${fStyle}"` : '';
+
+            // Page number preview: rendered OUTSIDE the .page-footer div (class dle-pg-prev)
+            // so the backend HTML extraction only sees clean footer text.
+            // The PDF route hides .dle-pg-prev via injected CSS.
+            const pgColor  = props.color || '#ffffff';
+            const pgPrev   = showPageNum
+                ? `<span class="dle-pg-prev" style="position:fixed;bottom:6px;right:12px;` +
+                  `font-size:9pt;color:${pgColor};opacity:0.85;pointer-events:none;">` +
+                  pageNumFmt.replace('{p}', 'n').replace('{t}', 'N') + `</span>`
                 : '';
-            return `<div class="page-footer"${fSa}${dataSep}>${footerContent}</div>
+
+            // Embed footer config as data attrs for reference (PDF backend uses ir_report_template)
+            const dataAttrs = [
+                `data-text-source="${textSource}"`,
+                `data-show-page-num="${showPageNum ? '1' : '0'}"`,
+                `data-page-num-fmt="${pageNumFmt}"`,
+                props.top_sep ? `data-top-sep="1"` : '',
+                props.top_sep ? `data-top-sep-color="${props.top_sep_color || '#888888'}"` : '',
+                props.top_sep ? `data-line-width="${lineWidth}"` : '',
+            ].filter(Boolean).join(' ');
+
+            return `<div class="page-footer"${fSa} ${dataAttrs}>${footerText}</div>${pgPrev}
 <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>`;
         }
 
@@ -6806,22 +6848,39 @@ class DocumentLayoutEditor extends Component {
             }
             // Save template HTML + settings
             if (this.state.templateId) {
+                // Extract footer block settings so the PDF route reads live values
+                // from ir_report_template (its source of truth for --footer-html generation).
+                const footerBlk = this.state.blocks.find(b => b.type === 'footer_bar' && b.visible !== false);
+                const fp = footerBlk ? (footerBlk.props || {}) : {};
+                const fpSrc   = fp.text_source    || 'custom';
+                const fpText  = fpSrc === 'custom' ? (fp.content || '') : '';
+                const fpShow  = fp.show_page_num  !== false;
+                const fpFmt   = fp.page_num_fmt   || 'Page {p} of {t}';
+                const fpLCol  = fp.top_sep ? (fp.top_sep_color || '#cccccc') : '#cccccc';
+                // fpLW = 0 when separator is disabled so PDF skips border-top entirely
+                const fpLW    = fp.top_sep ? (parseFloat(fp.line_width) || 0.5) : 0;
+
                 await RpcService.call('ir.report.template', 'write',
                     [[this.state.templateId], {
-                        template_html:    this.state.templateHtml,
-                        paper_format:     this.state.docSettings.paper_format,
-                        orientation:      this.state.docSettings.orientation,
-                        decimal_qty:      Number.isInteger(this.state.docSettings.decimal_qty)      ? this.state.docSettings.decimal_qty      : 2,
-                        decimal_price:    Number.isInteger(this.state.docSettings.decimal_price)    ? this.state.docSettings.decimal_price    : 2,
-                        decimal_subtotal: Number.isInteger(this.state.docSettings.decimal_subtotal) ? this.state.docSettings.decimal_subtotal : 2,
-                        margin_top:       parseFloat(this.state.docSettings.margin_top)    || 15,
-                        margin_right:     parseFloat(this.state.docSettings.margin_right)  || 18,
-                        margin_bottom:    parseFloat(this.state.docSettings.margin_bottom) || 18,
-                        margin_left:      parseFloat(this.state.docSettings.margin_left)   || 18,
-                        font_size:        parseInt(this.state.docSettings.font_size)       || 10,
-                        font_color:       this.state.docSettings.font_color  || '#333333',
-                        line_height:      parseFloat(this.state.docSettings.line_height)   || 1.5,
-                        footer_text:      this.state.docSettings.footer_text || '',
+                        template_html:         this.state.templateHtml,
+                        paper_format:          this.state.docSettings.paper_format,
+                        orientation:           this.state.docSettings.orientation,
+                        decimal_qty:           Number.isInteger(this.state.docSettings.decimal_qty)      ? this.state.docSettings.decimal_qty      : 2,
+                        decimal_price:         Number.isInteger(this.state.docSettings.decimal_price)    ? this.state.docSettings.decimal_price    : 2,
+                        decimal_subtotal:      Number.isInteger(this.state.docSettings.decimal_subtotal) ? this.state.docSettings.decimal_subtotal : 2,
+                        margin_top:            parseFloat(this.state.docSettings.margin_top)    || 15,
+                        margin_right:          parseFloat(this.state.docSettings.margin_right)  || 18,
+                        margin_bottom:         parseFloat(this.state.docSettings.margin_bottom) || 18,
+                        margin_left:           parseFloat(this.state.docSettings.margin_left)   || 18,
+                        font_size:             parseInt(this.state.docSettings.font_size)       || 10,
+                        font_color:            this.state.docSettings.font_color  || '#333333',
+                        line_height:           parseFloat(this.state.docSettings.line_height)   || 1.5,
+                        footer_text:           fpText,
+                        footer_show_page_num:  fpShow,
+                        footer_page_num_fmt:   fpFmt,
+                        footer_text_source:    fpSrc,
+                        footer_line_color:     fpLCol,
+                        footer_line_width:     fpLW,
                     }], {});
             }
             // Save block config

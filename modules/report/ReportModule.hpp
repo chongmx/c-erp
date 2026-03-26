@@ -910,9 +910,9 @@ public:
                         // Lines
                         auto lrows = txn.exec(
                             "SELECT COALESCE(sol.name, pp.name, '') AS product_name, "
-                            "sol.product_uom_qty AS qty, "
-                            "sol.price_unit, "
-                            "sol.price_subtotal AS subtotal, "
+                            "COALESCE(sol.product_uom_qty, 0) AS qty, "
+                            "COALESCE(sol.price_unit, 0) AS price_unit, "
+                            "COALESCE(sol.price_subtotal, 0) AS subtotal, "
                             "COALESCE(uu.name,'') AS uom "
                             "FROM sale_order_line sol "
                             "LEFT JOIN product_product pp ON pp.id = sol.product_id "
@@ -1009,9 +1009,9 @@ public:
                         // Lines
                         auto lrows = txn.exec(
                             "SELECT COALESCE(pol.name, pp.name, '') AS product_name, "
-                            "pol.product_qty AS qty, "
-                            "pol.price_unit, "
-                            "pol.price_subtotal AS subtotal, "
+                            "COALESCE(pol.product_qty, 0) AS qty, "
+                            "COALESCE(pol.price_unit, 0) AS price_unit, "
+                            "COALESCE(pol.price_subtotal, 0) AS subtotal, "
                             "COALESCE(uu.name,'') AS uom "
                             "FROM purchase_order_line pol "
                             "LEFT JOIN product_product pp ON pp.id = pol.product_id "
@@ -1071,8 +1071,8 @@ public:
                         // Lines
                         auto lrows = txn.exec(
                             "SELECT COALESCE(pp.name, sm.name, '') AS product_name, "
-                            "sm.product_uom_qty AS demand, "
-                            "sm.quantity AS done, "
+                            "COALESCE(sm.product_uom_qty, 0) AS demand, "
+                            "COALESCE(sm.quantity, 0) AS done, "
                             "COALESCE(uu.name,'') AS uom "
                             "FROM stock_move sm "
                             "LEFT JOIN product_product pp ON pp.id = sm.product_id "
@@ -1326,7 +1326,7 @@ public:
                     }
                     // 'none' => footerContent stays empty
 
-                    bool hasFooter = !footerContent.empty() || pdfFooterShowPageNum;
+                    bool hasFooter = !footerContent.empty() || pdfFooterShowPageNum || pdfFooterLineWidth > 0;
 
                     // --- Inject PDF-specific CSS overrides before </head> ---
                     // With wkhtmltopdf 0.12.6.1-2 (patched Qt), --footer-html works correctly.
@@ -1339,6 +1339,7 @@ public:
                                << "line-height:" << std::fixed << std::setprecision(2) << pdfLineHeight << "!important;}"
                                << ".page-footer{display:none!important;}"
                                << ".print-btn{display:none!important;}"
+                               << ".dle-pg-prev{display:none!important;}"
                                << "</style>";
                         size_t hEnd = html.find("</head>");
                         if (hEnd != std::string::npos) html.insert(hEnd, cssOss.str());
@@ -1348,27 +1349,47 @@ public:
                     { std::ofstream f(tmpHtml); f << html; }
 
                     // --- Write footer HTML using configured settings ---
+                    // NOTE: [page]/[toPage] are NOT valid in --footer-html files.
+                    // wkhtmltopdf passes page info as URL query params (?page=N&topage=M...)
+                    // to the footer HTML. JavaScript must read them and populate the DOM.
                     if (hasFooter) {
-                        // Convert {p}/{t} placeholder notation to wkhtmltopdf's [page]/[toPage]
+                        // Build page-number HTML with named spans that JS will populate.
+                        // {p} → <span id='pg'></span>, {t} → <span id='tot'></span>
                         std::string pageNumHtml = pdfFooterPageNumFmt;
                         {
                             size_t p;
                             while ((p = pageNumHtml.find("{p}")) != std::string::npos)
-                                pageNumHtml.replace(p, 3, "[page]");
+                                pageNumHtml.replace(p, 3, "<span id='pg'></span>");
                             while ((p = pageNumHtml.find("{t}")) != std::string::npos)
-                                pageNumHtml.replace(p, 3, "[toPage]");
+                                pageNumHtml.replace(p, 3, "<span id='tot'></span>");
                         }
 
                         std::ostringstream fw;
                         fw << std::fixed << std::setprecision(2);
-                        fw << "<!DOCTYPE html><html><head><style>"
-                           << "body{border-top:" << pdfFooterLineWidth << "pt solid " << pdfFooterLineColor << ";"
-                           << "margin:0;padding-top:4px;"
+                        fw << "<!DOCTYPE html><html><head>"
+                           // JS reads query params wkhtmltopdf injects: ?page=N&topage=M
+                           << "<script>"
+                           << "function subst(){"
+                           << "var v={};"
+                           << "window.location.search.substring(1).split('&').forEach(function(s){"
+                           << "var kv=s.split('=');if(kv[0])v[kv[0]]=decodeURIComponent(kv[1]||'');});"
+                           << "var pg=document.getElementById('pg');"
+                           << "var tot=document.getElementById('tot');"
+                           << "if(pg)pg.textContent=v['page']||'';"
+                           << "if(tot)tot.textContent=v['topage']||'';"
+                           << "}"
+                           << "</script>"
+                           << "<style>"
+                           << "body{margin:0;padding-top:4px;"
                            << "font-family:Arial,Helvetica,sans-serif;font-size:9pt;color:#333333;"
-                           << "overflow:hidden;}"
-                           << ".footer-text{float:left;}"
+                           << "overflow:hidden;}";
+                        if (pdfFooterLineWidth > 0) {
+                            fw << "body{border-top:" << pdfFooterLineWidth << "pt solid " << pdfFooterLineColor << ";}";
+                        }
+                        fw << ".footer-text{float:left;}"
                            << ".page-num{float:right;}"
-                           << "</style></head><body>";
+                           << "</style></head>"
+                           << "<body onload='subst()'>";
                         if (!footerContent.empty())
                             fw << "<span class=\"footer-text\">" << footerContent << "</span>";
                         if (pdfFooterShowPageNum)
