@@ -193,53 +193,41 @@ const Portal = (() => {
         }).join('');
     }
 
-    // ── Invoice Detail ────────────────────────────────────────────
-    async function openDetail(invoiceId) {
-        try {
-            const inv = await api('GET', `/invoice/${invoiceId}/detail`);
-            const detail = document.getElementById('invoice-detail');
-            const body   = document.getElementById('detail-body');
-            document.getElementById('detail-title').textContent = inv.name || 'Invoice';
+    // ── Document detail panel (shared by invoices, orders, deliveries) ─────────
+    let _currentDocUrl = null;
 
-            const linesHtml = inv.lines.length
-                ? `<table style="margin-top:16px">
-                    <thead><tr><th>Description</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Subtotal</th></tr></thead>
-                    <tbody>${inv.lines.map(l => `
-                      <tr>
-                        <td>${escHtml(l.name||'')}</td>
-                        <td style="text-align:right">${parseFloat(l.quantity)||0}</td>
-                        <td style="text-align:right">${fmtAmount(l.price_unit)}</td>
-                        <td style="text-align:right">${fmtAmount(l.subtotal)}</td>
-                      </tr>`).join('')}
-                    </tbody></table>`
-                : '<p class="text-muted" style="margin-top:16px">No line items.</p>';
-
-            body.innerHTML = `
-              <div class="info-row"><span class="info-label">Reference</span><span class="info-value">${escHtml(inv.name||'/')}</span></div>
-              <div class="info-row"><span class="info-label">Date</span><span class="info-value">${fmtDate(inv.invoice_date)}</span></div>
-              <div class="info-row"><span class="info-label">Status</span><span class="info-value">${stateBadge(inv.state)}</span></div>
-              <div class="info-row"><span class="info-label">Payment</span><span class="info-value">${paymentBadge(inv.payment_state)}</span></div>
-              <div class="info-row"><span class="info-label">Total</span><span class="info-value" style="font-size:18px;font-weight:700">${fmtAmount(inv.amount_total)}</span></div>
-              ${linesHtml}
-              <div style="margin-top:24px;display:flex;gap:10px">
-                <button class="btn-sm primary" onclick="Portal.printInvoice(${invoiceId})">🖨 Print / Save PDF</button>
-                <label class="btn-sm success" style="cursor:pointer">
-                  Upload Proof
-                  <input type="file" accept="image/*,.pdf" style="display:none"
-                         onchange="Portal.uploadProof(${invoiceId}, this)">
-                </label>
-              </div>`;
-
-            document.getElementById('overlay').style.display = 'block';
-            detail.style.display = 'block';
-        } catch (e) {
-            toast('Could not load invoice: ' + e.message);
-        }
+    function _openDocPanel(title, printUrl, pdfUrl, extraActionsHtml) {
+        _currentDocUrl = printUrl;
+        document.getElementById('detail-title').textContent = title;
+        document.getElementById('detail-doc-frame').src = printUrl + '?embed=1';
+        // Header actions: optional extras (e.g. upload button) then Download PDF, then close
+        const dlBtn = `<a class="btn-sm secondary" href="${pdfUrl}" download>&#8659; Download PDF</a>`;
+        const hdr = document.getElementById('detail-header-actions');
+        const closeBtn = hdr.querySelector('.btn-close').outerHTML;
+        hdr.innerHTML = (extraActionsHtml || '') + dlBtn + closeBtn;
+        document.getElementById('overlay').style.display = 'block';
+        document.getElementById('invoice-detail').classList.add('open');
     }
 
     function closeDetail() {
-        document.getElementById('invoice-detail').style.display = 'none';
+        document.getElementById('invoice-detail').classList.remove('open');
         document.getElementById('overlay').style.display = 'none';
+        document.getElementById('detail-doc-frame').src = 'about:blank';
+        _currentDocUrl = null;
+    }
+
+    // ── Invoice Detail ─────────────────────────────────────────────
+    function openDetail(invoiceId) {
+        _openDocPanel(
+            'Invoice',
+            `/portal/api/invoice/${invoiceId}/print`,
+            `/portal/api/invoice/${invoiceId}/pdf`,
+            `<label class="btn-sm success" style="cursor:pointer">
+               &#128196; Upload Proof of Payment
+               <input type="file" accept="image/*,.pdf" style="display:none"
+                      onchange="Portal.uploadProof(${invoiceId}, this)">
+             </label>`
+        );
     }
 
     function printInvoice(invoiceId) {
@@ -298,37 +286,9 @@ const Portal = (() => {
         </tr>`).join('');
     }
 
-    async function openOrderDetail(orderId) {
-        try {
-            const o = await api('GET', `/order/${orderId}/detail`);
-            const detail = document.getElementById('invoice-detail');
-            const body   = document.getElementById('detail-body');
-            document.getElementById('detail-title').textContent = o.name || 'Order';
-            const linesHtml = o.lines.length
-                ? `<table style="margin-top:16px">
-                    <thead><tr><th>Description</th><th>UOM</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Subtotal</th></tr></thead>
-                    <tbody>${o.lines.map(l => `<tr>
-                      <td>${escHtml(l.name||'')}</td>
-                      <td>${escHtml(l.uom||'')}</td>
-                      <td style="text-align:right">${parseFloat(l.quantity)||0}</td>
-                      <td style="text-align:right">${fmtAmount(l.price_unit)}</td>
-                      <td style="text-align:right">${fmtAmount(l.subtotal)}</td>
-                    </tr>`).join('')}</tbody></table>`
-                : '<p class="text-muted" style="margin-top:16px">No line items.</p>';
-            body.innerHTML = `
-              <div class="info-row"><span class="info-label">Reference</span><span class="info-value">${escHtml(o.name||'/')}</span></div>
-              <div class="info-row"><span class="info-label">Date</span><span class="info-value">${fmtDate(o.date_order)}</span></div>
-              <div class="info-row"><span class="info-label">Status</span><span class="info-value">${orderStateBadge(o.state)}</span></div>
-              <div class="info-row"><span class="info-label">Total</span><span class="info-value" style="font-size:18px;font-weight:700">${fmtAmount(o.amount_total)}</span></div>
-              ${linesHtml}
-              <div style="margin-top:24px">
-                <button class="btn-sm primary" onclick="Portal.printOrder(${orderId})">🖨 Print / Save PDF</button>
-              </div>`;
-            document.getElementById('overlay').style.display = 'block';
-            detail.style.display = 'block';
-        } catch (e) {
-            toast('Could not load order: ' + e.message);
-        }
+    function openOrderDetail(orderId) {
+        _openDocPanel('Order', `/portal/api/order/${orderId}/print`,
+                      `/portal/api/order/${orderId}/pdf`, null);
     }
 
     function printOrder(orderId) {
@@ -371,36 +331,9 @@ const Portal = (() => {
         </tr>`).join('');
     }
 
-    async function openDeliveryDetail(pickId) {
-        try {
-            const d = await api('GET', `/delivery/${pickId}/detail`);
-            const detail = document.getElementById('invoice-detail');
-            const body   = document.getElementById('detail-body');
-            document.getElementById('detail-title').textContent = d.document_title || d.name || 'Delivery';
-            const linesHtml = d.lines.length
-                ? `<table style="margin-top:16px">
-                    <thead><tr><th>Product</th><th>UOM</th><th style="text-align:right">Demand</th><th style="text-align:right">Done</th></tr></thead>
-                    <tbody>${d.lines.map(l => `<tr>
-                      <td>${escHtml(l.name||'')}</td>
-                      <td>${escHtml(l.uom||'')}</td>
-                      <td style="text-align:right">${parseFloat(l.demand)||0}</td>
-                      <td style="text-align:right">${parseFloat(l.done)||0}</td>
-                    </tr>`).join('')}</tbody></table>`
-                : '<p class="text-muted" style="margin-top:16px">No moves.</p>';
-            body.innerHTML = `
-              <div class="info-row"><span class="info-label">Reference</span><span class="info-value">${escHtml(d.name||'/')}</span></div>
-              <div class="info-row"><span class="info-label">Origin</span><span class="info-value">${escHtml(d.origin||'—')}</span></div>
-              <div class="info-row"><span class="info-label">Date</span><span class="info-value">${fmtDate(d.scheduled_date)}</span></div>
-              <div class="info-row"><span class="info-label">Status</span><span class="info-value">${deliveryStateBadge(d.state)}</span></div>
-              ${linesHtml}
-              <div style="margin-top:24px">
-                <button class="btn-sm primary" onclick="Portal.printDelivery(${pickId})">🖨 Print / Save PDF</button>
-              </div>`;
-            document.getElementById('overlay').style.display = 'block';
-            detail.style.display = 'block';
-        } catch (e) {
-            toast('Could not load delivery: ' + e.message);
-        }
+    function openDeliveryDetail(pickId) {
+        _openDocPanel('Delivery', `/portal/api/delivery/${pickId}/print`,
+                      `/portal/api/delivery/${pickId}/pdf`, null);
     }
 
     function printDelivery(pickId) {

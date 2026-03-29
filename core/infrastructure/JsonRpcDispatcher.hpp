@@ -740,7 +740,9 @@ private:
             return successResponse_(id, act);
 
         } catch (const std::exception& e) {
-            return errorResponse_(id, 200, "Odoo Server Error", e.what());
+            LOG_ERROR << "[rpc/action_load] " << e.what();
+            return errorResponse_(id, 200, "Odoo Server Error",
+                                  devMode_ ? e.what() : "An internal error occurred");
         }
     }
 

@@ -15,9 +15,14 @@
 #include <pqxx/pqxx>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <mutex>
+#include <set>
 #include <shared_mutex>
 #include <optional>
 #include <sstream>
@@ -201,6 +206,230 @@ static std::string portalYmdToDisplay(const std::string& ymd) {
         return ymd.substr(8, 2) + "/" + ymd.substr(5, 2) + "/" + ymd.substr(0, 4);
     return ymd;
 }
+static std::string htmlEscape(const std::string& s) {
+    std::string out; out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+            case '&':  out += "&amp;";  break;
+            case '<':  out += "&lt;";   break;
+            case '>':  out += "&gt;";   break;
+            case '"':  out += "&quot;"; break;
+            case '\'': out += "&#39;";  break;
+            default:   out += c;
+        }
+    }
+    return out;
+}
+// ================================================================
+// PDF generation helpers — mirrors ReportModule PDF logic
+// ================================================================
+
+// Build the footer HTML string for wkhtmltopdf --footer-html.
+// Returns empty string when no footer is needed.
+static std::string portalBuildFooterHtml(
+    const std::string& footerContent,
+    bool               showPageNum,
+    const std::string& pageNumFmt,
+    const std::string& lineColor,
+    double             lineWidth)
+{
+    if (footerContent.empty() && !showPageNum && lineWidth <= 0) return "";
+
+    // Replace {p}/{t} placeholders with spans populated by JS
+    std::string pgHtml = pageNumFmt;
+    for (size_t p; (p = pgHtml.find("{p}")) != std::string::npos;)
+        pgHtml.replace(p, 3, "<span id='pg'></span>");
+    for (size_t p; (p = pgHtml.find("{t}")) != std::string::npos;)
+        pgHtml.replace(p, 3, "<span id='tot'></span>");
+
+    std::ostringstream fw;
+    fw << std::fixed << std::setprecision(2);
+    fw << "<!DOCTYPE html><html><head>"
+       // wkhtmltopdf injects ?page=N&topage=M into the footer URL
+       << "<script>"
+       << "function subst(){"
+       << "var v={};"
+       << "window.location.search.substring(1).split('&').forEach(function(s){"
+       << "var kv=s.split('=');if(kv[0])v[kv[0]]=decodeURIComponent(kv[1]||'');});"
+       << "var pg=document.getElementById('pg');"
+       << "var tot=document.getElementById('tot');"
+       << "if(pg)pg.textContent=v['page']||'';"
+       << "if(tot)tot.textContent=v['topage']||'';"
+       << "}"
+       << "</script>"
+       << "<style>"
+       << "body{margin:0;padding-top:4px;"
+       << "font-family:Arial,Helvetica,sans-serif;font-size:9pt;color:#333333;"
+       << "overflow:hidden;}";
+    if (lineWidth > 0)
+        fw << "body{border-top:" << lineWidth << "pt solid " << lineColor << ";}";
+    fw << ".fl{float:left;} .fr{float:right;}"
+       << "</style></head>"
+       << "<body onload='subst()'>";
+    if (!footerContent.empty())
+        fw << "<span class='fl'>" << footerContent << "</span>";
+    if (showPageNum)
+        fw << "<span class='fr'>" << pgHtml << "</span>";
+    fw << "</body></html>";
+    return fw.str();
+}
+
+// Extract inner text of .page-footer div from rendered HTML (for footer content fallback).
+static std::string portalExtractFooterText(const std::string& html) {
+    const std::string marker = "class=\"page-footer\"";
+    size_t pos = html.find(marker);
+    if (pos == std::string::npos) return "";
+    size_t gt = html.find('>', pos);
+    size_t lt = html.find("</div>", gt);
+    if (gt == std::string::npos || lt == std::string::npos) return "";
+    return html.substr(gt + 1, lt - gt - 1);
+}
+
+// Run wkhtmltopdf on htmlContent with optional footerHtml; return PDF bytes (empty on failure).
+// SEC-29: paperFormat must already be validated by caller.
+static std::string portalRunWkhtmltopdf(
+    std::string        html,
+    const std::string& footerHtml,
+    const std::string& tmpBase,
+    const std::string& paperFormat,
+    double mt, double mr, double mb, double ml,
+    int fontSize, const std::string& fontColor, double lineHeight)
+{
+    // Inject PDF CSS: hide in-body footer/button, apply font settings
+    {
+        std::ostringstream css;
+        css << "<style>"
+            << "body{font-size:" << fontSize << "pt!important;"
+            << "color:" << fontColor << "!important;"
+            << "line-height:" << std::fixed << std::setprecision(2) << lineHeight << "!important;}"
+            << ".page-footer{display:none!important;}"
+            << ".print-btn{display:none!important;}"
+            << "</style>";
+        size_t hEnd = html.find("</head>");
+        if (hEnd != std::string::npos) html.insert(hEnd, css.str());
+    }
+
+    const std::string tmpHtml   = tmpBase + ".html";
+    const std::string tmpFooter = tmpBase + "_footer.html";
+    const std::string tmpPdf    = tmpBase + ".pdf";
+
+    { std::ofstream f(tmpHtml); f << html; }
+
+    bool hasFooter = !footerHtml.empty();
+    if (hasFooter) { std::ofstream ff(tmpFooter); ff << footerHtml; }
+
+    auto mmStr = [](double v) {
+        std::ostringstream s; s << std::fixed << std::setprecision(1) << v << "mm"; return s.str();
+    };
+    double effectiveMb = hasFooter ? std::max(mb, 20.0) : mb;
+
+    std::string cmd = std::string("wkhtmltopdf --quiet")
+        + " --page-size "    + paperFormat
+        + " --margin-top "   + mmStr(mt)
+        + " --margin-right " + mmStr(mr)
+        + " --margin-bottom "+ mmStr(effectiveMb)
+        + " --margin-left "  + mmStr(ml)
+        + (hasFooter ? " --footer-html \"" + tmpFooter + "\" --footer-spacing 5" : "")
+        + " --enable-local-file-access"
+        + " \"" + tmpHtml + "\""
+        + " \"" + tmpPdf  + "\""
+        + " 2>/dev/null";
+
+    int ret = std::system(cmd.c_str());
+    std::remove(tmpHtml.c_str());
+    if (hasFooter) std::remove(tmpFooter.c_str());
+
+    if (ret != 0) { std::remove(tmpPdf.c_str()); return ""; }
+
+    std::ifstream pdfFile(tmpPdf, std::ios::binary);
+    std::string pdfData((std::istreambuf_iterator<char>(pdfFile)), std::istreambuf_iterator<char>());
+    pdfFile.close();
+    std::remove(tmpPdf.c_str());
+    return pdfData;
+}
+
+// Allowlist for paper formats (SEC-29)
+static const std::set<std::string> kPortalAllowedFormats = {
+    "A3", "A4", "A5", "Letter", "Legal"
+};
+
+// Load PDF settings from ir_report_template for a given model.
+struct PortalPdfSettings {
+    double mt=15, mr=18, mb=18, ml=18;
+    int    fontSize=10;
+    std::string fontColor="#333333";
+    double lineHeight=1.5;
+    std::string paperFormat="A4";
+    std::string footerText;
+    bool   showPageNum=true;
+    std::string pageNumFmt="Page {p} of {t}";
+    std::string footerTextSource="custom";
+    std::string footerLineColor="#cccccc";
+    double footerLineWidth=0.5;
+};
+static PortalPdfSettings portalLoadPdfSettings(pqxx::work& txn, const std::string& model) {
+    PortalPdfSettings s;
+    try {
+        auto rows = txn.exec(
+            "SELECT COALESCE(margin_top,15)::float AS mt, COALESCE(margin_right,18)::float AS mr,"
+            " COALESCE(margin_bottom,18)::float AS mb, COALESCE(margin_left,18)::float AS ml,"
+            " COALESCE(font_size,10) AS fs, COALESCE(font_color,'#333333') AS fc,"
+            " COALESCE(line_height,1.5)::float AS lh, COALESCE(paper_format,'A4') AS pf,"
+            " COALESCE(footer_text,'') AS ft,"
+            " COALESCE(footer_show_page_num,true) AS fspn,"
+            " COALESCE(footer_page_num_fmt,'Page {p} of {t}') AS fpnf,"
+            " COALESCE(footer_text_source,'custom') AS fts,"
+            " COALESCE(footer_line_color,'#cccccc') AS flc,"
+            " COALESCE(footer_line_width,0.5)::float AS flw"
+            " FROM ir_report_template WHERE model=$1 AND active=true ORDER BY id LIMIT 1",
+            pqxx::params{model});
+        if (!rows.empty()) {
+            const auto& r = rows[0];
+            s.mt              = r["mt"].as<double>(15);
+            s.mr              = r["mr"].as<double>(18);
+            s.mb              = r["mb"].as<double>(18);
+            s.ml              = r["ml"].as<double>(18);
+            s.fontSize        = r["fs"].as<int>(10);
+            s.fontColor       = r["fc"].is_null() ? "#333333" : r["fc"].c_str();
+            s.lineHeight      = r["lh"].as<double>(1.5);
+            s.paperFormat     = r["pf"].is_null() ? "A4" : r["pf"].c_str();
+            s.footerText      = r["ft"].is_null() ? "" : r["ft"].c_str();
+            s.showPageNum     = r["fspn"].is_null() ? true : r["fspn"].as<bool>();
+            s.pageNumFmt      = r["fpnf"].is_null() ? "Page {p} of {t}" : r["fpnf"].c_str();
+            s.footerTextSource= r["fts"].is_null() ? "custom" : r["fts"].c_str();
+            s.footerLineColor = r["flc"].is_null() ? "#cccccc" : r["flc"].c_str();
+            s.footerLineWidth = r["flw"].as<double>(0.5);
+        }
+    } catch (...) {}
+    return s;
+}
+
+// Script injected into HTML to update the existing .dle-pg-prev span with live page
+// numbers in browser/iframe preview.  A4 at 96 dpi = 297mm × (96/25.4) ≈ 1122px.
+// We update the span that is already in template_html (saved by the DLE); creating a
+// second element would produce duplicate "Page n of N" text.
+static const char* const PORTAL_PAGE_NUM_SCRIPT = R"SCRIPT(
+<script>
+(function(){
+  var A4H=1122;
+  function init(){
+    var sp=document.querySelector('.dle-pg-prev');
+    if(!sp) return;
+    var footer=document.querySelector('.page-footer');
+    var fmt=(footer&&footer.getAttribute('data-page-num-fmt'))||'Page {p} of {t}';
+    function upd(){
+      var tot=Math.max(1,Math.ceil(document.documentElement.scrollHeight/A4H));
+      var cur=Math.min(tot,Math.floor((window.pageYOffset||window.scrollY)/A4H)+1);
+      sp.textContent=fmt.replace('{p}',cur).replace('{t}',tot);
+    }
+    upd();
+    window.addEventListener('scroll',upd,{passive:true});
+  }
+  document.readyState==='loading'?document.addEventListener('DOMContentLoaded',init):init();
+})();
+</script>
+)SCRIPT";
+
 static std::string portalReplaceAll(std::string str, const std::string& from, const std::string& to) {
     if (from.empty()) return str;
     size_t pos = 0;
@@ -227,13 +456,13 @@ static std::string portalRenderTemplate(
         for (const auto& line : lines) {
             std::string row = loopTpl;
             for (const auto& [k, v] : line)
-                row = portalReplaceAll(row, "{{" + k + "}}", v);
+                row = portalReplaceAll(row, "{{" + k + "}}", htmlEscape(v));
             expanded += row;
         }
         tmpl = before + expanded + after;
     }
     for (const auto& [k, v] : vars)
-        tmpl = portalReplaceAll(tmpl, "{{" + k + "}}", v);
+        tmpl = portalReplaceAll(tmpl, "{{" + k + "}}", htmlEscape(v));
     {
         std::string out; out.reserve(tmpl.size());
         std::size_t i = 0;
@@ -455,7 +684,16 @@ static std::string portalRenderDoc(
         else { vars["partner_name"] = compName.empty() ? pName : compName; vars["attn_name"] = pName; }
     }
 
-    return portalRenderTemplate(tplHtml, vars, lines);
+    std::string rendered = portalRenderTemplate(tplHtml, vars, lines);
+    // Inject live page-number script for browser/iframe preview.
+    // The wkhtmltopdf PDF route hides .page-footer via injected CSS, so this script
+    // has no visible effect when generating PDFs.
+    {
+        size_t bodyEnd = rendered.rfind("</body>");
+        if (bodyEnd != std::string::npos)
+            rendered.insert(bodyEnd, PORTAL_PAGE_NUM_SCRIPT);
+    }
+    return rendered;
 }
 
 // ================================================================
@@ -1504,9 +1742,11 @@ void PortalModule::registerRoutes() {
                 pqxx::work txn{conn.get()};
                 std::string html = portalRenderDoc("account.move", recordId, session->partnerId, txn);
                 if (html.empty()) { htmlErr(404, "Invoice not found or access denied"); return; }
-                const std::string autoprint = "<script>window.onload=function(){window.print();}</script>";
-                size_t pos = html.rfind("</body>");
-                if (pos != std::string::npos) html.insert(pos, autoprint);
+                if (req->getParameter("embed") != "1") {
+                    const std::string autoprint = "<script>window.onload=function(){window.print();}</script>";
+                    size_t pos = html.rfind("</body>");
+                    if (pos != std::string::npos) html.insert(pos, autoprint);
+                }
                 auto res = drogon::HttpResponse::newHttpResponse();
                 res->setStatusCode(drogon::k200OK);
                 res->setContentTypeCode(drogon::CT_TEXT_HTML);
@@ -1668,9 +1908,11 @@ void PortalModule::registerRoutes() {
                 pqxx::work txn{conn.get()};
                 std::string html = portalRenderDoc("sale.order", recordId, session->partnerId, txn);
                 if (html.empty()) { htmlErr(404, "Order not found or access denied"); return; }
-                const std::string autoprint = "<script>window.onload=function(){window.print();}</script>";
-                size_t pos = html.rfind("</body>");
-                if (pos != std::string::npos) html.insert(pos, autoprint);
+                if (req->getParameter("embed") != "1") {
+                    const std::string autoprint = "<script>window.onload=function(){window.print();}</script>";
+                    size_t pos = html.rfind("</body>");
+                    if (pos != std::string::npos) html.insert(pos, autoprint);
+                }
                 auto res = drogon::HttpResponse::newHttpResponse();
                 res->setStatusCode(drogon::k200OK);
                 res->setContentTypeCode(drogon::CT_TEXT_HTML);
@@ -1837,9 +2079,11 @@ void PortalModule::registerRoutes() {
                 pqxx::work txn{conn.get()};
                 std::string html = portalRenderDoc("stock.picking", recordId, session->partnerId, txn);
                 if (html.empty()) { htmlErr(404, "Delivery not found or access denied"); return; }
-                const std::string autoprint = "<script>window.onload=function(){window.print();}</script>";
-                size_t pos = html.rfind("</body>");
-                if (pos != std::string::npos) html.insert(pos, autoprint);
+                if (req->getParameter("embed") != "1") {
+                    const std::string autoprint = "<script>window.onload=function(){window.print();}</script>";
+                    size_t pos = html.rfind("</body>");
+                    if (pos != std::string::npos) html.insert(pos, autoprint);
+                }
                 auto res = drogon::HttpResponse::newHttpResponse();
                 res->setStatusCode(drogon::k200OK);
                 res->setContentTypeCode(drogon::CT_TEXT_HTML);
@@ -1848,6 +2092,157 @@ void PortalModule::registerRoutes() {
             } catch (const std::exception& e) {
                 LOG_ERROR << "[portal] " << e.what();
                 htmlErr(500, devMode ? std::string("Error: ") + e.what() : "An internal error occurred");
+            }
+        },
+        {drogon::Get});
+
+    // ----------------------------------------------------------
+    // PDF routes — wkhtmltopdf, same footer/page-number logic as backend
+    // ----------------------------------------------------------
+
+    // Helper lambda: build footer content and run wkhtmltopdf; return PDF bytes.
+    auto makePdf = [db](
+        const std::string& html,
+        const std::string& model,
+        const std::string& idStr,
+        pqxx::work& txn) -> std::string
+    {
+        PortalPdfSettings cfg = portalLoadPdfSettings(txn, model);
+        const std::string safeFmt =
+            kPortalAllowedFormats.count(cfg.paperFormat) ? cfg.paperFormat : "A4";
+
+        std::string footerContent;
+        if (cfg.footerTextSource == "custom" && !cfg.footerText.empty())
+            footerContent = cfg.footerText;
+        else if (cfg.footerTextSource == "custom")
+            footerContent = portalExtractFooterText(html);
+        // footerTextSource == "none" → leave empty
+
+        std::string footerHtml = portalBuildFooterHtml(
+            footerContent, cfg.showPageNum, cfg.pageNumFmt,
+            cfg.footerLineColor, cfg.footerLineWidth);
+
+        const std::string tmpBase = "/tmp/portal_pdf_" + model + "_" + idStr;
+        return portalRunWkhtmltopdf(html, footerHtml, tmpBase, safeFmt,
+            cfg.mt, cfg.mr, cfg.mb, cfg.ml, cfg.fontSize, cfg.fontColor, cfg.lineHeight);
+    };
+
+    // Invoice PDF
+    drogon::app().registerHandler("/portal/api/invoice/{1}/pdf",
+        [db, portalSessions, devMode, makePdf](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb,
+            const std::string& idStr)
+        {
+            auto htmlErr = [&cb](int code, const std::string& msg) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
+                r->setContentTypeCode(drogon::CT_TEXT_HTML);
+                r->setBody("<html><body><p>" + msg + "</p></body></html>");
+                cb(r);
+            };
+            const std::string sid = req->getCookie(PortalSessionManager::kCookieName);
+            auto session = portalSessions->get(sid);
+            if (!session) { htmlErr(401, "Not authenticated"); return; }
+            int recordId = 0;
+            try { recordId = std::stoi(idStr); } catch (...) { htmlErr(400, "Invalid id"); return; }
+            try {
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+                std::string html = portalRenderDoc("account.move", recordId, session->partnerId, txn);
+                if (html.empty()) { htmlErr(404, "Invoice not found or access denied"); return; }
+                std::string pdfData = makePdf(html, "account.move", idStr, txn);
+                txn.commit();
+                if (pdfData.empty()) { htmlErr(503, "PDF generation failed. Ensure wkhtmltopdf is installed."); return; }
+                auto res = drogon::HttpResponse::newHttpResponse();
+                res->setStatusCode(drogon::k200OK);
+                res->setContentTypeString("application/pdf");
+                res->addHeader("Content-Disposition", "attachment; filename=\"invoice_" + idStr + ".pdf\"");
+                res->setBody(pdfData);
+                cb(res);
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[portal/pdf] " << e.what();
+                htmlErr(500, devMode ? e.what() : "An internal error occurred");
+            }
+        },
+        {drogon::Get});
+
+    // Order PDF
+    drogon::app().registerHandler("/portal/api/order/{1}/pdf",
+        [db, portalSessions, devMode, makePdf](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb,
+            const std::string& idStr)
+        {
+            auto htmlErr = [&cb](int code, const std::string& msg) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
+                r->setContentTypeCode(drogon::CT_TEXT_HTML);
+                r->setBody("<html><body><p>" + msg + "</p></body></html>");
+                cb(r);
+            };
+            const std::string sid = req->getCookie(PortalSessionManager::kCookieName);
+            auto session = portalSessions->get(sid);
+            if (!session) { htmlErr(401, "Not authenticated"); return; }
+            int recordId = 0;
+            try { recordId = std::stoi(idStr); } catch (...) { htmlErr(400, "Invalid id"); return; }
+            try {
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+                std::string html = portalRenderDoc("sale.order", recordId, session->partnerId, txn);
+                if (html.empty()) { htmlErr(404, "Order not found or access denied"); return; }
+                std::string pdfData = makePdf(html, "sale.order", idStr, txn);
+                txn.commit();
+                if (pdfData.empty()) { htmlErr(503, "PDF generation failed. Ensure wkhtmltopdf is installed."); return; }
+                auto res = drogon::HttpResponse::newHttpResponse();
+                res->setStatusCode(drogon::k200OK);
+                res->setContentTypeString("application/pdf");
+                res->addHeader("Content-Disposition", "attachment; filename=\"order_" + idStr + ".pdf\"");
+                res->setBody(pdfData);
+                cb(res);
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[portal/pdf] " << e.what();
+                htmlErr(500, devMode ? e.what() : "An internal error occurred");
+            }
+        },
+        {drogon::Get});
+
+    // Delivery PDF
+    drogon::app().registerHandler("/portal/api/delivery/{1}/pdf",
+        [db, portalSessions, devMode, makePdf](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb,
+            const std::string& idStr)
+        {
+            auto htmlErr = [&cb](int code, const std::string& msg) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
+                r->setContentTypeCode(drogon::CT_TEXT_HTML);
+                r->setBody("<html><body><p>" + msg + "</p></body></html>");
+                cb(r);
+            };
+            const std::string sid = req->getCookie(PortalSessionManager::kCookieName);
+            auto session = portalSessions->get(sid);
+            if (!session) { htmlErr(401, "Not authenticated"); return; }
+            int recordId = 0;
+            try { recordId = std::stoi(idStr); } catch (...) { htmlErr(400, "Invalid id"); return; }
+            try {
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+                std::string html = portalRenderDoc("stock.picking", recordId, session->partnerId, txn);
+                if (html.empty()) { htmlErr(404, "Delivery not found or access denied"); return; }
+                std::string pdfData = makePdf(html, "stock.picking", idStr, txn);
+                txn.commit();
+                if (pdfData.empty()) { htmlErr(503, "PDF generation failed. Ensure wkhtmltopdf is installed."); return; }
+                auto res = drogon::HttpResponse::newHttpResponse();
+                res->setStatusCode(drogon::k200OK);
+                res->setContentTypeString("application/pdf");
+                res->addHeader("Content-Disposition", "attachment; filename=\"delivery_" + idStr + ".pdf\"");
+                res->setBody(pdfData);
+                cb(res);
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[portal/pdf] " << e.what();
+                htmlErr(500, devMode ? e.what() : "An internal error occurred");
             }
         },
         {drogon::Get});

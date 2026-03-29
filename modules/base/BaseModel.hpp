@@ -345,18 +345,35 @@ private:
     }
 
     static nlohmann::json rowsToJson_(const pqxx::result& res) {
+        // PostgreSQL built-in OIDs used for zero-exception type dispatch
+        static constexpr pqxx::oid OID_BOOL    = 16;
+        static constexpr pqxx::oid OID_INT2    = 21;
+        static constexpr pqxx::oid OID_INT4    = 23;
+        static constexpr pqxx::oid OID_INT8    = 20;
+        static constexpr pqxx::oid OID_OID     = 26;
+        static constexpr pqxx::oid OID_FLOAT4  = 700;
+        static constexpr pqxx::oid OID_FLOAT8  = 701;
+        static constexpr pqxx::oid OID_NUMERIC = 1700;
+
         nlohmann::json arr = nlohmann::json::array();
         for (const auto& row : res) {
             nlohmann::json obj;
             for (const auto& field : row) {
                 const std::string col = field.name();
                 if (field.is_null()) { obj[col] = nullptr; continue; }
-                const std::string s = field.c_str();
-                if (s == "t" || s == "true")  { obj[col] = true;  continue; }
-                if (s == "f" || s == "false") { obj[col] = false; continue; }
-                try { obj[col] = field.as<int>();    continue; } catch (...) {}
-                try { obj[col] = field.as<double>(); continue; } catch (...) {}
-                obj[col] = s;
+                const pqxx::oid oid = field.type();
+                if (oid == OID_BOOL) {
+                    const char* s = field.c_str();
+                    obj[col] = (s[0] == 't' || s[0] == '1');
+                    continue;
+                }
+                if (oid == OID_INT2 || oid == OID_INT4 || oid == OID_INT8 || oid == OID_OID) {
+                    obj[col] = field.as<long long>(); continue;
+                }
+                if (oid == OID_FLOAT4 || oid == OID_FLOAT8 || oid == OID_NUMERIC) {
+                    obj[col] = field.as<double>(); continue;
+                }
+                obj[col] = field.c_str();
             }
             arr.push_back(std::move(obj));
         }

@@ -90,12 +90,17 @@ tr:hover td { background:#fafafa; }
 .proof-item { font-size:12px; color:#64748b; padding:2px 0; }
 
 /* ── Detail panel ───────────────────────────────────────────── */
-.invoice-detail { position:fixed; top:0; right:0; bottom:0; width:520px;
+.invoice-detail { position:fixed; top:0; right:0; bottom:0; width:min(880px,92vw);
                   background:#fff; box-shadow:-4px 0 24px rgba(0,0,0,.1);
-                  z-index:100; display:none; overflow-y:auto; }
-.detail-header { padding:20px; border-bottom:1px solid #e2e8f0;
-                 display:flex; align-items:center; justify-content:space-between; }
-.detail-body   { padding:20px; }
+                  z-index:100; display:none; flex-direction:column; }
+.invoice-detail.open { display:flex; }
+.detail-header { padding:14px 20px; border-bottom:1px solid #e2e8f0;
+                 display:flex; align-items:center; justify-content:space-between;
+                 flex-shrink:0; }
+.detail-body   { flex:1; overflow:hidden; display:flex; flex-direction:column; }
+.detail-doc-frame { flex:1; border:none; width:100%; display:block; }
+.detail-actions { padding:10px 16px; border-top:1px solid #e2e8f0;
+                  display:flex; gap:10px; flex-shrink:0; background:#f8fafc; }
 .btn-close { background:none; border:none; font-size:20px; cursor:pointer;
              color:#94a3b8; line-height:1; }
 .info-row  { display:flex; justify-content:space-between; padding:8px 0;
@@ -258,10 +263,14 @@ tr:hover td { background:#fafafa; }
 <div class="overlay" id="overlay" onclick="Portal.closeDetail()"></div>
 <div class="invoice-detail" id="invoice-detail">
   <div class="detail-header">
-    <strong id="detail-title">Invoice</strong>
-    <button class="btn-close" onclick="Portal.closeDetail()">&times;</button>
+    <strong id="detail-title">Document</strong>
+    <div style="display:flex;align-items:center;gap:10px" id="detail-header-actions">
+      <button class="btn-close" onclick="Portal.closeDetail()">&times;</button>
+    </div>
   </div>
-  <div class="detail-body" id="detail-body"></div>
+  <div class="detail-body">
+    <iframe class="detail-doc-frame" id="detail-doc-frame" src="about:blank"></iframe>
+  </div>
 </div>
 
 <div id="toast"></div>
