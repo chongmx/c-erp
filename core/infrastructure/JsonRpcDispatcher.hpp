@@ -2,6 +2,7 @@
 #include "HttpServer.hpp"
 #include "SessionManager.hpp"
 #include "Errors.hpp"
+#include "TtlCache.hpp"
 #include "../../core/factories/Factories.hpp"
 #include "../../core/interfaces/IViewModel.hpp"
 #include "../../core/interfaces/IView.hpp"
@@ -131,6 +132,16 @@ public:
         , secureCookies_(secureCookies)
         , devMode_      (devMode)
     {}
+
+    /**
+     * @brief Invalidate the currency cache (PERF-D).
+     *
+     * Call this after any write to the res_currency table so the next
+     * session_info fetch re-queries the database immediately.
+     * Modules that expose currency write/create/unlink should call this
+     * on their ViewModel's write path.
+     */
+    void invalidateCurrencyCache() { currencyCache_.invalidateAll(); }
 
     void registerRoutes(HttpServer& http) {
         // Primary call_kw endpoint
@@ -313,10 +324,14 @@ private:
             return successResponse_(id, result);
 
         } catch (const AccessDeniedError& e) {
-            // SEC-25: authorization errors are always shown — client must know why (SEC-25)
+            // SEC-25: authorization errors are always shown — client must know why
             return errorResponse_(id, 403, "Access Denied", e.what());
+        } catch (const PoolExhaustedException& e) {
+            // PERF-C: pool exhausted — return 503 so load balancers can route elsewhere
+            LOG_ERROR << "[rpc] pool exhausted: " << e.what();
+            return errorResponse_(id, 503, "Service Unavailable",
+                                  "The server is temporarily overloaded. Please retry.");
         } catch (const std::out_of_range& e) {
-            // SEC-25: gate internal details behind devMode
             LOG_ERROR << "[rpc] " << e.what();
             return errorResponse_(id, 400, "Missing required field",
                                   devMode_ ? e.what() : "An internal error occurred");
@@ -362,31 +377,38 @@ private:
             };
         }
 
-        // Active currencies indexed by code: { "USD": { symbol, position, digits } }
+        // Active currencies indexed by code — cached 60 s (PERF-D)
         nlohmann::json currencies = nlohmann::json::object();
         if (vmFactory_) {
             try {
-                core::CallKwArgs cc;
-                cc.model  = "res.currency";
-                cc.method = "search_read";
-                cc.args   = nlohmann::json::array({nlohmann::json::array()});
-                cc.kwargs = {{"fields", nlohmann::json::array(
-                                {"name", "symbol", "position", "decimal_places"})}};
-                auto vm   = vmFactory_->create("res.currency", core::Lifetime::Transient);
-                auto rows = vm->callKw(cc);
-                if (rows.is_array()) {
-                    for (const auto& row : rows) {
-                        const std::string code   = row.value("name",           std::string{});
-                        const std::string symbol = row.value("symbol",         code);
-                        const std::string pos    = row.value("position",       std::string{"after"});
-                        const int         dec    = row.value("decimal_places", 2);
-                        if (!code.empty())
-                            currencies[code] = {
-                                {"symbol",   symbol},
-                                {"position", pos},
-                                {"digits",   nlohmann::json::array({0, dec})},
-                            };
+                // Fast path: serve from cache
+                if (auto cached = currencyCache_.get("currencies"))  {
+                    currencies = *cached;
+                } else {
+                    // Slow path: query DB, then cache result
+                    core::CallKwArgs cc;
+                    cc.model  = "res.currency";
+                    cc.method = "search_read";
+                    cc.args   = nlohmann::json::array({nlohmann::json::array()});
+                    cc.kwargs = {{"fields", nlohmann::json::array(
+                                    {"name", "symbol", "position", "decimal_places"})}};
+                    auto vm   = vmFactory_->create("res.currency", core::Lifetime::Transient);
+                    auto rows = vm->callKw(cc);
+                    if (rows.is_array()) {
+                        for (const auto& row : rows) {
+                            const std::string code   = row.value("name",           std::string{});
+                            const std::string symbol = row.value("symbol",         code);
+                            const std::string pos    = row.value("position",       std::string{"after"});
+                            const int         dec    = row.value("decimal_places", 2);
+                            if (!code.empty())
+                                currencies[code] = {
+                                    {"symbol",   symbol},
+                                    {"position", pos},
+                                    {"digits",   nlohmann::json::array({0, dec})},
+                                };
+                        }
                     }
+                    currencyCache_.set("currencies", currencies, 60);
                 }
             } catch (...) { /* currencies are nice-to-have — never break session_info */ }
         }
@@ -735,6 +757,9 @@ private:
     LoginRateLimiter                        rateLimiter_;
     bool                                    secureCookies_ = false;
     bool                                    devMode_       = false;
+
+    // PERF-D: TTL caches for quasi-static data
+    TtlCache<std::string, nlohmann::json>   currencyCache_;   // 60 s TTL
 };
 
 } // namespace odoo::infrastructure

@@ -22,4 +22,18 @@ class AccessDeniedError : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+/**
+ * @brief Thrown by DbConnection::acquire() when all pool connections are busy
+ *        and the timeout expires.
+ *
+ * Caught by JsonRpcDispatcher to return HTTP 503 Service Unavailable, and by
+ * HTTP route lambdas that call htmlError(503, ...).  Never gate the message
+ * behind devMode — "pool exhausted" contains no schema information.
+ *
+ * @see DbConnection::acquire()
+ */
+class PoolExhaustedException : public std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
 } // namespace odoo::infrastructure

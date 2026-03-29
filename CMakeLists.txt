@@ -7,7 +7,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Sources
 file(GLOB SOURCES "*.cpp")
-add_executable(c-erp ${SOURCES})
+file(GLOB_RECURSE MODULE_SOURCES
+    "core/*.cpp"
+    "modules/*.cpp"
+    "factories/*.cpp"
+)
+add_executable(c-erp ${SOURCES} ${MODULE_SOURCES})
 
 # Third-party
 add_subdirectory(3rdparty/json)

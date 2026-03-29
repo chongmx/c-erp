@@ -1,4 +1,5 @@
 #pragma once
+#include "Errors.hpp"
 #include <pqxx/pqxx>
 #include <nlohmann/json.hpp>
 #include <condition_variable>
@@ -121,12 +122,15 @@ public:
     // ----------------------------------------------------------
 
     /**
-     * @brief Acquire a connection from the pool (blocks if all are in use).
+     * @brief Acquire a connection from the pool (blocks until one is free or timeout).
      *
-     * @param timeoutMs  Max wait time in milliseconds; 0 = wait forever.
-     * @throws std::runtime_error if the timeout expires.
+     * @param timeoutMs  Max wait time in milliseconds.  Default: 5000 ms (PERF-C).
+     *                   Pass 0 to block indefinitely (strongly discouraged in
+     *                   production — use only in non-HTTP contexts).
+     * @throws PoolExhaustedException if the timeout expires before a connection
+     *         is available.  Callers should propagate this to a 503 response.
      */
-    PooledConnection acquire(int timeoutMs = 0) {
+    PooledConnection acquire(int timeoutMs = 5000) {
         std::unique_lock lock{mutex_};
 
         auto pred = [this]{ return !pool_.empty(); };
@@ -135,9 +139,11 @@ public:
             const bool ok = cv_.wait_for(
                 lock, std::chrono::milliseconds(timeoutMs), pred);
             if (!ok)
-                throw std::runtime_error(
-                    "DbConnection::acquire() timed out after " +
-                    std::to_string(timeoutMs) + "ms");
+                throw PoolExhaustedException(
+                    "Database connection pool exhausted (all " +
+                    std::to_string(cfg_.poolSize) +
+                    " connections in use after " +
+                    std::to_string(timeoutMs) + "ms)");
         } else {
             cv_.wait(lock, pred);
         }
@@ -157,9 +163,7 @@ public:
      */
     bool isHealthy() const {
         std::scoped_lock lock{mutex_};
-        for (const auto& c : pool_)
-            if (c && c->is_open()) return true;
-        return !pool_.empty();   // connections are in use — assume healthy
+        return isHealthy_();
     }
 
     /**
@@ -167,11 +171,12 @@ public:
      */
     nlohmann::json healthInfo() const {
         std::scoped_lock lock{mutex_};
+        const int available = static_cast<int>(pool_.size());
         return {
-            {"pool_size",      cfg_.poolSize},
-            {"available",      static_cast<int>(pool_.size())},
-            {"in_use",         cfg_.poolSize - static_cast<int>(pool_.size())},
-            {"status",         isHealthy() ? "ok" : "down"},
+            {"pool_size",  cfg_.poolSize},
+            {"available",  available},
+            {"in_use",     cfg_.poolSize - available},
+            {"status",     isHealthy_() ? "ok" : "down"},
         };
     }
 
@@ -182,6 +187,14 @@ public:
 
 private:
     friend class PooledConnection;
+
+    /** @brief Lock-free health check — caller must hold mutex_. */
+    bool isHealthy_() const {
+        for (const auto& c : pool_)
+            if (c && c->is_open()) return true;
+        // Connections are all in use — assume the server is up.
+        return !pool_.empty() || (cfg_.poolSize > 0);
+    }
 
     /** @brief Return a connection to the pool (called by ~PooledConnection). */
     void release_(std::shared_ptr<pqxx::connection> conn) {
