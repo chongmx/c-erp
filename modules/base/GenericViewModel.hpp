@@ -21,7 +21,6 @@
 // =============================================================
 #include "BaseViewModel.hpp"
 #include "DbConnection.hpp"
-#include "UserContext.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <string>
@@ -51,28 +50,6 @@ public:
 
 protected:
     std::shared_ptr<infrastructure::DbConnection> db_;
-
-    // S-30: Extract UserContext from call.kwargs["context"] (populated by
-    // JsonRpcDispatcher) and apply it to the model proto so record rules fire.
-    static UserContext extractContext_(const CallKwArgs& call) {
-        UserContext ctx;
-        const auto& kw = call.kwargs;
-        if (!kw.contains("context") || !kw["context"].is_object())
-            return ctx;
-        const auto& c = kw["context"];
-        if (c.contains("uid") && c["uid"].is_number_integer())
-            ctx.uid = c["uid"].get<int>();
-        if (c.contains("company_id") && c["company_id"].is_number_integer())
-            ctx.companyId = c["company_id"].get<int>();
-        if (c.contains("partner_id") && c["partner_id"].is_number_integer())
-            ctx.partnerId = c["partner_id"].get<int>();
-        if (c.contains("is_admin") && c["is_admin"].is_boolean())
-            ctx.isAdmin = c["is_admin"].get<bool>();
-        if (c.contains("group_ids") && c["group_ids"].is_array())
-            for (const auto& g : c["group_ids"])
-                if (g.is_number_integer()) ctx.groupIds.push_back(g.get<int>());
-        return ctx;
-    }
 
     nlohmann::json handleSearchRead(const CallKwArgs& call) {
         TModel proto(db_);

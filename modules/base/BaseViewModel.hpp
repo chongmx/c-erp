@@ -1,5 +1,6 @@
 #pragma once
 #include "interfaces/IViewModel.hpp"
+#include "UserContext.hpp"
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -107,6 +108,35 @@ protected:
      */
     void registerMethod_(const std::string& method, Handler handler) {
         dispatch_[method] = std::move(handler);
+    }
+
+    /**
+     * @brief Extract the calling user's context from call.kwargs["context"].
+     *
+     * Populated by JsonRpcDispatcher for every authenticated JSON-RPC call.
+     * Pass the result to proto.setUserContext() before any model CRUD/search
+     * call so that record rules (S-30) are enforced automatically.
+     *
+     * Handlers that only read schema metadata (fieldsGet, default_get) do NOT
+     * need to call this — record rules are irrelevant for those.
+     */
+    static UserContext extractContext_(const CallKwArgs& call) {
+        UserContext ctx;
+        const auto& kw = call.kwargs;
+        if (!kw.contains("context") || !kw["context"].is_object()) return ctx;
+        const auto& c = kw["context"];
+        if (c.contains("uid")        && c["uid"].is_number_integer())
+            ctx.uid       = c["uid"].get<int>();
+        if (c.contains("company_id") && c["company_id"].is_number_integer())
+            ctx.companyId = c["company_id"].get<int>();
+        if (c.contains("partner_id") && c["partner_id"].is_number_integer())
+            ctx.partnerId = c["partner_id"].get<int>();
+        if (c.contains("is_admin")   && c["is_admin"].is_boolean())
+            ctx.isAdmin   = c["is_admin"].get<bool>();
+        if (c.contains("group_ids")  && c["group_ids"].is_array())
+            for (const auto& g : c["group_ids"])
+                if (g.is_number_integer()) ctx.groupIds.push_back(g.get<int>());
+        return ctx;
     }
 
 private:

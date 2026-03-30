@@ -335,11 +335,13 @@ private:
 
     nlohmann::json handleCreate(const CallKwArgs& call) {
         MrpBom proto(db_);
+        proto.setUserContext(extractContext_(call));
         return proto.create(call.arg(0));
     }
 
     nlohmann::json handleWrite(const CallKwArgs& call) {
         MrpBom proto(db_);
+        proto.setUserContext(extractContext_(call));
         return proto.write(call.ids(), call.arg(1));
     }
 
@@ -362,16 +364,18 @@ private:
 
     nlohmann::json handleFieldsGet(const CallKwArgs& call) {
         MrpBom proto(db_);
-        return proto.fieldsGet(call.fields());
+        return proto.fieldsGet(call.fields());  // schema metadata — no rules needed
     }
 
     nlohmann::json handleSearchCount(const CallKwArgs& call) {
         MrpBom proto(db_);
+        proto.setUserContext(extractContext_(call));
         return proto.searchCount(call.domain());
     }
 
     nlohmann::json handleSearch(const CallKwArgs& call) {
         MrpBom proto(db_);
+        proto.setUserContext(extractContext_(call));
         auto ids = proto.search(call.domain(), call.limit() > 0 ? call.limit() : 80, call.offset(), "id ASC");
         nlohmann::json arr = nlohmann::json::array();
         for (int id : ids) arr.push_back(id);
@@ -456,27 +460,31 @@ private:
 
     nlohmann::json handleRead(const CallKwArgs& call) {
         MrpBomLine proto(db_);
+        proto.setUserContext(extractContext_(call));
         return proto.read(call.ids());
     }
 
     nlohmann::json handleCreate(const CallKwArgs& call) {
         MrpBomLine proto(db_);
+        proto.setUserContext(extractContext_(call));
         return proto.create(call.arg(0));
     }
 
     nlohmann::json handleWrite(const CallKwArgs& call) {
         MrpBomLine proto(db_);
+        proto.setUserContext(extractContext_(call));
         return proto.write(call.ids(), call.arg(1));
     }
 
     nlohmann::json handleUnlink(const CallKwArgs& call) {
         MrpBomLine proto(db_);
+        proto.setUserContext(extractContext_(call));
         return proto.unlink(call.ids());
     }
 
     nlohmann::json handleFieldsGet(const CallKwArgs& call) {
         MrpBomLine proto(db_);
-        return proto.fieldsGet(call.fields());
+        return proto.fieldsGet(call.fields());  // schema metadata — no rules needed
     }
 };
 

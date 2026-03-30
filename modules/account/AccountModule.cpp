@@ -582,40 +582,47 @@ protected:
 
     nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
         TModel proto(db_);
+        proto.setUserContext(extractContext_(call));
         return proto.searchRead(call.domain(), call.fields(),
                                 call.limit() > 0 ? call.limit() : 80,
                                 call.offset(), "id ASC");
     }
     nlohmann::json handleRead(const core::CallKwArgs& call) {
         TModel proto(db_);
+        proto.setUserContext(extractContext_(call));
         return proto.read(call.ids(), call.fields());
     }
     nlohmann::json handleCreate(const core::CallKwArgs& call) {
         const auto v = call.arg(0);
         if (!v.is_object()) throw std::runtime_error("create: args[0] must be a dict");
         TModel proto(db_);
+        proto.setUserContext(extractContext_(call));
         return proto.create(v);
     }
     nlohmann::json handleWrite(const core::CallKwArgs& call) {
         const auto v = call.arg(1);
         if (!v.is_object()) throw std::runtime_error("write: args[1] must be a dict");
         TModel proto(db_);
+        proto.setUserContext(extractContext_(call));
         return proto.write(call.ids(), v);
     }
     nlohmann::json handleUnlink(const core::CallKwArgs& call) {
         TModel proto(db_);
+        proto.setUserContext(extractContext_(call));
         return proto.unlink(call.ids());
     }
     nlohmann::json handleFieldsGet(const core::CallKwArgs& call) {
         TModel proto(db_);
-        return proto.fieldsGet(call.fields());
+        return proto.fieldsGet(call.fields());  // schema metadata — no rules needed
     }
     nlohmann::json handleSearchCount(const core::CallKwArgs& call) {
         TModel proto(db_);
+        proto.setUserContext(extractContext_(call));
         return proto.searchCount(call.domain());
     }
     nlohmann::json handleSearch(const core::CallKwArgs& call) {
         TModel proto(db_);
+        proto.setUserContext(extractContext_(call));
         auto ids = proto.search(call.domain(),
                                 call.limit() > 0 ? call.limit() : 80,
                                 call.offset(), "id ASC");
