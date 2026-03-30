@@ -39,6 +39,7 @@ private:
     void seedActions_();
     void seedMenus_();
     void seedConfigParams_();
+    void seedRules_();
 };
 
 } // namespace odoo::modules::ir

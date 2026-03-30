@@ -9,6 +9,7 @@
 #include "GenericViewModel.hpp"
 #include "DbConnection.hpp"
 #include "TtlCache.hpp"
+#include "RuleEngine.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <memory>
@@ -461,6 +462,9 @@ void IrModule::initialize() {
     seedActions_();
     seedMenus_();
     seedConfigParams_();
+    seedRules_();
+    // S-30: start the rule engine so BaseModel can enforce record-level rules
+    core::RuleEngine::initialize(services_.db());
 }
 
 void IrModule::ensureSchema_() {
@@ -505,6 +509,34 @@ void IrModule::ensureSchema_() {
             value      TEXT    NOT NULL DEFAULT '',
             create_date TIMESTAMP DEFAULT now(),
             write_date  TIMESTAMP DEFAULT now()
+        )
+    )");
+
+    // S-30: Record-level authorization tables
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS ir_rule (
+            id           SERIAL  PRIMARY KEY,
+            name         VARCHAR(128) NOT NULL,
+            model_name   VARCHAR(128) NOT NULL,
+            domain_force JSONB   NOT NULL DEFAULT '[]',
+            perm_read    BOOLEAN NOT NULL DEFAULT TRUE,
+            perm_write   BOOLEAN NOT NULL DEFAULT TRUE,
+            perm_create  BOOLEAN NOT NULL DEFAULT TRUE,
+            perm_unlink  BOOLEAN NOT NULL DEFAULT TRUE,
+            global       BOOLEAN NOT NULL DEFAULT TRUE,
+            active       BOOLEAN NOT NULL DEFAULT FALSE,
+            create_date  TIMESTAMP DEFAULT now(),
+            write_date   TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec(R"(
+        CREATE INDEX IF NOT EXISTS ir_rule_model_idx ON ir_rule (model_name)
+    )");
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS ir_rule_group_rel (
+            rule_id  INTEGER NOT NULL REFERENCES ir_rule(id) ON DELETE CASCADE,
+            group_id INTEGER NOT NULL,
+            PRIMARY KEY (rule_id, group_id)
         )
     )");
 
@@ -570,6 +602,78 @@ void IrModule::seedConfigParams_() {
             ('database.uuid',          gen_random_uuid()::text)
         ON CONFLICT (key) DO NOTHING
     )");
+    txn.commit();
+}
+
+void IrModule::seedRules_() {
+    // S-30: Seed example record rules.
+    //
+    // Rules are seeded with active=FALSE so existing behaviour is completely
+    // unchanged on first upgrade.  An administrator can activate individual
+    // rules by running:
+    //   UPDATE ir_rule SET active=TRUE WHERE id = <id>;
+    //
+    // global=TRUE  → subtractive: all users (non-admin) must satisfy the rule.
+    // global=FALSE → additive:    only users in ir_rule_group_rel are restricted;
+    //                             add rows to ir_rule_group_rel to bind a rule to
+    //                             specific group ids.
+    //
+    // Variable tokens in domain_force:
+    //   "user.id"         → session user id
+    //   "user.company_id" → session company id
+    //   "user.partner_id" → session partner id
+    //
+    // Admin users (res_users.groups containing Administrator id=3) bypass ALL rules
+    // regardless of active/global settings.
+
+    auto conn = services_.db()->acquire();
+    pqxx::work txn{conn.get()};
+
+    txn.exec(R"(
+        INSERT INTO ir_rule
+            (id, name, model_name, domain_force,
+             perm_read, perm_write, perm_create, perm_unlink,
+             global, active)
+        VALUES
+        -- sale.order: restrict non-admin users to orders assigned to them
+        (1, 'Sale Order: Personal Orders',
+            'sale.order',
+            '[["user_id","=","user.id"]]',
+            TRUE, TRUE, TRUE, TRUE,
+            TRUE, FALSE),
+
+        -- purchase.order: restrict to own purchase requests
+        (2, 'Purchase Order: Personal RFQs',
+            'purchase.order',
+            '[["user_id","=","user.id"]]',
+            TRUE, TRUE, TRUE, TRUE,
+            TRUE, FALSE),
+
+        -- account.move: restrict to invoices assigned to current user
+        (3, 'Account Move: Own Invoices',
+            'account.move',
+            '[["invoice_user_id","=","user.id"]]',
+            TRUE, TRUE, TRUE, TRUE,
+            TRUE, FALSE),
+
+        -- hr.employee: employees see only their own record
+        (4, 'HR Employee: See Own Record',
+            'hr.employee',
+            '[["user_id","=","user.id"]]',
+            TRUE, FALSE, FALSE, FALSE,
+            TRUE, FALSE),
+
+        -- stock.picking: restrict to pickings for user''s company
+        (5, 'Stock Picking: Own Company',
+            'stock.picking',
+            '[["company_id","=","user.company_id"]]',
+            TRUE, TRUE, TRUE, TRUE,
+            TRUE, FALSE)
+
+        ON CONFLICT (id) DO NOTHING
+    )");
+
+    txn.exec("SELECT setval('ir_rule_id_seq', (SELECT MAX(id) FROM ir_rule), true)");
     txn.commit();
 }
 

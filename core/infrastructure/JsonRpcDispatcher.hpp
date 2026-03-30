@@ -264,11 +264,19 @@ private:
             if (session.isAuthenticated())
                 checkModelAccess_(call.model, session);
 
-            // Inject session_id + uid into context
+            // Inject session identity into context for record-rule evaluation (S-30)
             if (!call.kwargs.contains("context"))
                 call.kwargs["context"] = nlohmann::json::object();
             call.kwargs["context"]["uid"]        = session.uid;
             call.kwargs["context"]["session_id"] = sid;
+            call.kwargs["context"]["company_id"] = session.companyId;
+            call.kwargs["context"]["partner_id"] = session.partnerId;
+            call.kwargs["context"]["is_admin"]   = session.isAdmin;
+            {
+                nlohmann::json gArr = nlohmann::json::array();
+                for (int g : session.groupIds) gArr.push_back(g);
+                call.kwargs["context"]["group_ids"] = std::move(gArr);
+            }
 
             // get_views is handled via ViewFactory when the ViewModel doesn't implement it
             if (call.method == "get_views" && viewFactory_) {

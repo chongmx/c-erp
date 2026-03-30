@@ -3,6 +3,7 @@
 #include "FieldRegistry.hpp"
 #include "Domain.hpp"
 #include "DbConnection.hpp"
+#include "RuleEngine.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <memory>
@@ -52,6 +53,11 @@ public:
             static_cast<TDerived*>(this)->TDerived::registerFields();
         });
     }
+
+    // ----------------------------------------------------------
+    // IModel — Record-level authorization (S-30)
+    // ----------------------------------------------------------
+    void setUserContext(const UserContext& ctx) override { ctx_ = ctx; }
 
     // ----------------------------------------------------------
     // IModel — Identity
@@ -125,13 +131,18 @@ public:
                         const std::vector<std::string>& fields = {}) override {
         if (ids.empty()) return nlohmann::json::array();
         const std::string cols = buildSelectCols_(fields);
-        const std::string sql  =
+        pqxx::params params;
+        params.append(idsToArray_(ids));                           // $1
+        std::string sql =
             "SELECT " + cols + " FROM " + std::string(TDerived::TABLE_NAME) +
             " WHERE id = ANY($1::int[])";
 
+        // S-30: inject record-rule filter after the ids param ($2+)
+        appendRuleClause_(sql, params, RuleOp::Read, 1);
+
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        auto res = txn.exec(sql, pqxx::params{idsToArray_(ids)});
+        auto res = txn.exec(sql, params);
         return rowsToJson_(res);
     }
 
@@ -153,11 +164,14 @@ public:
         }
         if (setClause.empty()) return true;
 
-        params.append(idsToArray_(ids));
-        const std::string sql =
+        params.append(idsToArray_(ids));                           // $idx (ids)
+        std::string sql =
             "UPDATE " + std::string(TDerived::TABLE_NAME) +
             " SET " + setClause +
             " WHERE id = ANY($" + std::to_string(idx) + "::int[])";
+
+        // S-30: inject record-rule filter after the ids param
+        appendRuleClause_(sql, params, RuleOp::Write, idx);
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
@@ -168,12 +182,18 @@ public:
 
     bool unlink(const std::vector<int>& ids) override {
         if (ids.empty()) return true;
-        const std::string sql =
+        pqxx::params params;
+        params.append(idsToArray_(ids));                           // $1
+        std::string sql =
             "DELETE FROM " + std::string(TDerived::TABLE_NAME) +
             " WHERE id = ANY($1::int[])";
+
+        // S-30: inject record-rule filter after the ids param
+        appendRuleClause_(sql, params, RuleOp::Unlink, 1);
+
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        txn.exec(sql, pqxx::params{idsToArray_(ids)});
+        txn.exec(sql, params);
         txn.commit();
         return true;
     }
@@ -185,7 +205,9 @@ public:
                             int limit = 0, int offset = 0,
                             const std::string& order = "") override {
         validateOrder_(order);
-        auto [where, paramVec] = domainFromJson(domainJson).toSql();
+        // S-30: merge rule domain into user domain before compiling SQL
+        const nlohmann::json merged = mergeRuleDomain_(domainJson, RuleOp::Read);
+        auto [where, paramVec] = domainFromJson(merged).toSql();
         std::string sql =
             "SELECT id FROM " + std::string(TDerived::TABLE_NAME) +
             " WHERE " + where;
@@ -212,7 +234,9 @@ public:
                                int limit = 0, int offset = 0,
                                const std::string& order = "") override {
         validateOrder_(order);
-        auto [where, paramVec] = domainFromJson(domainJson).toSql();
+        // S-30: merge rule domain into user domain before compiling SQL
+        const nlohmann::json merged = mergeRuleDomain_(domainJson, RuleOp::Read);
+        auto [where, paramVec] = domainFromJson(merged).toSql();
         const std::string cols = buildSelectCols_(fields);
         std::string sql =
             "SELECT " + cols + " FROM " + std::string(TDerived::TABLE_NAME) +
@@ -234,7 +258,9 @@ public:
     }
 
     int searchCount(const nlohmann::json& domainJson) override {
-        auto [where, paramVec] = domainFromJson(domainJson).toSql();
+        // S-30: merge rule domain
+        const nlohmann::json merged = mergeRuleDomain_(domainJson, RuleOp::Read);
+        auto [where, paramVec] = domainFromJson(merged).toSql();
         const std::string sql =
             "SELECT COUNT(*) FROM " + std::string(TDerived::TABLE_NAME) +
             " WHERE " + where;
@@ -260,12 +286,69 @@ public:
 
 protected:
     std::shared_ptr<infrastructure::DbConnection> db_;
-    int           id_ = 0;
+    int           id_  = 0;
+    UserContext   ctx_;   ///< S-30: set by GenericViewModel before each CRUD call
     // One FieldRegistry shared across all instances of the same concrete model type.
     // Populated once via call_once in the constructor; thereafter read-only.
     inline static FieldRegistry fieldRegistry_{};
 
 private:
+    // ── S-30: Record-rule helpers ──────────────────────────────
+
+    // Returns the user domain merged with applicable ir.rule domains (implicit AND).
+    // Used by search / searchRead / searchCount which compile a full domain to SQL.
+    nlohmann::json mergeRuleDomain_(const nlohmann::json& userDomain,
+                                     RuleOp op) const {
+        if (!RuleEngine::ready()) return userDomain;
+        const auto ruleDomain = RuleEngine::instance().buildRuleDomain(
+            TDerived::MODEL_NAME, op, ctx_);
+        if (ruleDomain.empty()) return userDomain;
+        // Concatenate: domainFromJson treats a flat list as implicit AND
+        nlohmann::json merged = userDomain;
+        for (const auto& item : ruleDomain) merged.push_back(item);
+        return merged;
+    }
+
+    // Appends a rule WHERE clause to an existing SQL string, with $N parameters
+    // offset so they follow the already-bound params.
+    // `existingParamCount` = number of $N placeholders already in sql.
+    void appendRuleClause_(std::string&  sql,
+                            pqxx::params& params,
+                            RuleOp        op,
+                            int           existingParamCount) const {
+        if (!RuleEngine::ready()) return;
+        const auto ruleDomain = RuleEngine::instance().buildRuleDomain(
+            TDerived::MODEL_NAME, op, ctx_);
+        if (ruleDomain.empty()) return;
+        auto [rClause, rParams] = domainFromJson(ruleDomain).toSql();
+        if (rClause == "TRUE" || rClause.empty()) return;
+        sql += " AND " + offsetParams_(rClause, existingParamCount);
+        for (auto& s : rParams) params.append(s);
+    }
+
+    // Shift all $N placeholders in a SQL string by `offset`.
+    // Safe because we generated the string ourselves (no user content in it).
+    static std::string offsetParams_(const std::string& sql, int offset) {
+        if (offset == 0) return sql;
+        std::string result;
+        result.reserve(sql.size() + 8);
+        for (std::size_t i = 0; i < sql.size(); ) {
+            if (sql[i] == '$' && i + 1 < sql.size() && std::isdigit(sql[i + 1])) {
+                std::size_t j = i + 1;
+                while (j < sql.size() && std::isdigit(sql[j])) ++j;
+                const int n = std::stoi(sql.substr(i + 1, j - i - 1));
+                result += '$';
+                result += std::to_string(n + offset);
+                i = j;
+            } else {
+                result += sql[i++];
+            }
+        }
+        return result;
+    }
+
+    // ── Existing private helpers ───────────────────────────────
+
     // Validates that every column name in a (regex-sanitized) ORDER BY clause
     // actually exists in this model's field registry.  "id" is always valid.
     // Throws std::invalid_argument for unknown columns, preventing information

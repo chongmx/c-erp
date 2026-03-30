@@ -1,4 +1,5 @@
 #pragma once
+#include "UserContext.hpp"
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -30,6 +31,21 @@ namespace odoo::core {
 class IModel {
 public:
     virtual ~IModel() = default;
+
+    // ----------------------------------------------------------
+    // Record-level authorization (S-30)
+    // ----------------------------------------------------------
+    /**
+     * @brief Set the calling user's context for record-rule filtering.
+     *
+     * Must be called before any CRUD or search method when record-level
+     * authorization is required.  BaseModel stores the context and injects
+     * applicable ir.rule WHERE clauses into every subsequent query.
+     *
+     * GenericViewModel calls this automatically from callKw; custom
+     * ViewModels should call it before delegating to the model.
+     */
+    virtual void setUserContext(const UserContext& ctx) = 0;
 
     // ----------------------------------------------------------
     // Identity

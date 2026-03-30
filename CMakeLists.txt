@@ -30,6 +30,7 @@ target_include_directories(c-erp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core/infrastructure
     ${CMAKE_CURRENT_SOURCE_DIR}/core/interfaces
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/base
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/ir
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/auth
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/uom
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/product
