@@ -48,6 +48,7 @@ public:
 
 private:
     std::shared_ptr<infrastructure::DbConnection> db_;
+    bool devMode_ = false;
 
     void createUser_(const std::string& login,
                      const std::string& password,

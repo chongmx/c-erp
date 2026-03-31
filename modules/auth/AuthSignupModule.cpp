@@ -22,6 +22,7 @@ AuthSignupModule::AuthSignupModule(core::ModelFactory&     /*modelFactory*/,
                                    core::ViewModelFactory& /*viewModelFactory*/,
                                    core::ViewFactory&      /*viewFactory*/)
     : db_(serviceFactory.db())
+    , devMode_(serviceFactory.devMode())
 {}
 
 std::string AuthSignupModule::moduleName() const { return "auth_signup"; }
@@ -72,9 +73,10 @@ void AuthSignupModule::registerRoutes() {
                 res->setBody(nlohmann::json{
                     {"result", {{"login", login}}}}.dump());
             } catch (const std::exception& e) {
+                LOG_ERROR << "[auth_signup/signup] " << e.what();
                 res->setStatusCode(drogon::k500InternalServerError);
                 res->setBody(nlohmann::json{
-                    {"error", e.what()}}.dump());
+                    {"error", devMode_ ? e.what() : "Registration failed"}}.dump());
             }
             cb(res);
         },
@@ -134,8 +136,10 @@ void AuthSignupModule::registerRoutes() {
                 res->setBody(nlohmann::json{
                     {"result", {{"token", token}, {"login", login}}}}.dump());
             } catch (const std::exception& e) {
+                LOG_ERROR << "[auth_signup/reset_password] " << e.what();
                 res->setStatusCode(drogon::k500InternalServerError);
-                res->setBody(nlohmann::json{{"error", e.what()}}.dump());
+                res->setBody(nlohmann::json{
+                    {"error", devMode_ ? e.what() : "Password reset failed"}}.dump());
             }
             cb(res);
         },
