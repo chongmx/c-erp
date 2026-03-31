@@ -143,6 +143,18 @@ public:
      */
     void invalidateCurrencyCache() { currencyCache_.invalidateAll(); }
 
+    /**
+     * @brief Invalidate the fields_get cache (PERF-D).
+     *
+     * Call when model field metadata changes (rare at runtime; normally only
+     * on server restart).  Pass a model name to evict a single entry, or
+     * call with no argument to flush the entire cache.
+     */
+    void invalidateFieldsGetCache()
+        { fieldsGetCache_.invalidateAll(); }
+    void invalidateFieldsGetCache(const std::string& model)
+        { fieldsGetCache_.invalidate(model); }
+
     void registerRoutes(HttpServer& http) {
         // Primary call_kw endpoint
         http.addJsonPostWithResponse("/web/dataset/call_kw",
@@ -283,8 +295,18 @@ private:
                 return successResponse_(id, handleGetViews_(call));
             }
 
+            // PERF-D: fields_get returns pure metadata — serve from cache (300 s TTL)
+            if (call.method == "fields_get") {
+                if (auto cached = fieldsGetCache_.get(call.model))
+                    return successResponse_(id, *cached);
+            }
+
             auto vm     = vmFactory_->create(call.model, core::Lifetime::Transient);
             auto result = vm->callKw(call);
+
+            // PERF-D: cache fields_get result
+            if (call.method == "fields_get" && result.is_object())
+                fieldsGetCache_.set(call.model, result, 300);
 
             // After authenticate: record rate-limiter outcome
             if (call.method == "authenticate") {
@@ -769,7 +791,8 @@ private:
     bool                                    devMode_       = false;
 
     // PERF-D: TTL caches for quasi-static data
-    TtlCache<std::string, nlohmann::json>   currencyCache_;   // 60 s TTL
+    TtlCache<std::string, nlohmann::json>   currencyCache_;   // 60 s TTL — res.currency rows
+    TtlCache<std::string, nlohmann::json>   fieldsGetCache_;  // 300 s TTL — keyed by model name
 };
 
 } // namespace odoo::infrastructure

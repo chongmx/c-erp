@@ -229,11 +229,18 @@ public:
         return ids;
     }
 
+    // PERF-F: maximum rows returned by any single searchRead call.
+    // Prevents accidental or malicious full-table scans from the HTTP API.
+    // Set high enough for real use (countries=250, states=700) but bounded.
+    static constexpr int kMaxPageSize = 1000;
+
     nlohmann::json searchRead(const nlohmann::json&           domainJson,
                                const std::vector<std::string>& fields = {},
                                int limit = 0, int offset = 0,
                                const std::string& order = "") override {
         validateOrder_(order);
+        // PERF-F: cap to prevent unbounded queries (limit==0 means "no limit" from caller)
+        if (limit <= 0 || limit > kMaxPageSize) limit = kMaxPageSize;
         // S-30: merge rule domain into user domain before compiling SQL
         const nlohmann::json merged = mergeRuleDomain_(domainJson, RuleOp::Read);
         auto [where, paramVec] = domainFromJson(merged).toSql();
