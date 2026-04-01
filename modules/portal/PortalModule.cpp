@@ -1385,6 +1385,11 @@ void PortalModule::registerRoutes() {
                     {"email", email},
                 }.dump());
                 cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error", "The server is temporarily overloaded. Please retry."}}.dump());
+                cb(res);
             } catch (const std::exception& e) {
                 res->setStatusCode(drogon::k500InternalServerError);
                 LOG_ERROR << "[portal] " << e.what();
@@ -1514,6 +1519,11 @@ void PortalModule::registerRoutes() {
                 res->setStatusCode(drogon::k200OK);
                 res->setBody(nlohmann::json{{"ok", true}}.dump());
                 cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error", "The server is temporarily overloaded. Please retry."}}.dump());
+                cb(res);
             } catch (const std::exception& e) {
                 res->setStatusCode(drogon::k500InternalServerError);
                 LOG_ERROR << "[portal] " << e.what();
@@ -1604,6 +1614,11 @@ void PortalModule::registerRoutes() {
 
                 res->setStatusCode(drogon::k200OK);
                 res->setBody(result.dump());
+                cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error", "The server is temporarily overloaded. Please retry."}}.dump());
                 cb(res);
             } catch (const std::exception& e) {
                 res->setStatusCode(drogon::k500InternalServerError);
@@ -1707,6 +1722,11 @@ void PortalModule::registerRoutes() {
                 res->setStatusCode(drogon::k200OK);
                 res->setBody(result.dump());
                 cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error", "The server is temporarily overloaded. Please retry."}}.dump());
+                cb(res);
             } catch (const std::exception& e) {
                 res->setStatusCode(drogon::k500InternalServerError);
                 LOG_ERROR << "[portal] " << e.what();
@@ -1752,6 +1772,9 @@ void PortalModule::registerRoutes() {
                 res->setContentTypeCode(drogon::CT_TEXT_HTML);
                 res->setBody(html);
                 cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                htmlErr(503, "The server is temporarily overloaded. Please retry.");
             } catch (const std::exception& e) {
                 LOG_ERROR << "[portal] " << e.what();
                 htmlErr(500, devMode ? std::string("Error: ") + e.what() : "An internal error occurred");
@@ -1795,6 +1818,11 @@ void PortalModule::registerRoutes() {
                         {"amount_total",row["amount_total"].as<double>()}});
                 res->setStatusCode(drogon::k200OK);
                 res->setBody(result.dump());
+                cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error", "The server is temporarily overloaded. Please retry."}}.dump());
                 cb(res);
             } catch (const std::exception& e) {
                 res->setStatusCode(drogon::k500InternalServerError);
@@ -1873,6 +1901,11 @@ void PortalModule::registerRoutes() {
                 res->setStatusCode(drogon::k200OK);
                 res->setBody(result.dump());
                 cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error", "The server is temporarily overloaded. Please retry."}}.dump());
+                cb(res);
             } catch (const std::exception& e) {
                 res->setStatusCode(drogon::k500InternalServerError);
                 LOG_ERROR << "[portal] " << e.what();
@@ -1918,6 +1951,9 @@ void PortalModule::registerRoutes() {
                 res->setContentTypeCode(drogon::CT_TEXT_HTML);
                 res->setBody(html);
                 cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                htmlErr(503, "The server is temporarily overloaded. Please retry.");
             } catch (const std::exception& e) {
                 LOG_ERROR << "[portal] " << e.what();
                 htmlErr(500, devMode ? std::string("Error: ") + e.what() : "An internal error occurred");
@@ -1964,6 +2000,11 @@ void PortalModule::registerRoutes() {
                         {"scheduled_date",row["scheduled_date"].is_null()?"":std::string(row["scheduled_date"].c_str())}});
                 res->setStatusCode(drogon::k200OK);
                 res->setBody(result.dump());
+                cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error", "The server is temporarily overloaded. Please retry."}}.dump());
                 cb(res);
             } catch (const std::exception& e) {
                 res->setStatusCode(drogon::k500InternalServerError);
@@ -2044,6 +2085,11 @@ void PortalModule::registerRoutes() {
                 res->setStatusCode(drogon::k200OK);
                 res->setBody(result.dump());
                 cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error", "The server is temporarily overloaded. Please retry."}}.dump());
+                cb(res);
             } catch (const std::exception& e) {
                 res->setStatusCode(drogon::k500InternalServerError);
                 LOG_ERROR << "[portal] " << e.what();
@@ -2089,6 +2135,9 @@ void PortalModule::registerRoutes() {
                 res->setContentTypeCode(drogon::CT_TEXT_HTML);
                 res->setBody(html);
                 cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                htmlErr(503, "The server is temporarily overloaded. Please retry.");
             } catch (const std::exception& e) {
                 LOG_ERROR << "[portal] " << e.what();
                 htmlErr(500, devMode ? std::string("Error: ") + e.what() : "An internal error occurred");
@@ -2160,6 +2209,9 @@ void PortalModule::registerRoutes() {
                 res->addHeader("Content-Disposition", "attachment; filename=\"invoice_" + idStr + ".pdf\"");
                 res->setBody(pdfData);
                 cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                htmlErr(503, "The server is temporarily overloaded. Please retry.");
             } catch (const std::exception& e) {
                 LOG_ERROR << "[portal/pdf] " << e.what();
                 htmlErr(500, devMode ? e.what() : "An internal error occurred");
@@ -2200,6 +2252,9 @@ void PortalModule::registerRoutes() {
                 res->addHeader("Content-Disposition", "attachment; filename=\"order_" + idStr + ".pdf\"");
                 res->setBody(pdfData);
                 cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                htmlErr(503, "The server is temporarily overloaded. Please retry.");
             } catch (const std::exception& e) {
                 LOG_ERROR << "[portal/pdf] " << e.what();
                 htmlErr(500, devMode ? e.what() : "An internal error occurred");
@@ -2240,6 +2295,9 @@ void PortalModule::registerRoutes() {
                 res->addHeader("Content-Disposition", "attachment; filename=\"delivery_" + idStr + ".pdf\"");
                 res->setBody(pdfData);
                 cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                htmlErr(503, "The server is temporarily overloaded. Please retry.");
             } catch (const std::exception& e) {
                 LOG_ERROR << "[portal/pdf] " << e.what();
                 htmlErr(500, devMode ? e.what() : "An internal error occurred");
@@ -2390,6 +2448,11 @@ void PortalModule::registerRoutes() {
                     {"filename", baseName},
                 }.dump());
                 cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error", "The server is temporarily overloaded. Please retry."}}.dump());
+                cb(res);
             } catch (const std::exception& e) {
                 res->setStatusCode(drogon::k500InternalServerError);
                 LOG_ERROR << "[portal] " << e.what();
@@ -2445,6 +2508,11 @@ void PortalModule::registerRoutes() {
 
                 res->setStatusCode(drogon::k200OK);
                 res->setBody(result.dump());
+                cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error", "The server is temporarily overloaded. Please retry."}}.dump());
                 cb(res);
             } catch (const std::exception& e) {
                 res->setStatusCode(drogon::k500InternalServerError);
@@ -2554,6 +2622,11 @@ void PortalModule::registerRoutes() {
                     {"ok",         true},
                     {"invoice_id", newInvoiceId},
                 }.dump());
+                cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error", "The server is temporarily overloaded. Please retry."}}.dump());
                 cb(res);
             } catch (const std::exception& e) {
                 res->setStatusCode(drogon::k500InternalServerError);

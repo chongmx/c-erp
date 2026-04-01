@@ -1,6 +1,7 @@
 #include "AuthSignupModule.hpp"
 #include "AuthService.hpp"
 #include "DbConnection.hpp"
+#include "Errors.hpp"
 #include <drogon/drogon.h>
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
@@ -72,6 +73,11 @@ void AuthSignupModule::registerRoutes() {
                 res->setStatusCode(drogon::k200OK);
                 res->setBody(nlohmann::json{
                     {"result", {{"login", login}}}}.dump());
+            } catch (const odoo::infrastructure::PoolExhaustedException& e) {
+                LOG_ERROR << "[auth_signup/signup] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{
+                    {"error", "The server is temporarily overloaded. Please retry."}}.dump());
             } catch (const std::exception& e) {
                 LOG_ERROR << "[auth_signup/signup] " << e.what();
                 res->setStatusCode(drogon::k500InternalServerError);
@@ -135,6 +141,11 @@ void AuthSignupModule::registerRoutes() {
                 // We return it here for testing/frontend development.
                 res->setBody(nlohmann::json{
                     {"result", {{"token", token}, {"login", login}}}}.dump());
+            } catch (const odoo::infrastructure::PoolExhaustedException& e) {
+                LOG_ERROR << "[auth_signup/reset_password] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{
+                    {"error", "The server is temporarily overloaded. Please retry."}}.dump());
             } catch (const std::exception& e) {
                 LOG_ERROR << "[auth_signup/reset_password] " << e.what();
                 res->setStatusCode(drogon::k500InternalServerError);

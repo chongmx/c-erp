@@ -1230,6 +1230,9 @@ void ReportModule::registerRoutes() {
                 resp->setContentTypeCode(drogon::CT_TEXT_HTML);
                 resp->setBody(html);
                 cb(resp);
+            } catch (const PoolExhaustedException& ex) {
+                LOG_ERROR << "[report] pool: " << ex.what();
+                cb(htmlError(503, "The server is temporarily overloaded. Please retry."));
             } catch (const std::runtime_error& ex) {
                 // SEC-28: record-not-found messages are safe; gate anyway for consistency
                 cb(htmlError(404, devMode ? ex.what() : "Record not found"));
@@ -1461,6 +1464,9 @@ void ReportModule::registerRoutes() {
                 resp->setBody(pdfData);
                 cb(resp);
 
+            } catch (const PoolExhaustedException& ex) {
+                LOG_ERROR << "[report] pool: " << ex.what();
+                cb(htmlError(503, "The server is temporarily overloaded. Please retry."));
             } catch (const std::runtime_error& ex) {
                 // SEC-28: record-not-found messages are safe; gate anyway for consistency
                 cb(htmlError(404, devMode ? ex.what() : "Record not found"));
@@ -1608,6 +1614,9 @@ void ReportModule::registerRoutes() {
                 resp->setBody(rendered);
                 cb(resp);
 
+            } catch (const PoolExhaustedException& ex) {
+                LOG_ERROR << "[report] pool: " << ex.what();
+                cb(htmlError(503, "The server is temporarily overloaded. Please retry."));
             } catch (const std::exception& ex) {
                 // SEC-28: may contain SQL details — never expose in production
                 LOG_ERROR << "[report/preview] " << ex.what();
