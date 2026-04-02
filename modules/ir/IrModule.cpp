@@ -10,9 +10,18 @@
 #include "DbConnection.hpp"
 #include "TtlCache.hpp"
 #include "RuleEngine.hpp"
+#include "AuditService.hpp"
+#include "MigrationRunner.hpp"
+#include "CsvParser.hpp"
+#include "Errors.hpp"
+#include "SessionManager.hpp"
+#include <drogon/drogon.h>
+#include <drogon/MultiPart.h>
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
+#include <iomanip>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <map>
@@ -405,7 +414,89 @@ private:
 };
 
 // ================================================================
-// 3. MODULE
+// 3. AUDIT LOG MODEL + VIEWMODEL (read-only)
+// ================================================================
+
+class AuditLog : public core::BaseModel<AuditLog> {
+public:
+    ODOO_MODEL("audit.log", "audit_log")
+
+    std::string model;
+    std::string operation;
+    std::string recordIds;  // stored as PostgreSQL int[] literal
+    int         uid       = 0;
+
+    explicit AuditLog(std::shared_ptr<infrastructure::DbConnection> db)
+        : core::BaseModel<AuditLog>(std::move(db)) {}
+
+    void registerFields() override {
+        fieldRegistry_.add({"model",      core::FieldType::Char,    "Model",     true});
+        fieldRegistry_.add({"operation",  core::FieldType::Char,    "Operation", true});
+        fieldRegistry_.add({"record_ids", core::FieldType::Char,    "Record IDs"});
+        fieldRegistry_.add({"uid",        core::FieldType::Integer, "User ID"});
+        fieldRegistry_.add({"created_at", core::FieldType::Datetime,"Created At"});
+    }
+
+    void serializeFields(nlohmann::json& j) const override {
+        j["model"]      = model;
+        j["operation"]  = operation;
+        j["record_ids"] = recordIds;
+        j["uid"]        = uid;
+    }
+
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("model")      && j["model"].is_string())     model      = j["model"].get<std::string>();
+        if (j.contains("operation")  && j["operation"].is_string()) operation  = j["operation"].get<std::string>();
+        if (j.contains("record_ids") && j["record_ids"].is_string())recordIds  = j["record_ids"].get<std::string>();
+        if (j.contains("uid")        && j["uid"].is_number())       uid        = j["uid"].get<int>();
+    }
+
+    std::vector<std::string> validate() const override { return {}; }
+};
+
+// Read-only ViewModel: allow search_read, read, fields_get only
+class AuditLogViewModel : public core::BaseViewModel {
+public:
+    explicit AuditLogViewModel(std::shared_ptr<infrastructure::DbConnection> db)
+        : db_(std::move(db))
+    {
+        REGISTER_METHOD("search_read",     handleSearchRead)
+        REGISTER_METHOD("web_search_read", handleSearchRead)
+        REGISTER_METHOD("read",            handleRead)
+        REGISTER_METHOD("fields_get",      handleFieldsGet)
+        REGISTER_METHOD("search_count",    handleSearchCount)
+    }
+
+    std::string modelName() const override { return AuditLog::MODEL_NAME; }
+
+private:
+    std::shared_ptr<infrastructure::DbConnection> db_;
+
+    nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
+        AuditLog proto(db_);
+        proto.setUserContext(extractContext_(call));
+        return proto.searchRead(call.domain(), call.fields(),
+                                call.limit() > 0 ? call.limit() : 80,
+                                call.offset(), "id DESC");
+    }
+    nlohmann::json handleRead(const core::CallKwArgs& call) {
+        AuditLog proto(db_);
+        proto.setUserContext(extractContext_(call));
+        return proto.read(call.ids(), call.fields());
+    }
+    nlohmann::json handleFieldsGet(const core::CallKwArgs& call) {
+        AuditLog proto(db_);
+        return proto.fieldsGet(call.fields());
+    }
+    nlohmann::json handleSearchCount(const core::CallKwArgs& call) {
+        AuditLog proto(db_);
+        proto.setUserContext(extractContext_(call));
+        return proto.searchCount(call.domain());
+    }
+};
+
+// ================================================================
+// 4. MODULE
 // ================================================================
 
 IrModule::IrModule(core::ModelFactory&     modelFactory,
@@ -432,11 +523,324 @@ void IrModule::registerModels() {
     models_.registerCreator("ir.config.parameter", [db]{
         return std::make_shared<IrConfigParameter>(db);
     });
+    models_.registerCreator("audit.log", [db]{
+        return std::make_shared<AuditLog>(db);
+    });
 }
 
-void IrModule::registerServices()   {}
-void IrModule::registerViews()      {}
-void IrModule::registerRoutes()     {}
+void IrModule::registerServices() {}
+void IrModule::registerViews()    {}
+
+// ---------------------------------------------------------------
+// CSV import/export static helpers
+// ---------------------------------------------------------------
+
+std::string IrModule::buildExportFilename_(const std::string& model) {
+    // Replace dots with underscores, append date suffix
+    std::string safe = model;
+    for (char& c : safe) if (c == '.') c = '_';
+    const auto t  = std::time(nullptr);
+    const auto tm = *std::gmtime(&t);
+    std::ostringstream oss;
+    oss << safe << "_" << std::put_time(&tm, "%Y-%m-%d") << ".csv";
+    return oss.str();
+}
+
+std::vector<std::string> IrModule::splitFields_(const std::string& csv) {
+    std::vector<std::string> fields;
+    if (csv.empty()) return fields;
+    std::istringstream ss(csv);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        // Trim whitespace
+        const std::size_t a = token.find_first_not_of(" \t");
+        if (a != std::string::npos) {
+            const std::size_t b = token.find_last_not_of(" \t");
+            fields.push_back(token.substr(a, b - a + 1));
+        }
+    }
+    return fields;
+}
+
+// ---------------------------------------------------------------
+// registerRoutes — GET /web/export/{model}  POST /web/import/{model}
+// ---------------------------------------------------------------
+void IrModule::registerRoutes() {
+    auto db       = services_.db();
+    auto sessions = services_.sessions();
+    bool devMode  = services_.devMode();
+
+    // Non-owning shared_ptr to ModelFactory — safe because Container outlives routes
+    auto modelsPtr = std::shared_ptr<core::ModelFactory>(&models_, [](auto*){});
+
+    auto checkAuth = [sessions](const drogon::HttpRequestPtr& req) -> bool {
+        if (!sessions) return false;
+        const std::string sid = req->getCookie(infrastructure::SessionManager::cookieName());
+        if (sid.empty()) return false;
+        auto s = sessions->get(sid);
+        return s.has_value() && s->isAuthenticated();
+    };
+
+    // ── GET /web/export/{model} ────────────────────────────────
+    // Query params: fields (comma-sep), limit (default 1000, max 1000)
+    // Response: text/csv attachment
+    drogon::app().registerHandler(
+        "/web/export/{1}",
+        [db, modelsPtr, checkAuth, devMode](
+            const drogon::HttpRequestPtr&                      req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb,
+            const std::string& modelName)
+        {
+            if (!checkAuth(req)) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(drogon::k401Unauthorized);
+                r->setBody("Unauthorized");
+                cb(r); return;
+            }
+
+            try {
+                // Look up model
+                if (!modelsPtr->has(modelName))
+                    throw std::runtime_error("Unknown model: " + modelName);
+
+                auto proto = modelsPtr->create(modelName, core::Lifetime::Transient);
+
+                // Parse and validate requested fields (SEC-29)
+                const std::string fieldsParam = req->getParameter("fields");
+                const std::vector<std::string> requestedFields =
+                    fieldsParam.empty() ? std::vector<std::string>{} :
+                    IrModule::splitFields_(fieldsParam);
+
+                const auto allFields = proto->fieldsGet();
+                std::vector<std::string> validFields;
+                if (requestedFields.empty()) {
+                    // Default: all stored, non-computed fields
+                    for (const auto& [fname, fmeta] : allFields.items()) {
+                        if (fmeta.value("store", false) &&
+                            !fmeta.value("compute", false) &&
+                            fmeta.value("type", "") != "one2many" &&
+                            fmeta.value("type", "") != "many2many")
+                            validFields.push_back(fname);
+                    }
+                } else {
+                    for (const auto& f : requestedFields) {
+                        if (allFields.contains(f))
+                            validFields.push_back(f);
+                        // silently skip unknown field names (SEC-29 compliant)
+                    }
+                }
+                if (validFields.empty()) {
+                    auto r = drogon::HttpResponse::newHttpResponse();
+                    r->setStatusCode(drogon::k400BadRequest);
+                    r->setBody("No valid fields specified");
+                    cb(r); return;
+                }
+
+                // Pagination cap (PERF-F)
+                int limit = 1000;
+                const std::string limitParam = req->getParameter("limit");
+                if (!limitParam.empty()) {
+                    try { limit = std::min(1000, std::stoi(limitParam)); } catch (...) {}
+                }
+
+                const auto rows = proto->searchRead(
+                    nlohmann::json::array(), validFields, limit, 0, "id ASC");
+
+                // Build CSV: header row + data rows
+                std::vector<std::vector<std::string>> csvRows;
+                csvRows.reserve(rows.size() + 1);
+
+                // Header
+                std::vector<std::string> header;
+                header.reserve(validFields.size());
+                for (const auto& f : validFields) header.push_back(f);
+                csvRows.push_back(std::move(header));
+
+                // Data
+                for (const auto& rec : rows) {
+                    std::vector<std::string> row;
+                    row.reserve(validFields.size());
+                    for (const auto& f : validFields) {
+                        if (!rec.contains(f) || rec[f].is_null()) {
+                            row.push_back("");
+                        } else if (rec[f].is_string()) {
+                            row.push_back(rec[f].get<std::string>());
+                        } else {
+                            row.push_back(rec[f].dump());
+                        }
+                    }
+                    csvRows.push_back(std::move(row));
+                }
+
+                const std::string csv = infrastructure::buildCsv(csvRows);
+                const std::string filename = IrModule::buildExportFilename_(modelName);
+
+                auto resp = drogon::HttpResponse::newHttpResponse();
+                resp->setStatusCode(drogon::k200OK);
+                resp->setContentTypeString("text/csv; charset=utf-8");
+                resp->addHeader("Content-Disposition",
+                    "attachment; filename=\"" + filename + "\"");
+                resp->setBody(csv);
+                cb(resp);
+
+            } catch (const PoolExhaustedException& ex) {
+                LOG_ERROR << "[ir/export] pool: " << ex.what();
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(drogon::k503ServiceUnavailable);
+                r->setBody("The server is temporarily overloaded. Please retry.");
+                cb(r);
+            } catch (const std::exception& ex) {
+                LOG_ERROR << "[ir/export] " << ex.what();
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(drogon::k400BadRequest);
+                r->setBody(devMode ? ex.what() : "Export failed");
+                cb(r);
+            }
+        },
+        {drogon::Get}
+    );
+
+    // ── POST /web/import/{model} ───────────────────────────────
+    // Body: multipart/form-data, field "file" containing CSV content
+    // Response: {"imported": N, "errors": [{"row": R, "message": "..."}]}
+    drogon::app().registerHandler(
+        "/web/import/{1}",
+        [db, modelsPtr, checkAuth, devMode](
+            const drogon::HttpRequestPtr&                      req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb,
+            const std::string& modelName)
+        {
+            if (!checkAuth(req)) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(drogon::k401Unauthorized);
+                r->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                r->setBody(nlohmann::json{{"error", "Unauthorized"}}.dump());
+                cb(r); return;
+            }
+
+            auto jsonResp = [&cb](int code, const nlohmann::json& body) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
+                r->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                r->setBody(body.dump());
+                cb(r);
+            };
+
+            try {
+                if (!modelsPtr->has(modelName)) {
+                    jsonResp(400, {{"error", "Unknown model: " + modelName}});
+                    return;
+                }
+
+                // SEC-16: enforce 5 MB upload limit
+                static constexpr std::size_t kMaxUploadBytes = 5 * 1024 * 1024;
+                if (req->getBody().size() > kMaxUploadBytes) {
+                    jsonResp(413, {{"error", "File too large (max 5 MB)"}});
+                    return;
+                }
+
+                // Parse multipart to extract "file" field
+                drogon::MultiPartParser mp;
+                if (mp.parse(req) != 0) {
+                    jsonResp(400, {{"error", "Invalid multipart request"}});
+                    return;
+                }
+
+                std::string csvContent;
+                const auto& files = mp.getFiles();
+                if (!files.empty()) {
+                    csvContent = std::string{files[0].fileContent()};
+                } else {
+                    // Accept raw body as fallback (Content-Type: text/csv)
+                    csvContent = std::string(req->getBody());
+                }
+
+                if (csvContent.empty()) {
+                    jsonResp(400, {{"error", "No file content received"}});
+                    return;
+                }
+
+                // SEC-16: size check on extracted content too
+                if (csvContent.size() > kMaxUploadBytes) {
+                    jsonResp(413, {{"error", "File too large (max 5 MB)"}});
+                    return;
+                }
+
+                const auto csvRows = infrastructure::parseCsv(csvContent);
+                if (csvRows.empty()) {
+                    jsonResp(400, {{"error", "CSV file is empty"}});
+                    return;
+                }
+
+                // Row 0 = headers; validate each against FieldRegistry (SEC-29)
+                const auto& headers = csvRows[0];
+                if (headers.empty()) {
+                    jsonResp(400, {{"error", "CSV has no header row"}});
+                    return;
+                }
+
+                // Get field metadata for validation
+                auto proto = modelsPtr->create(modelName, core::Lifetime::Transient);
+                const auto allFields = proto->fieldsGet();
+
+                std::vector<std::string> validHeaders;
+                validHeaders.reserve(headers.size());
+                for (const auto& h : headers) {
+                    // Skip unknown headers silently (SEC-29)
+                    if (allFields.contains(h) && h != "id")
+                        validHeaders.push_back(h);
+                    else
+                        validHeaders.push_back("");  // placeholder = skip this column
+                }
+
+                int imported = 0;
+                nlohmann::json errors = nlohmann::json::array();
+
+                for (std::size_t rowIdx = 1; rowIdx < csvRows.size(); ++rowIdx) {
+                    const auto& row = csvRows[rowIdx];
+
+                    // Skip blank rows
+                    bool allEmpty = true;
+                    for (const auto& cell : row) if (!cell.empty()) { allEmpty = false; break; }
+                    if (allEmpty) continue;
+
+                    nlohmann::json values = nlohmann::json::object();
+                    for (std::size_t col = 0;
+                         col < headers.size() && col < row.size(); ++col)
+                    {
+                        if (validHeaders[col].empty()) continue;
+                        values[validHeaders[col]] = row[col];
+                    }
+
+                    try {
+                        auto inst = modelsPtr->create(modelName, core::Lifetime::Transient);
+                        inst->create(values);
+                        ++imported;
+                    } catch (const std::exception& ex) {
+                        errors.push_back({
+                            {"row",     static_cast<int>(rowIdx + 1)},
+                            // SEC-28: gate SQL details behind devMode
+                            {"message", devMode ? ex.what() : "Invalid data"}
+                        });
+                    }
+                }
+
+                jsonResp(200, {
+                    {"imported", imported},
+                    {"errors",   errors}
+                });
+
+            } catch (const PoolExhaustedException& ex) {
+                LOG_ERROR << "[ir/import] pool: " << ex.what();
+                jsonResp(503, {{"error", "The server is temporarily overloaded. Please retry."}});
+            } catch (const std::exception& ex) {
+                LOG_ERROR << "[ir/import] " << ex.what();
+                jsonResp(500, {{"error", devMode ? ex.what() : "Import failed"}});
+            }
+        },
+        {drogon::Post}
+    );
+}
 
 void IrModule::registerViewModels() {
     auto db  = services_.db();
@@ -455,6 +859,28 @@ void IrModule::registerViewModels() {
     viewModels_.registerCreator("ir.config.parameter", [db]{
         return std::make_shared<core::GenericViewModel<IrConfigParameter>>(db);
     });
+    viewModels_.registerCreator("audit.log", [db]{
+        return std::make_shared<AuditLogViewModel>(db);
+    });
+}
+
+void IrModule::registerMigrations(infrastructure::MigrationRunner& runner) {
+    // v1: audit_log table for audit trail (P0 Feature 5)
+    runner.registerMigration({1, "create_audit_log",
+        R"(
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id          SERIAL  PRIMARY KEY,
+                model       VARCHAR NOT NULL,
+                operation   VARCHAR NOT NULL,
+                record_ids  INTEGER[] NOT NULL DEFAULT '{}',
+                uid         INTEGER NOT NULL DEFAULT 0,
+                created_at  TIMESTAMP NOT NULL DEFAULT now()
+            );
+            CREATE INDEX IF NOT EXISTS audit_log_model_idx     ON audit_log (model);
+            CREATE INDEX IF NOT EXISTS audit_log_uid_idx       ON audit_log (uid);
+            CREATE INDEX IF NOT EXISTS audit_log_created_idx   ON audit_log (created_at DESC);
+        )"
+    });
 }
 
 void IrModule::initialize() {
@@ -465,6 +891,8 @@ void IrModule::initialize() {
     seedRules_();
     // S-30: start the rule engine so BaseModel can enforce record-level rules
     core::RuleEngine::initialize(services_.db());
+    // Audit trail: initialize after schema is ready
+    infrastructure::AuditService::initialize(services_.db());
 }
 
 void IrModule::ensureSchema_() {

@@ -3,6 +3,7 @@
 #include "infrastructure/DbConnection.hpp"
 #include "infrastructure/HttpServer.hpp"
 #include "infrastructure/JsonRpcDispatcher.hpp"
+#include "infrastructure/MigrationRunner.hpp"
 #include "infrastructure/SessionManager.hpp"
 #include "infrastructure/WebSocketServer.hpp"
 #include <cctype>
@@ -225,8 +226,11 @@ public:
         // Stage 2a — service post-init (cross-module wiring, warm-up)
         initializeServices_();
 
-        // Stage 2b — module initialize() hooks (DDL, seeding)
-        //            Runs after services so DB connections are ready,
+        // Stage 2b — versioned schema migrations (before DDL in initialize())
+        runMigrations_();
+
+        // Stage 2c — module initialize() hooks (DDL, seeding)
+        //            Runs after services and migrations so DB schema is ready,
         //            and in registration order so dependencies are satisfied.
         initializeModules_();
 
@@ -319,6 +323,21 @@ private:
     // ----------------------------------------------------------
     // Internal helpers
     // ----------------------------------------------------------
+
+    /**
+     * @brief Collect migrations from all modules and apply pending ones.
+     *
+     * Called after initializeServices_() so DB connections are available,
+     * and before initializeModules_() so migrations run before DDL/seeding.
+     */
+    void runMigrations_() {
+        auto runner = std::make_shared<MigrationRunner>(db);
+        for (const auto& name : modules->registeredNames()) {
+            auto mod = modules->create(name, core::Lifetime::Singleton);
+            mod->registerMigrations(*runner);
+        }
+        runner->runPending();
+    }
 
     /**
      * @brief Call IService::initialize() on every registered service.

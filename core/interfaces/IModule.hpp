@@ -3,6 +3,9 @@
 #include <string>
 #include <vector>
 
+// Forward declaration — keeps pqxx out of this header
+namespace odoo::infrastructure { class MigrationRunner; }
+
 namespace odoo::core {
 
 // ============================================================
@@ -158,10 +161,38 @@ public:
     virtual void registerRoutes() {}
 
     /**
+     * @brief Register SQL migrations with the MigrationRunner.
+     *
+     * Called by Container::runMigrations_() after all modules have
+     * finished their register*() sequence but BEFORE initialize().
+     * Use for any DDL that must be versioned and tracked (column renames,
+     * type changes, new indexes, data migrations).
+     *
+     * Version numbering ranges (globally unique integers):
+     *   1-99    core / base          500-599 mrp
+     *   100-199 account              600-699 portal / report
+     *   200-299 sale                 700-799 auth / auth_signup
+     *   300-399 purchase
+     *   400-499 stock
+     *
+     * Example:
+     * @code
+     *   void SaleModule::registerMigrations(MigrationRunner& r) {
+     *       r.registerMigration({200, "add_sale_note_column",
+     *           "ALTER TABLE sale_order ADD COLUMN IF NOT EXISTS note TEXT"});
+     *   }
+     * @endcode
+     *
+     * Default: no-op (module has no versioned migrations).
+     */
+    virtual void registerMigrations(odoo::infrastructure::MigrationRunner& /*runner*/) {}
+
+    /**
      * @brief Post-boot initialization hook.
      *
-     * Called by Container::initializeServices_() after ALL modules have
-     * finished their register*() sequence. Use for DDL (CREATE TABLE),
+     * Called by Container::initializeModules_() after ALL modules have
+     * finished their register*() sequence and after all migrations have
+     * been applied. Use for DDL (CREATE TABLE IF NOT EXISTS),
      * data seeding, and cross-module wiring that requires other modules
      * to already be registered.
      *

@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+namespace odoo::infrastructure { class MigrationRunner; }
+
 namespace odoo::modules::ir {
 
 class IrModule : public core::IModule {
@@ -29,6 +31,7 @@ public:
     void registerViewModels() override;
     void registerRoutes()     override;
     void initialize()         override;
+    void registerMigrations(odoo::infrastructure::MigrationRunner& runner) override;
 
 private:
     core::ModelFactory&     models_;
@@ -40,6 +43,10 @@ private:
     void seedMenus_();
     void seedConfigParams_();
     void seedRules_();
+
+    // CSV import/export helpers
+    static std::string         buildExportFilename_(const std::string& model);
+    static std::vector<std::string> splitFields_(const std::string& csv);
 };
 
 } // namespace odoo::modules::ir

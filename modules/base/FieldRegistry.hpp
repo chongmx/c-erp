@@ -65,15 +65,25 @@ struct FieldDef {
     // Selection field choices: [["value","Label"], ...]
     std::vector<std::pair<std::string,std::string>> selection;
 
+    // Computed-field metadata (PERF-D: field 1)
+    bool        compute = false;  ///< true = server-derived; client must not edit
+    std::string depends;          ///< comma-separated field names this depends on
+
     nlohmann::json toJson() const {
+        // computed fields are always readonly from the client's perspective
+        const bool effectiveReadonly = readonly || compute;
         nlohmann::json j = {
             {"type",       fieldTypeName(type)},
             {"string",     string.empty() ? name : string},
             {"required",   required},
-            {"readonly",   readonly},
+            {"readonly",   effectiveReadonly},
             {"store",      store},
             {"searchable", searchable},
         };
+        if (compute) {
+            j["compute"] = true;
+            if (!depends.empty()) j["depends"] = depends;
+        }
         if (!relation.empty())
             j["relation"] = relation;
         if (!relationField.empty())

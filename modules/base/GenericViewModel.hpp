@@ -12,6 +12,10 @@
 // proto.setUserContext() so record-rule filtering is applied
 // automatically.
 //
+// Audit: create/write/unlink handlers call AuditService::log()
+// when the service is ready, recording every mutation with the
+// acting uid, model, operation, and affected ids.
+//
 // Usage:
 //   class MyViewModel : public GenericViewModel<MyModel> {
 //   public:
@@ -21,6 +25,7 @@
 // =============================================================
 #include "BaseViewModel.hpp"
 #include "DbConnection.hpp"
+#include "AuditService.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <string>
@@ -67,20 +72,45 @@ protected:
         const auto v = call.arg(0);
         if (!v.is_object()) throw std::runtime_error("create: args[0] must be a dict");
         TModel proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.create(v);
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const auto newId = proto.create(v);
+        if (infrastructure::AuditService::ready()) {
+            // proto.create() returns int directly; convert to json happens on return
+            int id = 0;
+            if constexpr (std::is_integral_v<std::decay_t<decltype(newId)>>) {
+                id = static_cast<int>(newId);
+            } else if (newId.is_number_integer()) {
+                id = newId.template get<int>();
+            }
+            if (id > 0)
+                infrastructure::AuditService::instance().log(
+                    TModel::MODEL_NAME, "create", {id}, ctx.uid);
+        }
+        return newId;
     }
     nlohmann::json handleWrite(const CallKwArgs& call) {
         const auto v = call.arg(1);
         if (!v.is_object()) throw std::runtime_error("write: args[1] must be a dict");
         TModel proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.write(call.ids(), v);
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const auto result = proto.write(call.ids(), v);
+        if (infrastructure::AuditService::ready() && !call.ids().empty())
+            infrastructure::AuditService::instance().log(
+                TModel::MODEL_NAME, "write", call.ids(), ctx.uid);
+        return result;
     }
     nlohmann::json handleUnlink(const CallKwArgs& call) {
         TModel proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.unlink(call.ids());
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const auto ids = call.ids();  // capture before unlink
+        const auto result = proto.unlink(ids);
+        if (infrastructure::AuditService::ready() && !ids.empty())
+            infrastructure::AuditService::instance().log(
+                TModel::MODEL_NAME, "unlink", ids, ctx.uid);
+        return result;
     }
     nlohmann::json handleFieldsGet(const CallKwArgs& call) {
         TModel proto(db_);

@@ -356,6 +356,11 @@ private:
         } catch (const AccessDeniedError& e) {
             // SEC-25: authorization errors are always shown — client must know why
             return errorResponse_(id, 403, "Access Denied", e.what());
+        } catch (const ConcurrencyConflictException& e) {
+            // OCC: another user saved first — return 409 with a distinguishable name
+            // so the frontend can show a conflict banner instead of a generic error toast
+            return errorResponse_(id, 409, "Conflict", e.what(),
+                                  "odoo.exceptions.ConcurrencyConflict");
         } catch (const PoolExhaustedException& e) {
             // PERF-C: pool exhausted — return 503 so load balancers can route elsewhere
             LOG_ERROR << "[rpc] pool exhausted: " << e.what();
@@ -561,6 +566,7 @@ private:
             "product.supplierinfo",  // vendor pricelist (viewed in product form)
             "mail.message",          // chatter (gated by the parent document's access)
             "portal.partner",        // portal admin ViewModel (internal RPC only)
+            "audit.log",             // audit trail — read-only ViewModel (admins see all)
         };
         if (kAllowed.count(model)) {
             // Still require at least a logged-in internal user (BASE_INTERNAL = 2)
@@ -631,14 +637,15 @@ private:
     static nlohmann::json errorResponse_(const nlohmann::json& id,
                                           int                    code,
                                           const std::string&     message,
-                                          const std::string&     detail = "") {
+                                          const std::string&     detail = "",
+                                          const std::string&     name   = "odoo.exceptions.UserError") {
         return {
             {"jsonrpc","2.0"}, {"id",id},
             {"error", {
                 {"code",    code},
                 {"message", message},
                 {"data", {
-                    {"name",    "odoo.exceptions.UserError"},
+                    {"name",    name},
                     {"message", detail.empty() ? message : detail},
                 }},
             }},

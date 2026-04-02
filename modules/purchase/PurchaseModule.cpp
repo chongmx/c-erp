@@ -112,10 +112,10 @@ public:
         fieldRegistry_.add({"company_id",      FieldType::Many2one,  "Company",            true,  false, true, false, "res.company"});
         fieldRegistry_.add({"user_id",         FieldType::Many2one,  "Purchase Rep.",      false, false, true, false, "res.users"});
         fieldRegistry_.add({"origin",          FieldType::Char,      "Source"});
-        fieldRegistry_.add({"invoice_status",  FieldType::Selection, "Billing Status",     false, true});
-        fieldRegistry_.add({"amount_untaxed",  FieldType::Monetary,  "Untaxed Amount",     false, true});
-        fieldRegistry_.add({"amount_tax",      FieldType::Monetary,  "Taxes",              false, true});
-        fieldRegistry_.add({"amount_total",    FieldType::Monetary,  "Total",              false, true});
+        fieldRegistry_.add({.name="invoice_status",.type=FieldType::Selection,.string="Billing Status",  .readonly=true,.compute=true,.depends="order_line"});
+        fieldRegistry_.add({.name="amount_untaxed",.type=FieldType::Monetary, .string="Untaxed Amount",.readonly=true,.compute=true,.depends="order_line"});
+        fieldRegistry_.add({.name="amount_tax",    .type=FieldType::Monetary, .string="Taxes",         .readonly=true,.compute=true,.depends="order_line"});
+        fieldRegistry_.add({.name="amount_total",  .type=FieldType::Monetary, .string="Total",         .readonly=true,.compute=true,.depends="order_line"});
         fieldRegistry_.add({"order_line", FieldType::One2many, "Order Lines", false, false, false, false, "purchase.order.line", "order_id"});
     }
 
@@ -211,12 +211,12 @@ public:
         fieldRegistry_.add({"price_unit",     FieldType::Monetary,  "Unit Price"});
         fieldRegistry_.add({"discount",       FieldType::Float,     "Disc.%"});
         fieldRegistry_.add({"tax_ids_json",   FieldType::Text,      "Taxes (JSON)"});
-        fieldRegistry_.add({"price_subtotal", FieldType::Monetary,  "Subtotal",        false, true});
-        fieldRegistry_.add({"price_tax",      FieldType::Monetary,  "Tax",             false, true});
-        fieldRegistry_.add({"price_total",    FieldType::Monetary,  "Total",           false, true});
+        fieldRegistry_.add({.name="price_subtotal",.type=FieldType::Monetary,.string="Subtotal",      .readonly=true,.compute=true,.depends="product_qty,price_unit,discount"});
+        fieldRegistry_.add({.name="price_tax",     .type=FieldType::Monetary,.string="Tax",           .readonly=true,.compute=true,.depends="product_qty,price_unit,discount"});
+        fieldRegistry_.add({.name="price_total",   .type=FieldType::Monetary,.string="Total",         .readonly=true,.compute=true,.depends="product_qty,price_unit,discount"});
         fieldRegistry_.add({"date_planned",   FieldType::Date,      "Expected Arrival"});
-        fieldRegistry_.add({"qty_invoiced",   FieldType::Float,     "Billed Qty",      false, true});
-        fieldRegistry_.add({"qty_received",   FieldType::Float,     "Received Qty",    false, true});
+        fieldRegistry_.add({.name="qty_invoiced",  .type=FieldType::Float,   .string="Billed Qty",   .readonly=true,.compute=true,.depends="order_id.invoice_ids"});
+        fieldRegistry_.add({.name="qty_received",  .type=FieldType::Float,   .string="Received Qty", .readonly=true,.compute=true,.depends="order_id.picking_ids"});
         fieldRegistry_.add({"company_id",     FieldType::Many2one,  "Company",         false, false, true, false, "res.company"});
         fieldRegistry_.add({"currency_id",    FieldType::Many2one,  "Currency",        false, false, true, false, "res.currency"});
     }
@@ -464,12 +464,25 @@ public:
         REGISTER_METHOD("fields_get",      handleFieldsGet)
         REGISTER_METHOD("search_count",    handleSearchCount)
         REGISTER_METHOD("search",          handleSearch)
+        REGISTER_METHOD("onchange",        handleOnchange)
     }
 
     std::string modelName() const override { return TModel::MODEL_NAME; }
 
 protected:
     std::shared_ptr<DbConnection> db_;
+
+    // Default onchange — no-op; derived ViewModels override specific fields
+    virtual nlohmann::json handleOnchange(const CallKwArgs& /*call*/) {
+        return { {"value", nlohmann::json::object()}, {"warning", nullptr} };
+    }
+
+    // Helper: extract integer id from int, [id,"Name"], or null/false
+    static int purOnchangeId(const nlohmann::json& v) {
+        if (v.is_number_integer()) return v.get<int>();
+        if (v.is_array() && !v.empty() && v[0].is_number_integer()) return v[0].get<int>();
+        return 0;
+    }
 
     nlohmann::json handleSearchRead(const CallKwArgs& call) {
         TModel proto(db_);
@@ -978,11 +991,52 @@ public:
         : PurchaseViewModel<PurchaseOrderLine>(std::move(db))
     {
         // Override base CRUD registrations with amount-aware versions
-        REGISTER_METHOD("create", handleCreate)
-        REGISTER_METHOD("write",  handleWrite)
+        REGISTER_METHOD("create",   handleCreate)
+        REGISTER_METHOD("write",    handleWrite)
+        REGISTER_METHOD("onchange", handleOnchange)
     }
 
     std::string modelName() const override { return "purchase.order.line"; }
+
+    // onchange — product_id: fill name, price_unit (standard_price), product_uom_id (po uom)
+    nlohmann::json handleOnchange(const CallKwArgs& call) override {
+        const auto values     = call.arg(0);
+        const auto fieldArg   = call.arg(1);
+        const std::string fld = fieldArg.is_string()  ? fieldArg.get<std::string>() :
+                                 (fieldArg.is_array() && !fieldArg.empty()
+                                  ? fieldArg[0].get<std::string>() : "");
+
+        nlohmann::json result = { {"value", nlohmann::json::object()}, {"warning", nullptr} };
+
+        if (fld == "product_id") {
+            const int productId = values.contains("product_id")
+                                  ? purOnchangeId(values["product_id"]) : 0;
+            if (productId <= 0) return result;
+
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            auto r = txn.exec(
+                "SELECT p.name, p.standard_price, "
+                "       COALESCE(p.uom_po_id, p.uom_id) AS uom_id, "
+                "       u.name AS uom_name "
+                "FROM product_product p "
+                "LEFT JOIN uom_uom u ON u.id = COALESCE(p.uom_po_id, p.uom_id) "
+                "WHERE p.id = $1",
+                pqxx::params{productId});
+            if (r.empty()) return result;
+
+            auto& val = result["value"];
+            val["name"]       = r[0]["name"].c_str();
+            val["price_unit"] = r[0]["standard_price"].as<double>(0.0);
+            if (!r[0]["uom_id"].is_null()) {
+                val["product_uom_id"] = nlohmann::json::array({
+                    r[0]["uom_id"].as<int>(),
+                    std::string(r[0]["uom_name"].c_str())
+                });
+            }
+        }
+        return result;
+    }
 
     nlohmann::json handleCreate(const CallKwArgs& call) {
         const auto v = call.arg(0);

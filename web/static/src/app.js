@@ -22,6 +22,11 @@ class ListView extends Component {
         <div class="view-list">
             <div class="view-toolbar">
                 <button class="btn btn-primary" t-on-click="onNew">New</button>
+                <button class="btn" t-on-click="onExport">Export CSV</button>
+                <button class="btn" t-on-click="onImportClick">Import CSV</button>
+                <span t-if="state.importMsg"
+                      t-att-class="'import-msg ' + (state.importOk ? 'import-ok' : 'import-err')"
+                      t-esc="state.importMsg"/>
             </div>
             <t t-if="state.loading">
                 <div class="loading">Loading…</div>
@@ -56,7 +61,10 @@ class ListView extends Component {
     `;
 
     setup() {
-        this.state = useState({ loading: true, records: [], error: '' });
+        this.state = useState({
+            loading: true, records: [], error: '',
+            importMsg: '', importOk: false,
+        });
         onMounted(() => this.load());
         onWillUpdateProps((np) => {
             const oa = this.props.action;
@@ -106,6 +114,53 @@ class ListView extends Component {
 
     onRowClick(id) { this.props.onOpenForm(id); }
     onNew()        { this.props.onOpenForm(null); }
+
+    onExport() {
+        const model  = this.props.action?.res_model;
+        if (!model) return;
+        const fields = this.columns.map(c => c.name).join(',');
+        window.open(`/web/export/${encodeURIComponent(model)}?fields=${encodeURIComponent(fields)}`, '_blank');
+    }
+
+    onImportClick() {
+        const input = document.createElement('input');
+        input.type  = 'file';
+        input.accept = '.csv,text/csv';
+        input.addEventListener('change', (ev) => this.onImportFile(ev));
+        input.click();
+    }
+
+    async onImportFile(ev) {
+        const file = ev.target?.files?.[0];
+        if (!file) return;
+        const model = this.props.action?.res_model;
+        if (!model) return;
+        this.state.importMsg = 'Importing…';
+        this.state.importOk  = true;
+        try {
+            const fd = new FormData();
+            fd.append('file', file);
+            const res  = await fetch(`/web/import/${encodeURIComponent(model)}`,
+                { method: 'POST', credentials: 'include', body: fd });
+            const data = await res.json();
+            if (!res.ok) {
+                this.state.importMsg = data.error || 'Import failed';
+                this.state.importOk  = false;
+            } else {
+                const errCount = (data.errors || []).length;
+                this.state.importMsg =
+                    `Imported ${data.imported} record(s)` +
+                    (errCount ? ` (${errCount} error(s))` : '');
+                this.state.importOk = errCount === 0;
+                await this.load();
+            }
+        } catch (_) {
+            this.state.importMsg = 'Import failed';
+            this.state.importOk  = false;
+        }
+        // Auto-clear message after 8 s
+        setTimeout(() => { this.state.importMsg = ''; }, 8000);
+    }
 }
 
 // FormView — renders a form from get_views + read
@@ -121,6 +176,12 @@ class FormView extends Component {
             </div>
             <t t-if="state.loading">
                 <div class="loading">Loading…</div>
+            </t>
+            <t t-elif="state.conflictError">
+                <div class="alert alert-warning">
+                    <strong>Conflict:</strong> <t t-esc="state.conflictError"/>
+                    <button class="btn btn-sm" style="margin-left:8px" t-on-click="onReload">Reload</button>
+                </div>
             </t>
             <t t-elif="state.error">
                 <div class="error" t-esc="state.error"/>
@@ -216,6 +277,7 @@ class FormView extends Component {
     setup() {
         this.state = useState({
             loading: true, record: {}, isNew: !this.props.recordId, error: '',
+            conflictError: '',
             relOptions: {},
             o2mLines:   {},
             o2mMeta:    {},
@@ -430,29 +492,25 @@ class FormView extends Component {
         if (!line) return;
         line[colName] = value;
         if (colName === 'product_id' && value > 0) {
-            this.applyProductDefaults(fieldName, key, value);
+            this.triggerLineOnchange(fieldName, key, colName);
         }
     }
 
-    async applyProductDefaults(fieldName, key, productId) {
+    // Trigger server-side onchange for an o2m line field change.
+    // Merges the returned { value: {...} } into the line.
+    async triggerLineOnchange(fieldName, key, changedField) {
+        const f = this.o2mFields.find(f => f.name === fieldName);
+        if (!f) return;
+        const line = (this.state.o2mLines[fieldName] || []).find(l => l._key === key);
+        if (!line) return;
         try {
-            const rows = await RpcService.call('product.product', 'search_read',
-                [[['id', '=', productId]]],
-                { fields: ['id', 'name', 'list_price', 'standard_price', 'uom_id', 'uom_po_id'], limit: 1 });
-            if (!rows || !rows.length) return;
-            const prod = rows[0];
-            const line = (this.state.o2mLines[fieldName] || []).find(l => l._key === key);
-            if (!line) return;
-            const rel = (this.o2mFields.find(f => f.name === fieldName) || {}).relation || '';
-            const isPurchase = rel === 'purchase.order.line';
-            line.name       = prod.name || '';
-            line.price_unit = isPurchase ? (prod.standard_price || 0) : (prod.list_price || 0);
-            // uom: purchase uses uom_po_id (fallback uom_id), sale uses uom_id
-            const uomRaw = isPurchase ? (prod.uom_po_id || prod.uom_id) : prod.uom_id;
-            line.product_uom_id = Array.isArray(uomRaw) ? uomRaw[0] : (uomRaw || 0);
-            // default qty to 1 if not already set
-            const qtyField = isPurchase ? 'product_qty' : 'product_uom_qty';
-            if (!line[qtyField]) line[qtyField] = 1;
+            const res = await RpcService.call(
+                f.relation, 'onchange', [line, changedField, {}], {});
+            if (res && res.value) {
+                // Unwrap many2one tuples [id, name] → keep as-is for display;
+                // store id for fields named product_uom_id etc.
+                Object.assign(line, res.value);
+            }
         } catch (_) {}
     }
 
@@ -479,13 +537,28 @@ class FormView extends Component {
     }
 
     async onSave() {
+        this.state.conflictError = '';
         try {
+            const vals = Object.assign({}, this.state.record);
+            // OCC: send current write_date so server can detect concurrent saves
+            if (this.state.record.write_date)
+                vals.__expected_write_date = this.state.record.write_date;
             await RpcService.call(
                 this.props.action.res_model, 'write',
-                [[this.state.record.id], this.state.record], {});
+                [[this.state.record.id], vals], {});
             await this.syncO2mLines(this.state.record.id);
             this.props.onBack();
-        } catch (e) { this.state.error = e.message; }
+        } catch (e) {
+            if (e.type === 'odoo.exceptions.ConcurrencyConflict')
+                this.state.conflictError = e.message;
+            else
+                this.state.error = e.message;
+        }
+    }
+
+    async onReload() {
+        this.state.conflictError = '';
+        await this.load();
     }
 
     async onCreate() {
@@ -599,6 +672,73 @@ class ChatterPanel extends Component {
     }
 
     avatarChar(name) { return name ? name[0].toUpperCase() : 'S'; }
+}
+
+// ----------------------------------------------------------------
+// AuditLogPanel — shows audit trail for the current record
+//   Props:
+//     model    {string} — e.g. 'sale.order'
+//     recordId {number} — 0 / null → hide panel
+// ----------------------------------------------------------------
+class AuditLogPanel extends Component {
+    static props = ['model', 'recordId'];
+    static template = xml`
+        <div class="audit-panel" t-if="props.recordId">
+            <div class="chatter-head"><span>Audit Trail</span></div>
+            <t t-if="state.loading">
+                <div class="chatter-loading">Loading…</div>
+            </t>
+            <t t-else="">
+                <div class="chatter-feed">
+                    <t t-foreach="state.entries" t-as="e" t-key="e.id">
+                        <div class="chatter-entry">
+                            <div class="chatter-avatar" t-esc="opIcon(e.operation)"/>
+                            <div class="chatter-body">
+                                <span class="chatter-author" t-esc="e.operation"/>
+                                <span class="chatter-date" t-esc="e.created_at || ''"/>
+                                <div class="chatter-msg">uid=<t t-esc="e.uid"/> ids=<t t-esc="String(e.record_ids)"/></div>
+                            </div>
+                        </div>
+                    </t>
+                    <t t-if="state.entries.length === 0">
+                        <div class="chatter-empty">No audit entries yet.</div>
+                    </t>
+                </div>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({ entries: [], loading: false });
+        onMounted(() => { if (this.props.recordId) this.load(); });
+        onWillUpdateProps(np => {
+            if (np.recordId !== this.props.recordId && np.recordId) this.load(np);
+        });
+    }
+
+    async load(props) {
+        const p = props || this.props;
+        if (!p.recordId) return;
+        this.state.loading = true;
+        try {
+            const rows = await RpcService.call('audit.log', 'search_read',
+                [[['model', '=', p.model]]],
+                { fields: ['id', 'operation', 'record_ids', 'uid', 'created_at'], limit: 50 });
+            // Filter client-side to entries that contain this record's id
+            this.state.entries = (Array.isArray(rows) ? rows : []).filter(r => {
+                const ids = Array.isArray(r.record_ids) ? r.record_ids : [];
+                return ids.includes(p.recordId);
+            });
+        } catch (_) { this.state.entries = []; }
+        this.state.loading = false;
+    }
+
+    opIcon(op) {
+        if (op === 'create') return '+';
+        if (op === 'write')  return '✎';
+        if (op === 'unlink') return '✕';
+        return '?';
+    }
 }
 
 // ----------------------------------------------------------------
@@ -1963,27 +2103,28 @@ class SaleOrderFormView extends Component {
         if (!line) return;
         line[field] = val;
         if (field === 'product_id' && val > 0) {
-            this.applyProductDefaults(key, val);
+            this.triggerLineOnchange(key, field);
         } else if (field === 'product_uom_qty' || field === 'price_unit' || field === 'discount') {
             this.recalcLine(line);
         }
     }
 
-    async applyProductDefaults(key, productId) {
+    // Server-side onchange for a sale order line field.
+    // The server fills in name/price_unit/uom when product_id changes.
+    async triggerLineOnchange(key, changedField) {
+        const line = this.state.lines.find(l => l._key === key);
+        if (!line) return;
         try {
-            const rows = await RpcService.call('product.product', 'search_read',
-                [[['id', '=', productId]]],
-                { fields: ['id', 'name', 'list_price', 'uom_id'], limit: 1 });
-            if (!rows || !rows.length) return;
-            const prod = rows[0];
-            const line = this.state.lines.find(l => l._key === key);
-            if (!line) return;
-            line.name           = prod.name || '';
-            line.price_unit     = prod.list_price || 0;
-            const uomRaw        = prod.uom_id;
-            line.product_uom_id = Array.isArray(uomRaw) ? uomRaw[0] : (uomRaw || 0);
-            if (!line.product_uom_qty) line.product_uom_qty = 1;
-            this.recalcLine(line);
+            const res = await RpcService.call(
+                'sale.order.line', 'onchange', [line, changedField, {}], {});
+            if (res && res.value) {
+                Object.assign(line, res.value);
+                // After product_id fill, recalc subtotal with whatever price was returned
+                if (changedField === 'product_id') {
+                    if (!line.product_uom_qty) line.product_uom_qty = 1;
+                    this.recalcLine(line);
+                }
+            }
         } catch (_) {}
     }
 
@@ -2718,27 +2859,25 @@ class PurchaseOrderFormView extends Component {
         if (!line) return;
         line[field] = val;
         if (field === 'product_id' && val > 0) {
-            this.applyProductDefaults(key, val);
+            this.triggerLineOnchange(key, field);
         } else if (field === 'product_qty' || field === 'price_unit' || field === 'discount') {
             this.recalcLine(line);
         }
     }
 
-    async applyProductDefaults(key, productId) {
+    async triggerLineOnchange(key, changedField) {
+        const line = this.state.lines.find(l => l._key === key);
+        if (!line) return;
         try {
-            const rows = await RpcService.call('product.product', 'search_read',
-                [[['id', '=', productId]]],
-                { fields: ['id', 'name', 'standard_price', 'uom_po_id', 'uom_id'], limit: 1 });
-            if (!rows || !rows.length) return;
-            const prod = rows[0];
-            const line = this.state.lines.find(l => l._key === key);
-            if (!line) return;
-            line.name           = prod.name || '';
-            line.price_unit     = prod.standard_price || 0;
-            const uomRaw        = prod.uom_po_id || prod.uom_id;
-            line.product_uom_id = Array.isArray(uomRaw) ? uomRaw[0] : (uomRaw || 0);
-            if (!line.product_qty) line.product_qty = 1;
-            this.recalcLine(line);
+            const res = await RpcService.call(
+                'purchase.order.line', 'onchange', [line, changedField, {}], {});
+            if (res && res.value) {
+                Object.assign(line, res.value);
+                if (changedField === 'product_id') {
+                    if (!line.product_qty) line.product_qty = 1;
+                    this.recalcLine(line);
+                }
+            }
         } catch (_) {}
     }
 

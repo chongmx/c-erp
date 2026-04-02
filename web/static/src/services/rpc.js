@@ -36,7 +36,12 @@ const RpcService = (() => {
             }),
         });
         const data = await res.json();
-        if (data.error) throw new Error(data.error.data?.message || data.error.message);
+        if (data.error) {
+            const err = new Error(data.error.data?.message || data.error.message);
+            err.code  = data.error.code;
+            err.type  = data.error.data?.name || '';
+            throw err;
+        }
         return data.result;
     }
 

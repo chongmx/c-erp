@@ -148,20 +148,38 @@ public:
 
     bool write(const std::vector<int>&  ids,
                const nlohmann::json&    values) override {
-        if (ids.empty() || values.empty()) return true;
+        // OCC: work on a mutable copy so we can strip the concurrency sentinel
+        nlohmann::json vals = values;
+
+        // OCC: extract __expected_write_date before building SET clause
+        std::string expectedWd;
+        if (vals.contains("__expected_write_date")) {
+            if (vals["__expected_write_date"].is_string())
+                expectedWd = vals["__expected_write_date"].get<std::string>();
+            vals.erase("__expected_write_date");
+        }
+
+        if (ids.empty() || vals.empty()) return true;
 
         std::string setClause;
         pqxx::params params;
         int idx = 1;
         bool first = true;
 
-        for (auto it = values.begin(); it != values.end(); ++it) {
+        for (auto it = vals.begin(); it != vals.end(); ++it) {
             if (!fieldRegistry_.has(it.key())) continue;
             if (!first) setClause += ",";
             setClause += it.key() + "=$" + std::to_string(idx++);
             appendParam_(params, normalizeForDb_(it.value(), it.key()));
             first = false;
         }
+
+        // OCC: always stamp write_date = now() if the model tracks it
+        if (fieldRegistry_.has("write_date")) {
+            if (!setClause.empty()) setClause += ",";
+            setClause += "write_date=now()";
+        }
+
         if (setClause.empty()) return true;
 
         params.append(idsToArray_(ids));                           // $idx (ids)
@@ -170,13 +188,27 @@ public:
             " SET " + setClause +
             " WHERE id = ANY($" + std::to_string(idx) + "::int[])";
 
-        // S-30: inject record-rule filter after the ids param
-        appendRuleClause_(sql, params, RuleOp::Write, idx);
+        // OCC: add write_date guard before rule clause so paramCount stays accurate
+        int paramCount = idx;   // total $N already bound
+        if (!expectedWd.empty()) {
+            ++paramCount;
+            params.append(expectedWd);
+            sql += " AND write_date = $" + std::to_string(paramCount);
+        }
+
+        // S-30: inject record-rule filter after all explicit params
+        appendRuleClause_(sql, params, RuleOp::Write, paramCount);
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        txn.exec(sql, params);
+        const auto res = txn.exec(sql, params);
         txn.commit();
+
+        // OCC: 0 rows affected + expected write_date → concurrent modification
+        if (!expectedWd.empty() && res.affected_rows() == 0)
+            throw infrastructure::ConcurrencyConflictException(
+                "Record was modified by another user. "
+                "Please reload and re-apply your changes.");
         return true;
     }
 
