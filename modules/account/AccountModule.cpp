@@ -8,6 +8,7 @@
 #include "BaseModel.hpp"
 #include "BaseViewModel.hpp"
 #include "DbConnection.hpp"
+#include "AuditService.hpp"
 #include "AccountViews.hpp"
 #include "MailHelpers.hpp"
 #include "Errors.hpp"
@@ -596,20 +597,36 @@ protected:
         const auto v = call.arg(0);
         if (!v.is_object()) throw std::runtime_error("create: args[0] must be a dict");
         TModel proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.create(v);
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const int newId = proto.create(v);
+        if (infrastructure::AuditService::ready() && newId > 0)
+            infrastructure::AuditService::instance().log(
+                TModel::MODEL_NAME, "create", {newId}, ctx.uid);
+        return newId;
     }
     nlohmann::json handleWrite(const core::CallKwArgs& call) {
         const auto v = call.arg(1);
         if (!v.is_object()) throw std::runtime_error("write: args[1] must be a dict");
         TModel proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.write(call.ids(), v);
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const auto result = proto.write(call.ids(), v);
+        if (infrastructure::AuditService::ready() && !call.ids().empty())
+            infrastructure::AuditService::instance().log(
+                TModel::MODEL_NAME, "write", call.ids(), ctx.uid);
+        return result;
     }
     nlohmann::json handleUnlink(const core::CallKwArgs& call) {
         TModel proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.unlink(call.ids());
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const auto ids = call.ids();
+        const auto result = proto.unlink(ids);
+        if (infrastructure::AuditService::ready() && !ids.empty())
+            infrastructure::AuditService::instance().log(
+                TModel::MODEL_NAME, "unlink", ids, ctx.uid);
+        return result;
     }
     nlohmann::json handleFieldsGet(const core::CallKwArgs& call) {
         TModel proto(db_);
@@ -714,6 +731,9 @@ private:
         }
 
         txn.commit();
+        if (infrastructure::AuditService::ready())
+            infrastructure::AuditService::instance().log(
+                "account.move", "action_post", ids, extractContext_(call).uid);
         return true;
     }
 
@@ -731,6 +751,9 @@ private:
             odoo::modules::mail::postLog(txn, "account.move", id, 0,
                 "Invoice cancelled.", "log_note");
         txn.commit();
+        if (infrastructure::AuditService::ready())
+            infrastructure::AuditService::instance().log(
+                "account.move", "action_cancel", ids, extractContext_(call).uid);
         return true;
     }
 
@@ -1151,6 +1174,9 @@ private:
         }
 
         txn.commit();
+        if (infrastructure::AuditService::ready())
+            infrastructure::AuditService::instance().log(
+                "account.payment", "action_post", ids, extractContext_(call).uid);
         return true;
     }
 
@@ -1165,6 +1191,9 @@ private:
             "WHERE id = ANY($1::int[]) AND state IN ('draft','posted')",
             pqxx::params{idsArray_(ids)});
         txn.commit();
+        if (infrastructure::AuditService::ready())
+            infrastructure::AuditService::instance().log(
+                "account.payment", "action_cancel", ids, extractContext_(call).uid);
         return true;
     }
 };

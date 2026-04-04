@@ -31,6 +31,7 @@
 #include "GenericViewModel.hpp"
 #include "DbConnection.hpp"
 #include "MailHelpers.hpp"
+#include "AuditService.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <memory>
@@ -490,20 +491,33 @@ private:
         const auto v = call.arg(0);
         if (!v.is_object()) throw std::runtime_error("create: args[0] must be a dict");
         StockPicking proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.create(v);
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const int newId = proto.create(v);
+        if (AuditService::ready() && newId > 0)
+            AuditService::instance().log("stock.picking", "create", {newId}, ctx.uid);
+        return newId;
     }
     nlohmann::json handleWrite(const CallKwArgs& call) {
         const auto v = call.arg(1);
         if (!v.is_object()) throw std::runtime_error("write: args[1] must be a dict");
         StockPicking proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.write(call.ids(), v);
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const auto result = proto.write(call.ids(), v);
+        if (AuditService::ready() && !call.ids().empty())
+            AuditService::instance().log("stock.picking", "write", call.ids(), ctx.uid);
+        return result;
     }
     nlohmann::json handleUnlink(const CallKwArgs& call) {
         StockPicking proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.unlink(call.ids());
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const auto ids = call.ids();
+        const auto result = proto.unlink(ids);
+        if (AuditService::ready() && !ids.empty())
+            AuditService::instance().log("stock.picking", "unlink", ids, ctx.uid);
+        return result;
     }
     nlohmann::json handleFieldsGet(const CallKwArgs& call) {
         StockPicking proto(db_);
@@ -595,6 +609,9 @@ private:
                 "Transfer confirmed.", "log_note");
             txn.commit();
         }
+        if (AuditService::ready() && !call.ids().empty())
+            AuditService::instance().log("stock.picking", "action_confirm",
+                                         call.ids(), extractContext_(call).uid);
         return true;
     }
 
@@ -725,6 +742,9 @@ private:
                 "Transfer validated.", "log_note");
             txn.commit();
         }
+        if (AuditService::ready() && !call.ids().empty())
+            AuditService::instance().log("stock.picking", "button_validate",
+                                         call.ids(), extractContext_(call).uid);
         return true;
     }
 
@@ -745,6 +765,9 @@ private:
                 pqxx::params{id});
             txn.commit();
         }
+        if (AuditService::ready() && !call.ids().empty())
+            AuditService::instance().log("stock.picking", "action_cancel",
+                                         call.ids(), extractContext_(call).uid);
         return true;
     }
 
@@ -905,20 +928,33 @@ private:
         const auto v = call.arg(0);
         if (!v.is_object()) throw std::runtime_error("create: args[0] must be a dict");
         StockMove proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.create(v);
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const int newId = proto.create(v);
+        if (AuditService::ready() && newId > 0)
+            AuditService::instance().log("stock.move", "create", {newId}, ctx.uid);
+        return newId;
     }
     nlohmann::json handleWrite(const CallKwArgs& call) {
         const auto v = call.arg(1);
         if (!v.is_object()) throw std::runtime_error("write: args[1] must be a dict");
         StockMove proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.write(call.ids(), v);
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const auto result = proto.write(call.ids(), v);
+        if (AuditService::ready() && !call.ids().empty())
+            AuditService::instance().log("stock.move", "write", call.ids(), ctx.uid);
+        return result;
     }
     nlohmann::json handleUnlink(const CallKwArgs& call) {
         StockMove proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.unlink(call.ids());
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const auto ids = call.ids();
+        const auto result = proto.unlink(ids);
+        if (AuditService::ready() && !ids.empty())
+            AuditService::instance().log("stock.move", "unlink", ids, ctx.uid);
+        return result;
     }
     nlohmann::json handleFieldsGet(const CallKwArgs& call) {
         StockMove proto(db_);

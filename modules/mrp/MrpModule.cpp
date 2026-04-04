@@ -7,6 +7,7 @@
 #include "BaseViewModel.hpp"
 #include "GenericViewModel.hpp"
 #include "DbConnection.hpp"
+#include "AuditService.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <memory>
@@ -335,20 +336,29 @@ private:
 
     nlohmann::json handleCreate(const CallKwArgs& call) {
         MrpBom proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.create(call.arg(0));
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const int newId = proto.create(call.arg(0));
+        if (AuditService::ready() && newId > 0)
+            AuditService::instance().log("mrp.bom", "create", {newId}, ctx.uid);
+        return newId;
     }
 
     nlohmann::json handleWrite(const CallKwArgs& call) {
         MrpBom proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.write(call.ids(), call.arg(1));
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const auto result = proto.write(call.ids(), call.arg(1));
+        if (AuditService::ready() && !call.ids().empty())
+            AuditService::instance().log("mrp.bom", "write", call.ids(), ctx.uid);
+        return result;
     }
 
     nlohmann::json handleUnlink(const CallKwArgs& call) {
         // Also remove lines
         const auto ids = call.ids();
         if (ids.empty()) return true;
+        const auto ctx = extractContext_(call);
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
         std::string inList;
@@ -359,6 +369,8 @@ private:
         txn.exec("DELETE FROM mrp_bom_line WHERE bom_id IN (" + inList + ")");
         txn.exec("DELETE FROM mrp_bom        WHERE id      IN (" + inList + ")");
         txn.commit();
+        if (AuditService::ready())
+            AuditService::instance().log("mrp.bom", "unlink", ids, ctx.uid);
         return true;
     }
 
@@ -466,20 +478,33 @@ private:
 
     nlohmann::json handleCreate(const CallKwArgs& call) {
         MrpBomLine proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.create(call.arg(0));
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const int newId = proto.create(call.arg(0));
+        if (AuditService::ready() && newId > 0)
+            AuditService::instance().log("mrp.bom.line", "create", {newId}, ctx.uid);
+        return newId;
     }
 
     nlohmann::json handleWrite(const CallKwArgs& call) {
         MrpBomLine proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.write(call.ids(), call.arg(1));
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const auto result = proto.write(call.ids(), call.arg(1));
+        if (AuditService::ready() && !call.ids().empty())
+            AuditService::instance().log("mrp.bom.line", "write", call.ids(), ctx.uid);
+        return result;
     }
 
     nlohmann::json handleUnlink(const CallKwArgs& call) {
         MrpBomLine proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.unlink(call.ids());
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const auto ids = call.ids();
+        const auto result = proto.unlink(ids);
+        if (AuditService::ready() && !ids.empty())
+            AuditService::instance().log("mrp.bom.line", "unlink", ids, ctx.uid);
+        return result;
     }
 
     nlohmann::json handleFieldsGet(const CallKwArgs& call) {

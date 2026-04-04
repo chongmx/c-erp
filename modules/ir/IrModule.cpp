@@ -573,12 +573,17 @@ void IrModule::registerRoutes() {
     // Non-owning shared_ptr to ModelFactory — safe because Container outlives routes
     auto modelsPtr = std::shared_ptr<core::ModelFactory>(&models_, [](auto*){});
 
-    auto checkAuth = [sessions](const drogon::HttpRequestPtr& req) -> bool {
-        if (!sessions) return false;
+    // Returns the authenticated session, or nullopt if unauthenticated.
+    // Used by both routes to enforce auth AND to build the UserContext for
+    // record-rule evaluation (S-38: CSV routes must obey ir.rule restrictions).
+    auto getSession = [sessions](const drogon::HttpRequestPtr& req)
+            -> std::optional<infrastructure::Session> {
+        if (!sessions) return std::nullopt;
         const std::string sid = req->getCookie(infrastructure::SessionManager::cookieName());
-        if (sid.empty()) return false;
+        if (sid.empty()) return std::nullopt;
         auto s = sessions->get(sid);
-        return s.has_value() && s->isAuthenticated();
+        if (!s.has_value() || !s->isAuthenticated()) return std::nullopt;
+        return s;
     };
 
     // ── GET /web/export/{model} ────────────────────────────────
@@ -586,17 +591,26 @@ void IrModule::registerRoutes() {
     // Response: text/csv attachment
     drogon::app().registerHandler(
         "/web/export/{1}",
-        [db, modelsPtr, checkAuth, devMode](
+        [db, modelsPtr, getSession, devMode](
             const drogon::HttpRequestPtr&                      req,
             std::function<void(const drogon::HttpResponsePtr&)>&& cb,
             const std::string& modelName)
         {
-            if (!checkAuth(req)) {
+            const auto sessionOpt = getSession(req);
+            if (!sessionOpt) {
                 auto r = drogon::HttpResponse::newHttpResponse();
                 r->setStatusCode(drogon::k401Unauthorized);
                 r->setBody("Unauthorized");
                 cb(r); return;
             }
+
+            // Build UserContext from the session so ir.rule restrictions apply (S-38)
+            core::UserContext userCtx;
+            userCtx.uid       = sessionOpt->uid;
+            userCtx.companyId = sessionOpt->companyId;
+            userCtx.partnerId = sessionOpt->partnerId;
+            userCtx.isAdmin   = sessionOpt->isAdmin;
+            userCtx.groupIds  = sessionOpt->groupIds;
 
             try {
                 // Look up model
@@ -604,6 +618,7 @@ void IrModule::registerRoutes() {
                     throw std::runtime_error("Unknown model: " + modelName);
 
                 auto proto = modelsPtr->create(modelName, core::Lifetime::Transient);
+                proto->setUserContext(userCtx);
 
                 // Parse and validate requested fields (SEC-29)
                 const std::string fieldsParam = req->getParameter("fields");
@@ -705,18 +720,27 @@ void IrModule::registerRoutes() {
     // Response: {"imported": N, "errors": [{"row": R, "message": "..."}]}
     drogon::app().registerHandler(
         "/web/import/{1}",
-        [db, modelsPtr, checkAuth, devMode](
+        [db, modelsPtr, getSession, devMode](
             const drogon::HttpRequestPtr&                      req,
             std::function<void(const drogon::HttpResponsePtr&)>&& cb,
             const std::string& modelName)
         {
-            if (!checkAuth(req)) {
+            const auto sessionOpt = getSession(req);
+            if (!sessionOpt) {
                 auto r = drogon::HttpResponse::newHttpResponse();
                 r->setStatusCode(drogon::k401Unauthorized);
                 r->setContentTypeCode(drogon::CT_APPLICATION_JSON);
                 r->setBody(nlohmann::json{{"error", "Unauthorized"}}.dump());
                 cb(r); return;
             }
+
+            // Build UserContext so ir.rule restrictions apply to imported records (S-38)
+            core::UserContext userCtx;
+            userCtx.uid       = sessionOpt->uid;
+            userCtx.companyId = sessionOpt->companyId;
+            userCtx.partnerId = sessionOpt->partnerId;
+            userCtx.isAdmin   = sessionOpt->isAdmin;
+            userCtx.groupIds  = sessionOpt->groupIds;
 
             auto jsonResp = [&cb](int code, const nlohmann::json& body) {
                 auto r = drogon::HttpResponse::newHttpResponse();
@@ -814,6 +838,7 @@ void IrModule::registerRoutes() {
 
                     try {
                         auto inst = modelsPtr->create(modelName, core::Lifetime::Transient);
+                        inst->setUserContext(userCtx);
                         inst->create(values);
                         ++imported;
                     } catch (const std::exception& ex) {

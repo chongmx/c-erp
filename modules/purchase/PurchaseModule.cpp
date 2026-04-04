@@ -23,6 +23,7 @@
 #include "BaseViewModel.hpp"
 #include "DbConnection.hpp"
 #include "MailHelpers.hpp"
+#include "AuditService.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <memory>
@@ -500,20 +501,33 @@ protected:
         const auto v = call.arg(0);
         if (!v.is_object()) throw std::runtime_error("create: args[0] must be a dict");
         TModel proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.create(v);
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const int newId = proto.create(v);
+        if (AuditService::ready() && newId > 0)
+            AuditService::instance().log(TModel::MODEL_NAME, "create", {newId}, ctx.uid);
+        return newId;
     }
     nlohmann::json handleWrite(const CallKwArgs& call) {
         const auto v = call.arg(1);
         if (!v.is_object()) throw std::runtime_error("write: args[1] must be a dict");
         TModel proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.write(call.ids(), v);
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const auto result = proto.write(call.ids(), v);
+        if (AuditService::ready() && !call.ids().empty())
+            AuditService::instance().log(TModel::MODEL_NAME, "write", call.ids(), ctx.uid);
+        return result;
     }
     nlohmann::json handleUnlink(const CallKwArgs& call) {
         TModel proto(db_);
-        proto.setUserContext(extractContext_(call));
-        return proto.unlink(call.ids());
+        const auto ctx = extractContext_(call);
+        proto.setUserContext(ctx);
+        const auto ids = call.ids();
+        const auto result = proto.unlink(ids);
+        if (AuditService::ready() && !ids.empty())
+            AuditService::instance().log(TModel::MODEL_NAME, "unlink", ids, ctx.uid);
+        return result;
     }
     nlohmann::json handleFieldsGet(const CallKwArgs& call) {
         TModel proto(db_);
@@ -637,6 +651,9 @@ private:
             odoo::modules::mail::postLog(txn, "purchase.order", id, 0,
                 "Purchase order confirmed.", "log_note");
         txn.commit();
+        if (AuditService::ready())
+            AuditService::instance().log("purchase.order", "action_confirm", ids,
+                                         extractContext_(call).uid);
         return true;
     }
 
@@ -657,6 +674,9 @@ private:
             odoo::modules::mail::postLog(txn, "purchase.order", id, 0,
                 "Purchase order cancelled.", "log_note");
         txn.commit();
+        if (AuditService::ready())
+            AuditService::instance().log("purchase.order", "action_cancel", ids,
+                                         extractContext_(call).uid);
         return true;
     }
 
@@ -1045,15 +1065,18 @@ public:
         nlohmann::json vals = v;
         recomputeAmounts_(vals);
 
+        const auto ctx = extractContext_(call);
         PurchaseOrderLine proto(db_);
-        proto.setUserContext(extractContext_(call));
-        nlohmann::json result = proto.create(vals);
+        proto.setUserContext(ctx);
+        const int newId = proto.create(vals);
+        if (AuditService::ready() && newId > 0)
+            AuditService::instance().log("purchase.order.line", "create", {newId}, ctx.uid);
 
         int orderId = 0;
         if (vals.contains("order_id")) orderId = purM2oId(vals["order_id"]);
         if (orderId > 0) updateOrderTotals_(orderId);
 
-        return result;
+        return newId;
     }
 
     nlohmann::json handleWrite(const CallKwArgs& call) {
@@ -1098,9 +1121,12 @@ public:
             recomputeAmounts_(merged);
 
             // 4. Write all fields including computed amounts
+            const auto ctx = extractContext_(call);
             PurchaseOrderLine proto(db_);
-            proto.setUserContext(extractContext_(call));
+            proto.setUserContext(ctx);
             proto.write({id}, merged);
+            if (AuditService::ready())
+                AuditService::instance().log("purchase.order.line", "write", {id}, ctx.uid);
 
             // 5. Update parent order totals
             if (orderId > 0) updateOrderTotals_(orderId);
