@@ -23,6 +23,26 @@ class AccessDeniedError : public std::runtime_error {
 };
 
 /**
+ * @brief Thrown when a request is well-formed but violates a business rule.
+ *
+ * Like AccessDeniedError, the message is ALWAYS passed through regardless of
+ * devMode: it is authored by us, contains no schema detail, and is the only way
+ * the user learns what to do differently. A validation failure reported as
+ * "An internal error occurred" is indistinguishable from a crash.
+ *
+ * Use for rules the user can act on — not for programming errors or DB faults,
+ * which must stay behind devMode (SEC-28).
+ *
+ * @code
+ *   if (children > 0)
+ *       throw ValidationError("Cannot delete this category: it has 3 subcategories.");
+ * @endcode
+ */
+class ValidationError : public std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+/**
  * @brief Thrown by DbConnection::acquire() when all pool connections are busy
  *        and the timeout expires.
  *

@@ -48,6 +48,27 @@ struct HttpConfig {
     bool secureCookies = false;
 
     /**
+     * @brief Comma-separated addresses of reverse proxies in front of us.
+     *
+     * S-40: X-Forwarded-For / X-Real-IP are honoured for rate limiting only
+     * when the immediate peer appears in this list; otherwise the socket
+     * address is used. Defaults to loopback, which matches the intended
+     * deployment (nginx on the same host, app bound to 127.0.0.1).
+     *
+     * Set to "" to disable header trust entirely (direct-exposure setups).
+     */
+    std::string trustedProxies = "127.0.0.1,::1";
+
+    /**
+     * @brief Idle session lifetime, in minutes.
+     *
+     * Sessions expire this long after their last use and are reclaimed by the
+     * eviction timer (S-43). Lower values reduce the window in which a stolen
+     * session id is useful; higher values mean fewer surprise logouts.
+     */
+    int sessionTtlMinutes = 60;
+
+    /**
      * @brief Root directory for static file serving.
      *
      * When non-empty, Drogon serves files from this directory for any

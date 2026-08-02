@@ -182,6 +182,7 @@ private:
         auto row = txn.exec("SELECT lastval()");
         int newId = row[0][0].as<int>();
         txn.commit();
+        audit_("create", newId, extractContext_(call));   // S-47
         return newId;
     }
 

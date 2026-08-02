@@ -51,18 +51,33 @@ private:
     nlohmann::json handleCreate(const core::CallKwArgs& call) {
         const auto v = call.arg(0);
         if (!v.is_object()) throw std::runtime_error("create: args[0] must be a dict");
+        // S-30: custom ViewModels must set the user context themselves —
+        // GenericViewModel does it for models on the generic path.
+        const auto ctx = extractContext_(call);
         ResCompany proto(db_);
-        return proto.create(v);
+        proto.setUserContext(ctx);
+        const auto newId = proto.create(v);
+        audit_("create", static_cast<int>(newId), ctx);   // S-47
+        return newId;
     }
     nlohmann::json handleWrite(const core::CallKwArgs& call) {
         const auto v = call.arg(1);
         if (!v.is_object()) throw std::runtime_error("write: args[1] must be a dict");
+        const auto ctx = extractContext_(call);
         ResCompany proto(db_);
-        return proto.write(call.ids(), v);
+        proto.setUserContext(ctx);
+        const auto result = proto.write(call.ids(), v);
+        audit_("write", call.ids(), ctx);   // S-47
+        return result;
     }
     nlohmann::json handleUnlink(const core::CallKwArgs& call) {
+        const auto ctx = extractContext_(call);
         ResCompany proto(db_);
-        return proto.unlink(call.ids());
+        proto.setUserContext(ctx);
+        const auto ids    = call.ids();
+        const auto result = proto.unlink(ids);
+        audit_("unlink", ids, ctx);         // S-47
+        return result;
     }
     nlohmann::json handleFieldsGet(const core::CallKwArgs& call) {
         ResCompany proto(db_);
@@ -174,7 +189,12 @@ private:
             "VALUES ($1,$2,$3,$4::jsonb) RETURNING id",
             pqxx::params{name, fullName, share, perms});
         txn.commit();
-        return rows[0][0].as<int>();
+        const int newId = rows[0][0].as<int>();
+        // S-47: group membership IS the privilege model here (Session::hasGroup
+        // drives checkModelAccess_). Creating or editing a group is a privilege
+        // change and must leave a trail.
+        audit_("create", newId, extractContext_(call));
+        return newId;
     }
 
     nlohmann::json handleWrite(const core::CallKwArgs& call) {
@@ -199,15 +219,18 @@ private:
                 pqxx::params{id});
             txn.commit();
         }
+        audit_("write", call.ids(), extractContext_(call));   // S-47
         return true;
     }
 
     nlohmann::json handleUnlink(const core::CallKwArgs& call) {
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        for (int id : call.ids())
+        const auto ids = call.ids();
+        for (int id : ids)
             txn.exec("DELETE FROM res_groups WHERE id=$1", pqxx::params{id});
         txn.commit();
+        audit_("unlink", ids, extractContext_(call));         // S-47
         return true;
     }
 

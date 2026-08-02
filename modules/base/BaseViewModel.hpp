@@ -1,6 +1,7 @@
 #pragma once
 #include "interfaces/IViewModel.hpp"
 #include "UserContext.hpp"
+#include "AuditService.hpp"
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -137,6 +138,52 @@ protected:
             for (const auto& g : c["group_ids"])
                 if (g.is_number_integer()) ctx.groupIds.push_back(g.get<int>());
         return ctx;
+    }
+
+    /**
+     * @brief Record a mutation in audit_log. (S-37 / S-47)
+     *
+     * GenericViewModel audits from its own handlers, so models on the generic
+     * path are covered automatically. Custom ViewModels are not, and four
+     * separate findings (S-35 record rules, S-37 audit, S-38 CSV rules,
+     * S-47 identity/privilege audit) have all been the same defect:
+     * cross-cutting behaviour wired into GenericViewModel and silently absent
+     * from hand-written ViewModels.
+     *
+     * This helper lives here so a custom ViewModel joins the audited path with
+     * one line per handler and cannot get the model name or the readiness
+     * check subtly wrong:
+     *
+     * @code
+     *   nlohmann::json handleWrite(const CallKwArgs& call) {
+     *       const auto ctx = extractContext_(call);
+     *       ... perform the write ...
+     *       audit_("write", call.ids(), ctx);
+     *       return true;
+     *   }
+     * @endcode
+     *
+     * Never throws: audit failure must not break the operation being audited.
+     * modelName() is virtual, so the correct model is recorded automatically.
+     */
+    void audit_(const std::string&      operation,
+                const std::vector<int>& recordIds,
+                const UserContext&      ctx) const {
+        if (recordIds.empty()) return;
+        if (!infrastructure::AuditService::ready()) return;
+        try {
+            infrastructure::AuditService::instance().log(
+                modelName(), operation, recordIds, ctx.uid);
+        } catch (...) {
+            // AuditService::log() already swallows and logs its own errors;
+            // this is belt-and-braces so no audit path can ever propagate.
+        }
+    }
+
+    /// Convenience overload for single-record operations (e.g. create).
+    void audit_(const std::string& operation, int recordId,
+                const UserContext& ctx) const {
+        if (recordId > 0) audit_(operation, std::vector<int>{recordId}, ctx);
     }
 
 private:

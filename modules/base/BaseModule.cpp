@@ -540,15 +540,22 @@ private:
     nlohmann::json handleCreate(const core::CallKwArgs& call) {
         const auto v = call.arg(0);
         if (!v.is_object()) throw std::runtime_error("create: args[0] must be a dict");
-        return service_->create(v);
+        const auto newId = service_->create(v);
+        audit_("create", static_cast<int>(newId), extractContext_(call));   // S-47
+        return newId;
     }
     nlohmann::json handleWrite(const core::CallKwArgs& call) {
         const auto v = call.arg(1);
         if (!v.is_object()) throw std::runtime_error("write: args[1] must be a dict");
-        return service_->write(call.ids(), v);
+        const auto result = service_->write(call.ids(), v);
+        audit_("write", call.ids(), extractContext_(call));              // S-47
+        return result;
     }
     nlohmann::json handleUnlink(const core::CallKwArgs& call) {
-        return service_->unlink(call.ids());
+        const auto ids    = call.ids();
+        const auto result = service_->unlink(ids);
+        audit_("unlink", ids, extractContext_(call));                    // S-47
+        return result;
     }
     nlohmann::json handleFieldsGet(const core::CallKwArgs& call) {
         const auto attrs = call.kwargs.contains("attributes") &&

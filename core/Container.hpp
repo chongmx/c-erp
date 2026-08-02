@@ -133,13 +133,15 @@ public:
         // --- Infrastructure ---
         db       = std::make_shared<DbConnection>(cfg.db);
         http     = std::make_shared<HttpServer>(cfg.http);
-        sessions = std::make_shared<SessionManager>();
+        sessions = std::make_shared<SessionManager>(
+            std::chrono::seconds{std::max(1, cfg.http.sessionTtlMinutes) * 60});
         ws       = std::make_shared<WebSocketServer>(sessions);
 
         // --- Factories ---
         // Models and services receive the DB connection; the others are stateless.
         models     = std::make_shared<core::ModelFactory>(db);
-        services   = std::make_shared<core::ServiceFactory>(db, cfg.http.devMode, cfg.http.secureCookies, sessions);
+        services   = std::make_shared<core::ServiceFactory>(db, cfg.http.devMode, cfg.http.secureCookies, sessions,
+                                                            cfg.http.trustedProxies);
         viewModels = std::make_shared<core::ViewModelFactory>();
         views      = std::make_shared<core::ViewFactory>();
         modules    = std::make_shared<core::ModuleFactory>();
@@ -148,7 +150,8 @@ public:
         // Wired to viewModelFactory + viewFactory + session store; HTTP routes added in boot().
         rpc = std::make_shared<JsonRpcDispatcher>(viewModels, sessions, views,
                                                    cfg.http.secureCookies,
-                                                   cfg.http.devMode);
+                                                   cfg.http.devMode,
+                                                   cfg.http.trustedProxies);
     }
 
     // ----------------------------------------------------------
@@ -258,6 +261,7 @@ public:
             throw std::runtime_error(
                 "Container::run() — DB connection unhealthy, refusing to start");
         }
+        startSessionEviction_();
         http->start(); // blocks
         shutdown();    // tidy up after server exits
     }
@@ -330,6 +334,26 @@ private:
      * Called after initializeServices_() so DB connections are available,
      * and before initializeModules_() so migrations run before DDL/seeding.
      */
+    /**
+     * @brief Periodically drop expired sessions. (S-43)
+     *
+     * SessionManager::evictExpired() existed but was never called from
+     * anywhere in the codebase — get() returned nullopt for an expired
+     * session but left the entry in the map, so the store only ever grew.
+     *
+     * Scheduled on the Drogon event loop, so it needs no extra thread. Runs
+     * after the loop starts; runEvery() before app().run() would not fire.
+     */
+    void startSessionEviction_() {
+        auto sess = sessions;
+        drogon::app().getLoop()->runEvery(60.0, [sess] {
+            const std::size_t n = sess->evictExpired();
+            if (n > 0)
+                LOG_INFO << "[sessions] evicted " << n
+                         << " expired; " << sess->size() << " live";
+        });
+    }
+
     void runMigrations_() {
         auto runner = std::make_shared<MigrationRunner>(db);
         for (const auto& name : modules->registeredNames()) {
@@ -465,6 +489,15 @@ inline AppConfig AppConfig::fromFile(const std::string& path) {
                            || get("dev_mode",       "false") == "True");
     cfg.http.secureCookies = (get("secure_cookies", "false") == "true"
                            || get("secure_cookies", "false") == "True");
+    // S-40: note get() maps "" / "False" / "false" to the default, so an
+    // operator who wants header trust OFF must say so explicitly rather than
+    // leaving the key blank.
+    cfg.http.sessionTtlMinutes = getInt("session_ttl_minutes", 60);
+    cfg.http.trustedProxies = (kv.count("trusted_proxies")
+                                   && (kv.at("trusted_proxies") == "False"
+                                    || kv.at("trusted_proxies") == "false"))
+                            ? std::string("")
+                            : get("trusted_proxies", "127.0.0.1,::1");
     cfg.http.logFile       = get("logfile",   "");
     // Normalise to lowercase for comparison in HttpServer
     {

@@ -502,7 +502,26 @@ public:
         }
         txn.commit();
         int newId = r[0]["id"].as<int>();
+        audit_("create", newId, extractContext_(call));   // S-47
         return nlohmann::json(newId);
+    }
+
+    // C-3: a category may not become its own ancestor. Without this a cycle can
+    // be created from the UI, and the frontend's categoryDescendantIds() walk
+    // (which has no visited set) then recurses until the tab dies — for every
+    // user, repairable only by a direct DB edit.
+    static bool wouldCreateCycle_(pqxx::work& txn, int id, int newParentId) {
+        if (newParentId <= 0) return false;
+        if (newParentId == id) return true;
+        auto rows = txn.exec(
+            "WITH RECURSIVE anc AS ("
+            "  SELECT id, parent_id FROM product_category WHERE id = $1"
+            "  UNION ALL"
+            "  SELECT c.id, c.parent_id FROM product_category c"
+            "    JOIN anc ON c.id = anc.parent_id"
+            ") SELECT 1 FROM anc WHERE id = $2 LIMIT 1",
+            pqxx::params{newParentId, id});
+        return !rows.empty();
     }
 
     nlohmann::json handleWrite(const core::CallKwArgs& call) {
@@ -525,15 +544,20 @@ public:
                 if (v.is_number_integer()) parentId = v.get<int>();
                 else if (v.is_array() && v.size() >= 1 && v[0].is_number_integer())
                     parentId = v[0].get<int>();
-                if (parentId > 0)
+                if (parentId > 0) {
+                    if (wouldCreateCycle_(txn, id, parentId))   // C-3
+                        throw infrastructure::ValidationError(
+                            "Cannot set parent: that category is a descendant of this one.");
                     txn.exec("UPDATE product_category SET parent_id=$1, write_date=now() WHERE id=$2",
                              pqxx::params{parentId, id});
-                else
+                } else {
                     txn.exec("UPDATE product_category SET parent_id=NULL, write_date=now() WHERE id=$1",
                              pqxx::params{id});
+                }
             }
         }
         txn.commit();
+        audit_("write", ids, extractContext_(call));   // S-47
         return nlohmann::json(true);
     }
 
@@ -542,9 +566,31 @@ public:
         if (ids.empty()) return nlohmann::json(true);
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        for (int id : ids)
+        for (int id : ids) {
+            // C-4: both FKs are ON DELETE SET NULL, so an unguarded delete
+            // silently promotes every child category to root level and strips
+            // the category from every product under it — damage that does not
+            // look like it came from the delete. Refuse, as Odoo does.
+            auto childRows = txn.exec(
+                "SELECT COUNT(*) FROM product_category WHERE parent_id = $1",
+                pqxx::params{id});
+            const int children = childRows[0][0].as<int>();
+            auto prodRows = txn.exec(
+                "SELECT COUNT(*) FROM product_product WHERE categ_id = $1",
+                pqxx::params{id});
+            const int products = prodRows[0][0].as<int>();
+            if (children > 0 || products > 0)
+                throw infrastructure::ValidationError(
+                    "Cannot delete this category: it has " +
+                    std::to_string(children) + " subcategor" +
+                    (children == 1 ? "y" : "ies") + " and " +
+                    std::to_string(products) + " product" +
+                    (products == 1 ? "" : "s") +
+                    ". Reassign or delete them first.");
             txn.exec("DELETE FROM product_category WHERE id=$1", pqxx::params{id});
+        }
         txn.commit();
+        audit_("unlink", ids, extractContext_(call));   // S-47
         return nlohmann::json(true);
     }
 

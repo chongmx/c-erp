@@ -21,6 +21,7 @@
 #include "BaseViewModel.hpp"
 #include "DbConnection.hpp"
 #include "SessionManager.hpp"
+#include "ProcessRunner.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <drogon/drogon.h>
@@ -780,6 +781,10 @@ private:
                              footerLineColor, footerLineWidth});
         }
         txn.commit();
+        // S-47: document templates are the injection surface behind S-44 —
+        // whoever edits template_html controls what the PDF renderer parses.
+        // Template edits must be attributable.
+        audit_("write", ids, extractContext_(call));
         return true;
     }
 
@@ -1306,10 +1311,17 @@ void ReportModule::registerRoutes() {
                 } catch (...) {}
                 txn.commit();
 
-                std::string tmpBase   = "/tmp/erp_report_" + model + "_" + idStr;
-                std::string tmpHtml   = tmpBase + ".html";
-                std::string tmpFooter = tmpBase + "_footer.html";
-                std::string tmpPdf    = tmpBase + ".pdf";
+                // S-39: the temp path must contain no request-derived data.
+                // It previously interpolated `model` and `idStr` straight from
+                // the URL into a string that reached std::system(); std::stoi()
+                // accepting "12$(cmd)" meant the id check did not constrain it.
+                // mkdtemp() gives an unpredictable 0700 directory (also closing
+                // the symlink-attack window on the old deterministic paths) and
+                // the file names below are fixed literals.
+                infrastructure::SecureTempDir tmpDir;
+                const std::string tmpHtml   = tmpDir.file("doc.html");
+                const std::string tmpFooter = tmpDir.file("footer.html");
+                const std::string tmpPdf    = tmpDir.file("out.pdf");
 
                 // --- Determine footer text based on source setting ---
                 std::string footerContent;
@@ -1428,25 +1440,35 @@ void ReportModule::registerRoutes() {
                 const std::string safePaperFormat =
                     kAllowedFormats.count(pdfPaperFormat) ? pdfPaperFormat : "A4";
 
-                std::string cmd = std::string("wkhtmltopdf --quiet")
-                    + " --page-size "    + safePaperFormat
-                    + " --margin-top "   + mmStr(pdfMarginTop)
-                    + " --margin-right " + mmStr(pdfMarginRight)
-                    + " --margin-bottom "+ mmStr(effectiveMarginBottom)
-                    + " --margin-left "  + mmStr(pdfMarginLeft)
-                    + (hasFooter ? " --footer-html \"" + tmpFooter + "\" --footer-spacing 5" : "")
-                    + " --enable-local-file-access"
-                    + " \"" + tmpHtml + "\""
-                    + " \"" + tmpPdf  + "\""
-                    + " 2>/dev/null";
-                int ret = std::system(cmd.c_str());
-                std::remove(tmpHtml.c_str());
-                if (hasFooter) std::remove(tmpFooter.c_str());
+                // SEC-31: argv array via execvp() — no shell, so no quoting and
+                // no substring of any argument can be reinterpreted as syntax.
+                // S-44: --enable-local-file-access removed; it let any HTML
+                // reaching the renderer pull local files (e.g. config/system.cfg,
+                // which holds the DB password) into the output PDF.
+                std::vector<std::string> argv = {
+                    "wkhtmltopdf", "--quiet",
+                    "--page-size",     safePaperFormat,
+                    "--margin-top",    mmStr(pdfMarginTop),
+                    "--margin-right",  mmStr(pdfMarginRight),
+                    "--margin-bottom", mmStr(effectiveMarginBottom),
+                    "--margin-left",   mmStr(pdfMarginLeft),
+                };
+                if (hasFooter) {
+                    argv.push_back("--footer-html");
+                    argv.push_back(tmpFooter);
+                    argv.push_back("--footer-spacing");
+                    argv.push_back("5");
+                }
+                argv.push_back(tmpHtml);
+                argv.push_back(tmpPdf);
 
-  if(ret != 0) {
-                    std::remove(tmpPdf.c_str());
+                int exitCode = -1;
+                const auto pr = infrastructure::runProcess(argv, &exitCode, 30000);
+                if (pr != infrastructure::ProcessResult::Ok) {
+                    LOG_ERROR << "[report/pdf] wkhtmltopdf failed for model=" << model
+                              << " id=" << recordId << " exit=" << exitCode;
                     cb(htmlError(503, "PDF generation failed. Ensure wkhtmltopdf is installed on the server."));
-                    return;
+                    return;   // SecureTempDir cleans up on scope exit
                 }
 
                 // --- Read and return PDF ---
@@ -1454,13 +1476,20 @@ void ReportModule::registerRoutes() {
                 std::string pdfData((std::istreambuf_iterator<char>(pdfFile)),
                                     std::istreambuf_iterator<char>());
                 pdfFile.close();
-                std::remove(tmpPdf.c_str());
 
                 auto resp = drogon::HttpResponse::newHttpResponse();
                 resp->setStatusCode(drogon::k200OK);
                 resp->setContentTypeString("application/pdf");
+                // S-39 (same class): idStr is raw request data — a CR/LF or a
+                // quote in it would break out of this header. Use the parsed
+                // integer and a charset-restricted model name instead.
+                std::string safeModel;
+                for (char c : model)
+                    if (std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '_')
+                        safeModel += c;
                 resp->addHeader("Content-Disposition",
-                    "inline; filename=\"" + model + "_" + idStr + ".pdf\"");
+                    "inline; filename=\"" + safeModel + "_" +
+                    std::to_string(recordId) + ".pdf\"");
                 resp->setBody(pdfData);
                 cb(resp);
 

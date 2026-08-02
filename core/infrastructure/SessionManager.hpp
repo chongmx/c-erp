@@ -3,6 +3,7 @@
 #include <openssl/rand.h>
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <mutex>
 #include <shared_mutex>
 #include <optional>
@@ -123,6 +124,12 @@ public:
 
     /**
      * @brief Create a new anonymous session and return its id.
+     *
+     * S-43: the store is bounded. When full, expired entries are dropped
+     * first, then the oldest ANONYMOUS session. Anonymous entries are
+     * sacrificed before authenticated ones so a flood of unauthenticated
+     * requests cannot evict logged-in users — under attack the attacker's
+     * own sessions are what get reclaimed.
      */
     std::string create(const std::string& db = "") {
         Session s;
@@ -130,9 +137,45 @@ public:
         s.db        = db;
 
         std::unique_lock lock{mutex_};
+        if (store_.size() >= maxSessions_) {
+            evictExpiredLocked_();
+            if (store_.size() >= maxSessions_) evictOldestAnonymousLocked_();
+        }
         const std::string id = s.sessionId;
         store_[id] = std::move(s);
         return id;
+    }
+
+    /**
+     * @brief Re-key a session under a freshly generated id. (S-42)
+     *
+     * Copies the existing session to a new random id and destroys the old
+     * entry, so a session id observed before authentication cannot be used
+     * after it. Called on every successful login.
+     *
+     * @returns the new id, or "" if the old id was unknown or expired.
+     */
+    std::string rotate(const std::string& oldId) {
+        std::unique_lock lock{mutex_};
+        auto it = store_.find(oldId);
+        if (it == store_.end() || isExpired_(it->second)) return {};
+
+        Session moved = std::move(it->second);
+        store_.erase(it);
+
+        moved.sessionId  = generateId_();
+        moved.createdAt  = Session::Clock::now();
+        moved.accessedAt = moved.createdAt;
+
+        const std::string newId = moved.sessionId;
+        store_[newId] = std::move(moved);
+        return newId;
+    }
+
+    /// Upper bound on stored sessions (S-43). 0 disables the cap.
+    void setMaxSessions(std::size_t n) {
+        std::unique_lock lock{mutex_};
+        maxSessions_ = n ? n : std::numeric_limits<std::size_t>::max();
     }
 
     /**
@@ -199,12 +242,7 @@ public:
      */
     std::size_t evictExpired() {
         std::unique_lock lock{mutex_};
-        std::size_t count = 0;
-        for (auto it = store_.begin(); it != store_.end(); ) {
-            if (isExpired_(it->second)) { it = store_.erase(it); ++count; }
-            else                        { ++it; }
-        }
-        return count;
+        return evictExpiredLocked_();
     }
 
     /** @brief Current number of live sessions (including potentially expired). */
@@ -247,6 +285,35 @@ private:
         return (Session::Clock::now() - s.accessedAt) > ttl_;
     }
 
+    // Callers must already hold the exclusive lock.
+    std::size_t evictExpiredLocked_() {
+        std::size_t count = 0;
+        for (auto it = store_.begin(); it != store_.end(); ) {
+            if (isExpired_(it->second)) { it = store_.erase(it); ++count; }
+            else                        { ++it; }
+        }
+        return count;
+    }
+
+    // Drop the least-recently-used anonymous session; if every entry is
+    // authenticated, drop the least-recently-used overall so create() always
+    // makes progress and the store stays bounded.
+    void evictOldestAnonymousLocked_() {
+        auto oldestAnon = store_.end();
+        auto oldestAny  = store_.end();
+        for (auto it = store_.begin(); it != store_.end(); ++it) {
+            if (oldestAny == store_.end() ||
+                it->second.accessedAt < oldestAny->second.accessedAt)
+                oldestAny = it;
+            if (!it->second.isAuthenticated() &&
+                (oldestAnon == store_.end() ||
+                 it->second.accessedAt < oldestAnon->second.accessedAt))
+                oldestAnon = it;
+        }
+        auto victim = (oldestAnon != store_.end()) ? oldestAnon : oldestAny;
+        if (victim != store_.end()) store_.erase(victim);
+    }
+
     // PERF-08: direct hex lookup avoids ostringstream construction per session
     static std::string generateId_() {
         static constexpr char kHex[] = "0123456789abcdef";
@@ -269,6 +336,10 @@ private:
     Duration                                 ttl_;
     mutable std::shared_mutex                mutex_;
     std::unordered_map<std::string, Session> store_;
+    // S-43: bound the store so unauthenticated traffic cannot grow it without
+    // limit. 50k anonymous sessions is far above real usage and well under any
+    // memory concern; raise it if a deployment genuinely needs more.
+    std::size_t                              maxSessions_ = 50000;
 };
 
 } // namespace odoo::infrastructure

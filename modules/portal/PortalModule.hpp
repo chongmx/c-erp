@@ -69,6 +69,7 @@ private:
     std::shared_ptr<PortalLoginRateLimiter>       rateLimiter_;
     bool                                          devMode_       = false;
     bool                                          secureCookies_ = false;
+    std::string                                   trustedProxies_ = "127.0.0.1,::1";  // S-40
 
     void ensureSchema_();
     void ensureUploadDir_();

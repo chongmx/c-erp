@@ -2,6 +2,8 @@
 // modules/portal/PortalModule.cpp  — implementation
 // =============================================================
 #include "PortalModule.hpp"
+#include "ProcessRunner.hpp"
+#include "ClientIp.hpp"
 #include "BaseViewModel.hpp"
 #include "modules/base/Domain.hpp"
 #include "interfaces/IViewModel.hpp"
@@ -287,10 +289,12 @@ static std::string portalExtractFooterText(const std::string& html) {
 
 // Run wkhtmltopdf on htmlContent with optional footerHtml; return PDF bytes (empty on failure).
 // SEC-29: paperFormat must already be validated by caller.
+// S-39: the caller no longer supplies a path base. Temp files live in a
+// per-call mkdtemp() directory with fixed literal names, so no request-derived
+// string can reach the filesystem path or the argv array.
 static std::string portalRunWkhtmltopdf(
     std::string        html,
     const std::string& footerHtml,
-    const std::string& tmpBase,
     const std::string& paperFormat,
     double mt, double mr, double mb, double ml,
     int fontSize, const std::string& fontColor, double lineHeight)
@@ -309,9 +313,10 @@ static std::string portalRunWkhtmltopdf(
         if (hEnd != std::string::npos) html.insert(hEnd, css.str());
     }
 
-    const std::string tmpHtml   = tmpBase + ".html";
-    const std::string tmpFooter = tmpBase + "_footer.html";
-    const std::string tmpPdf    = tmpBase + ".pdf";
+    infrastructure::SecureTempDir tmpDir;
+    const std::string tmpHtml   = tmpDir.file("doc.html");
+    const std::string tmpFooter = tmpDir.file("footer.html");
+    const std::string tmpPdf    = tmpDir.file("out.pdf");
 
     { std::ofstream f(tmpHtml); f << html; }
 
@@ -323,28 +328,35 @@ static std::string portalRunWkhtmltopdf(
     };
     double effectiveMb = hasFooter ? std::max(mb, 20.0) : mb;
 
-    std::string cmd = std::string("wkhtmltopdf --quiet")
-        + " --page-size "    + paperFormat
-        + " --margin-top "   + mmStr(mt)
-        + " --margin-right " + mmStr(mr)
-        + " --margin-bottom "+ mmStr(effectiveMb)
-        + " --margin-left "  + mmStr(ml)
-        + (hasFooter ? " --footer-html \"" + tmpFooter + "\" --footer-spacing 5" : "")
-        + " --enable-local-file-access"
-        + " \"" + tmpHtml + "\""
-        + " \"" + tmpPdf  + "\""
-        + " 2>/dev/null";
+    // SEC-31: argv array via execvp() — no shell.
+    // S-44: --enable-local-file-access removed.
+    std::vector<std::string> argv = {
+        "wkhtmltopdf", "--quiet",
+        "--page-size",     paperFormat,
+        "--margin-top",    mmStr(mt),
+        "--margin-right",  mmStr(mr),
+        "--margin-bottom", mmStr(effectiveMb),
+        "--margin-left",   mmStr(ml),
+    };
+    if (hasFooter) {
+        argv.push_back("--footer-html");
+        argv.push_back(tmpFooter);
+        argv.push_back("--footer-spacing");
+        argv.push_back("5");
+    }
+    argv.push_back(tmpHtml);
+    argv.push_back(tmpPdf);
 
-    int ret = std::system(cmd.c_str());
-    std::remove(tmpHtml.c_str());
-    if (hasFooter) std::remove(tmpFooter.c_str());
-
-    if (ret != 0) { std::remove(tmpPdf.c_str()); return ""; }
+    int exitCode = -1;
+    if (infrastructure::runProcess(argv, &exitCode, 30000)
+            != infrastructure::ProcessResult::Ok) {
+        LOG_ERROR << "[portal/pdf] wkhtmltopdf failed, exit=" << exitCode;
+        return "";   // SecureTempDir cleans up on scope exit
+    }
 
     std::ifstream pdfFile(tmpPdf, std::ios::binary);
     std::string pdfData((std::istreambuf_iterator<char>(pdfFile)), std::istreambuf_iterator<char>());
     pdfFile.close();
-    std::remove(tmpPdf.c_str());
     return pdfData;
 }
 
@@ -1032,6 +1044,7 @@ private:
             }
         }
         txn.commit();
+        audit_("write", ids, extractContext_(call));   // S-47
         return true;
     }
 
@@ -1060,6 +1073,9 @@ private:
                 pqxx::params{hash, id});
         }
         txn.commit();
+        // S-47: a portal credential change is an identity event — audit it
+        // under a distinct operation so it is greppable in the trail.
+        audit_("set_portal_password", ids, extractContext_(call));
         return true;
     }
 
@@ -1230,6 +1246,7 @@ PortalModule::PortalModule(core::ModelFactory&     /*modelFactory*/,
     , rateLimiter_  (std::make_shared<PortalLoginRateLimiter>())
     , devMode_      (serviceFactory.devMode())
     , secureCookies_(serviceFactory.secureCookies())
+    , trustedProxies_(serviceFactory.trustedProxies())
 {}
 
 std::string PortalModule::moduleName() const { return "portal"; }
@@ -1262,6 +1279,10 @@ void PortalModule::registerRoutes() {
     auto rateLimiter     = rateLimiter_;
     const bool devMode      = devMode_;
     const bool secureCookies = secureCookies_;
+    // S-40: the portal login is the public-facing limiter. Without this it
+    // shares one bucket across all customers behind nginx, so ten bad logins
+    // lock every customer out.
+    const infrastructure::ClientIpResolver clientIp{trustedProxies_};
 
     // Shared helper: add security headers to a response
     auto addSecHeaders = [](const drogon::HttpResponsePtr& res) {
@@ -1290,7 +1311,7 @@ void PortalModule::registerRoutes() {
     // Body: {email, password}
     // ----------------------------------------------------------
     drogon::app().registerHandler("/portal/api/login",
-        [db, portalSessions, rateLimiter, addSecHeaders, devMode, secureCookies](
+        [db, portalSessions, rateLimiter, addSecHeaders, devMode, secureCookies, clientIp](
             const drogon::HttpRequestPtr& req,
             std::function<void(const drogon::HttpResponsePtr&)>&& cb)
         {
@@ -1298,7 +1319,7 @@ void PortalModule::registerRoutes() {
             res->addHeader("Content-Type", "application/json");
             addSecHeaders(res);
 
-            const std::string ip = req->getPeerAddr().toIp();
+            const std::string ip = clientIp(req);   // S-40
 
             // Rate limit check
             if (!rateLimiter->allow(ip)) {
@@ -2150,10 +2171,12 @@ void PortalModule::registerRoutes() {
     // ----------------------------------------------------------
 
     // Helper lambda: build footer content and run wkhtmltopdf; return PDF bytes.
+    // S-39: idStr parameter removed — it was only ever used to build the temp
+    // path, which is now an unpredictable mkdtemp() directory. Nothing
+    // request-derived reaches the filesystem or the argv array any more.
     auto makePdf = [db](
         const std::string& html,
         const std::string& model,
-        const std::string& idStr,
         pqxx::work& txn) -> std::string
     {
         PortalPdfSettings cfg = portalLoadPdfSettings(txn, model);
@@ -2171,8 +2194,7 @@ void PortalModule::registerRoutes() {
             footerContent, cfg.showPageNum, cfg.pageNumFmt,
             cfg.footerLineColor, cfg.footerLineWidth);
 
-        const std::string tmpBase = "/tmp/portal_pdf_" + model + "_" + idStr;
-        return portalRunWkhtmltopdf(html, footerHtml, tmpBase, safeFmt,
+        return portalRunWkhtmltopdf(html, footerHtml, safeFmt,
             cfg.mt, cfg.mr, cfg.mb, cfg.ml, cfg.fontSize, cfg.fontColor, cfg.lineHeight);
     };
 
@@ -2200,13 +2222,13 @@ void PortalModule::registerRoutes() {
                 pqxx::work txn{conn.get()};
                 std::string html = portalRenderDoc("account.move", recordId, session->partnerId, txn);
                 if (html.empty()) { htmlErr(404, "Invoice not found or access denied"); return; }
-                std::string pdfData = makePdf(html, "account.move", idStr, txn);
+                std::string pdfData = makePdf(html, "account.move", txn);
                 txn.commit();
                 if (pdfData.empty()) { htmlErr(503, "PDF generation failed. Ensure wkhtmltopdf is installed."); return; }
                 auto res = drogon::HttpResponse::newHttpResponse();
                 res->setStatusCode(drogon::k200OK);
                 res->setContentTypeString("application/pdf");
-                res->addHeader("Content-Disposition", "attachment; filename=\"invoice_" + idStr + ".pdf\"");
+                res->addHeader("Content-Disposition", "attachment; filename=\"invoice_" + std::to_string(recordId) + ".pdf\"");
                 res->setBody(pdfData);
                 cb(res);
             } catch (const PoolExhaustedException& e) {
@@ -2243,13 +2265,13 @@ void PortalModule::registerRoutes() {
                 pqxx::work txn{conn.get()};
                 std::string html = portalRenderDoc("sale.order", recordId, session->partnerId, txn);
                 if (html.empty()) { htmlErr(404, "Order not found or access denied"); return; }
-                std::string pdfData = makePdf(html, "sale.order", idStr, txn);
+                std::string pdfData = makePdf(html, "sale.order", txn);
                 txn.commit();
                 if (pdfData.empty()) { htmlErr(503, "PDF generation failed. Ensure wkhtmltopdf is installed."); return; }
                 auto res = drogon::HttpResponse::newHttpResponse();
                 res->setStatusCode(drogon::k200OK);
                 res->setContentTypeString("application/pdf");
-                res->addHeader("Content-Disposition", "attachment; filename=\"order_" + idStr + ".pdf\"");
+                res->addHeader("Content-Disposition", "attachment; filename=\"order_" + std::to_string(recordId) + ".pdf\"");
                 res->setBody(pdfData);
                 cb(res);
             } catch (const PoolExhaustedException& e) {
@@ -2286,13 +2308,13 @@ void PortalModule::registerRoutes() {
                 pqxx::work txn{conn.get()};
                 std::string html = portalRenderDoc("stock.picking", recordId, session->partnerId, txn);
                 if (html.empty()) { htmlErr(404, "Delivery not found or access denied"); return; }
-                std::string pdfData = makePdf(html, "stock.picking", idStr, txn);
+                std::string pdfData = makePdf(html, "stock.picking", txn);
                 txn.commit();
                 if (pdfData.empty()) { htmlErr(503, "PDF generation failed. Ensure wkhtmltopdf is installed."); return; }
                 auto res = drogon::HttpResponse::newHttpResponse();
                 res->setStatusCode(drogon::k200OK);
                 res->setContentTypeString("application/pdf");
-                res->addHeader("Content-Disposition", "attachment; filename=\"delivery_" + idStr + ".pdf\"");
+                res->addHeader("Content-Disposition", "attachment; filename=\"delivery_" + std::to_string(recordId) + ".pdf\"");
                 res->setBody(pdfData);
                 cb(res);
             } catch (const PoolExhaustedException& e) {

@@ -289,6 +289,9 @@ private:
             }
         }
         txn.commit();
+        // S-47: user creation is one of the two most audit-critical events in
+        // the system (the other is a group grant, below). It was unrecorded.
+        audit_("create", newId, extractContext_(call));
         return newId;
     }
 
@@ -366,6 +369,9 @@ private:
             ResUsers proto(db_);
             proto.write(call.ids(), vals);
         }
+        // S-47: covers password changes and group-membership edits, both of
+        // which are handled above this point and both of which were silent.
+        audit_("write", call.ids(), extractContext_(call));
         return true;
     }
 
@@ -379,7 +385,10 @@ private:
             if (id == session.uid)
                 throw AccessDeniedError("Cannot delete your own user account");
         ResUsers proto(db_);
-        return proto.unlink(call.ids());
+        const auto ids    = call.ids();      // capture before the delete
+        const auto result = proto.unlink(ids);
+        audit_("unlink", ids, extractContext_(call));   // S-47
+        return result;
     }
 
     // ----------------------------------------------------------

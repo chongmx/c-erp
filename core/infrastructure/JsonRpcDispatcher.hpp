@@ -1,6 +1,7 @@
 #pragma once
 #include "HttpServer.hpp"
 #include "SessionManager.hpp"
+#include "ClientIp.hpp"
 #include "Errors.hpp"
 #include "TtlCache.hpp"
 #include "../../core/factories/Factories.hpp"
@@ -125,12 +126,14 @@ public:
                       std::shared_ptr<SessionManager>         sessions,
                       std::shared_ptr<core::ViewFactory>      viewFactory = nullptr,
                       bool                                    secureCookies = false,
-                      bool                                    devMode = false)
+                      bool                                    devMode = false,
+                      const std::string& trustedProxies = "127.0.0.1,::1")
         : vmFactory_    (std::move(vmFactory))
         , sessions_     (std::move(sessions))
         , viewFactory_  (std::move(viewFactory))
         , secureCookies_(secureCookies)
         , devMode_      (devMode)
+        , clientIp_     (trustedProxies)
     {}
 
     /**
@@ -261,7 +264,9 @@ private:
 
             // Rate-limit the login endpoint before doing any work
             if (call.method == "authenticate") {
-                const std::string ip = req->getPeerAddr().toIp();
+                // S-40: behind nginx getPeerAddr() is always 127.0.0.1, which
+                // would make this one global bucket shared by every user.
+                const std::string ip = clientIp_(req);
                 if (!rateLimiter_.allow(ip))
                     return errorResponse_(id, 429, "Too many requests",
                                          "Too many failed login attempts. Try again later.");
@@ -301,27 +306,65 @@ private:
                     return successResponse_(id, *cached);
             }
 
-            auto vm     = vmFactory_->create(call.model, core::Lifetime::Transient);
-            auto result = vm->callKw(call);
+            auto vm = vmFactory_->create(call.model, core::Lifetime::Transient);
 
-            // PERF-D: cache fields_get result
-            if (call.method == "fields_get" && result.is_object())
-                fieldsGetCache_.set(call.model, result, 300);
-
-            // After authenticate: record rate-limiter outcome
+            nlohmann::json result;
             if (call.method == "authenticate") {
-                const std::string ip = req->getPeerAddr().toIp();
+                // S-49: AuthViewModel THROWS on invalid credentials, so the
+                // post-call recordFailure() below was unreachable on exactly
+                // the path that matters — the limiter counted nothing and
+                // brute-force protection never engaged. Runtime testing found
+                // this; static review had passed it repeatedly because the
+                // calls look correct in sequence.
+                const std::string ip = clientIp_(req);   // S-40
+                try {
+                    result = vm->callKw(call);
+                } catch (...) {
+                    rateLimiter_.recordFailure(ip);
+                    throw;
+                }
                 const bool ok = result.contains("uid") &&
                                 result["uid"].is_number_integer() &&
                                 result["uid"].get<int>() > 0;
                 if (ok) rateLimiter_.recordSuccess(ip);
                 else    rateLimiter_.recordFailure(ip);
+            } else {
+                result = vm->callKw(call);
             }
+
+            // PERF-D: cache fields_get result
+            if (call.method == "fields_get" && result.is_object())
+                fieldsGetCache_.set(call.model, result, 300);
 
             // After authenticate: sync auth data into dispatcher's SM and set cookie
             if (call.method == "authenticate" && result.contains("uid") &&
                 result["uid"].is_number_integer() && result["uid"].get<int>() > 0) {
-                const std::string cookieSid = result.value("session_id", sid);
+                // The id the caller arrived with (may be empty — S-43 no longer
+                // mints anonymous sessions for unresolved call_kw requests).
+                std::string cookieSid = result.value("session_id", sid);
+                if (cookieSid.empty() || !sessions_->get(cookieSid).has_value())
+                    cookieSid = sessions_->create();
+
+                // S-42: rotate the session id on privilege elevation.
+                //
+                // Previously the pre-auth id was promoted in place, so an id
+                // observed before login stayed valid after it. An attacker
+                // could obtain a valid anonymous id (get_session_info returns
+                // one), induce the victim to adopt it, and hold an
+                // authenticated session once the victim logged in — account
+                // takeover with no credential theft. Re-keying makes any
+                // previously-observed id worthless.
+                const std::string rotated = sessions_->rotate(cookieSid);
+                if (!rotated.empty()) {
+                    LOG_INFO << "[auth] session rotated " << cookieSid.substr(0, 8)
+                             << "... -> " << rotated.substr(0, 8) << "...";
+                    cookieSid = rotated;
+                }
+                // The client must learn the new id: the OWL frontend replays it
+                // via context.session_id, so leaving the old value here would
+                // log the user straight back out.
+                result["session_id"] = cookieSid;
+
                 const bool updated = sessions_->update(cookieSid, [&result](Session& s) {
                     s.uid     = result["uid"].get<int>();
                     s.login   = result.value("login", std::string{});
@@ -356,6 +399,12 @@ private:
         } catch (const AccessDeniedError& e) {
             // SEC-25: authorization errors are always shown — client must know why
             return errorResponse_(id, 403, "Access Denied", e.what());
+        } catch (const ValidationError& e) {
+            // Business-rule violations are user-actionable and author-written, so
+            // they bypass the devMode gate like AccessDeniedError. Reported as 400:
+            // the request was understood but is not allowed to succeed.
+            return errorResponse_(id, 400, "Validation Error", e.what(),
+                                  "odoo.exceptions.ValidationError");
         } catch (const ConcurrencyConflictException& e) {
             // OCC: another user saved first — return 409 with a distinguishable name
             // so the frontend can show a conflict banner instead of a generic error toast
@@ -465,8 +514,22 @@ private:
     // Session helpers
     // ----------------------------------------------------------
 
+    // S-48: read the cookie via drogon's parsed cookie map.
+    //
+    // The previous implementation used
+    //   SessionManager::extractFromCookie(req->getHeader("Cookie"))
+    // which returns EMPTY in this Drogon version — cookies are parsed into a
+    // separate map and are not served from the generic header map. The effect
+    // was that call_kw ignored the session cookie entirely and resolved
+    // sessions only from kwargs.context.session_id; the OWL frontend happened
+    // to work because it sends exactly that. Verified by measurement, see
+    // docs/042 §4.
+    std::string cookieSid_(const HttpRequestPtr& req) const {
+        return req->getCookie(SessionManager::cookieName());
+    }
+
     std::string resolveOrCreateSid_(const HttpRequestPtr& req) {
-        const std::string sid = SessionManager::extractFromCookie(req->getHeader("Cookie"));
+        const std::string sid = cookieSid_(req);
         if (!sid.empty() && sessions_->get(sid).has_value()) return sid;
         return sessions_->create();
     }
@@ -474,8 +537,7 @@ private:
     // Resolve session from cookie or a flat body param (for non-callKw endpoints)
     std::string resolveFromBodyOrCookie_(const HttpRequestPtr& req,
                                           const nlohmann::json& params) {
-        const std::string cookieSid = SessionManager::extractFromCookie(
-            req->getHeader("Cookie"));
+        const std::string cookieSid = cookieSid_(req);
         if (!cookieSid.empty() && sessions_->get(cookieSid).has_value())
             return cookieSid;
         const std::string bodySid = params.value("session_id", std::string{});
@@ -484,15 +546,31 @@ private:
         return sessions_->create();
     }
 
+    /**
+     * @brief Resolve an EXISTING session for a call_kw request.
+     *
+     * S-43: this deliberately does NOT create a session when none is found.
+     * It used to call sessions_->create() on every unresolved request — before
+     * the auth check — so any client could allocate a stored Session per HTTP
+     * request, and nothing ever reclaimed them (evictExpired() was never
+     * called). Combined with S-48 that included ordinary cookie-bearing
+     * traffic, not just unauthenticated spray.
+     *
+     * Returning "" is behaviourally identical for callers: an unresolved id
+     * yielded a freshly-created ANONYMOUS session, and the caller falls back to
+     * a default Session{} which is anonymous too. Only the logged sid differs.
+     * A real session is created at authentication time.
+     *
+     * @returns the session id, or "" if there is no live session.
+     */
     std::string resolveSessionId_(const HttpRequestPtr& req,
                                    const core::CallKwArgs& call) {
-        // 1. Try cookie
-        const std::string cookieSid = SessionManager::extractFromCookie(
-            req->getHeader("Cookie"));
+        // 1. Cookie (normal browser path)
+        const std::string cookieSid = cookieSid_(req);
         if (!cookieSid.empty() && sessions_->get(cookieSid).has_value())
             return cookieSid;
 
-        // 2. Try session_id from kwargs context (sent by JS client in body)
+        // 2. session_id from kwargs context (cookie-less clients / the OWL frontend)
         if (call.kwargs.contains("context")) {
             const std::string bodySid =
                 call.kwargs["context"].value("session_id", std::string{});
@@ -500,8 +578,7 @@ private:
                 return bodySid;
         }
 
-        // 3. Create fresh anonymous session
-        return sessions_->create();
+        return {};
     }
 
     // ----------------------------------------------------------
@@ -794,6 +871,7 @@ private:
     std::shared_ptr<SessionManager>         sessions_;
     std::shared_ptr<core::ViewFactory>      viewFactory_;
     LoginRateLimiter                        rateLimiter_;
+    ClientIpResolver                        clientIp_;      // S-40
     bool                                    secureCookies_ = false;
     bool                                    devMode_       = false;
 
