@@ -21,7 +21,9 @@ void MigrationRunner::ensureMigrationsTable_() {
     // timeout=0: infinite wait — this runs at startup, not in a request handler
     auto conn = db_->acquire(0);
     pqxx::work txn{conn.get()};
-    txn.exec0(R"(
+    // exec() rather than the deprecated exec0(): DDL returns no rows by
+    // definition, so the zero-row assertion exec0() added was never load-bearing.
+    txn.exec(R"(
         CREATE TABLE IF NOT EXISTS schema_migrations (
             version     INTEGER   PRIMARY KEY,
             description TEXT      NOT NULL,
@@ -58,11 +60,13 @@ void MigrationRunner::runPending() {
         auto conn = db_->acquire(0);
         pqxx::work txn{conn.get()};
         try {
-            txn.exec0(m.upSql);
-            txn.exec0(
-                "INSERT INTO schema_migrations(version, description) VALUES (" +
-                std::to_string(m.version) + ", " +
-                txn.quote(m.description) + ")");
+            txn.exec(m.upSql);
+            // Bound parameters instead of quote()+concatenation: migration
+            // descriptions are author-written today, but a parameterised insert
+            // cannot become an injection sink if that ever changes.
+            txn.exec(
+                "INSERT INTO schema_migrations(version, description) VALUES ($1, $2)",
+                pqxx::params{m.version, m.description});
             txn.commit();
             ++count;
         } catch (const std::exception& ex) {

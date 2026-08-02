@@ -97,8 +97,8 @@ private:
  * @code
  *   auto conn = container->db->acquire();
  *   pqxx::work txn{conn.get()};
- *   txn.exec0("UPDATE res_partner SET name=$1 WHERE id=$2",
- *              pqxx::params{"Acme", 42});
+ *   txn.exec("UPDATE res_partner SET name=$1 WHERE id=$2",
+ *            pqxx::params{"Acme", 42});
  *   txn.commit();
  * @endcode
  *

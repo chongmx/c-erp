@@ -96,7 +96,9 @@ RuleEngine::loadRules_(const std::string& modelName) const {
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
 
-        auto res = txn.exec_params(
+        // exec(sql, params) — exec_params() is deprecated. Same binding
+        // semantics, so $1 is still a bound parameter, not interpolated.
+        auto res = txn.exec(
             R"(SELECT r.id, r.name, r.domain_force,
                       r.perm_read, r.perm_write, r.perm_create, r.perm_unlink,
                       r.global, r.active,
@@ -108,7 +110,7 @@ RuleEngine::loadRules_(const std::string& modelName) const {
                LEFT   JOIN ir_rule_group_rel g ON g.rule_id = r.id
                WHERE  r.model_name = $1
                GROUP  BY r.id)",
-            modelName);
+            pqxx::params{modelName});
 
         for (const auto& row : res) {
             IrRuleRecord rec;

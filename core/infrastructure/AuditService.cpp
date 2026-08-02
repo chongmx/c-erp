@@ -50,14 +50,14 @@ void AuditService::log(const std::string&      model,
     try {
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        txn.exec0(
+        // Bound parameters rather than the previous quote()+concatenation.
+        // `model` and `operation` reach here from ViewModel call sites and are
+        // effectively caller-controlled strings; parameters remove the question
+        // entirely and drop the deprecated exec0().
+        txn.exec(
             "INSERT INTO audit_log(model, operation, record_ids, uid, created_at) "
-            "VALUES (" +
-            txn.quote(model) + "," +
-            txn.quote(operation) + "," +
-            txn.quote(idsLit) + "::int[]," +
-            std::to_string(uid) + "," +
-            "now())");
+            "VALUES ($1, $2, $3::int[], $4, now())",
+            pqxx::params{model, operation, idsLit, uid});
         txn.commit();
     } catch (const std::exception& ex) {
         // Audit logging must never break the main operation.
