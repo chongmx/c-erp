@@ -2,6 +2,39 @@
 set -euo pipefail
 
 # ============================================================
+# Options
+# ============================================================
+FORCE=0
+
+usage() {
+    cat << 'EOF'
+Usage: setup_db.sh [OPTIONS]
+
+Installs PostgreSQL if missing, creates the app role and database,
+and configures auto-start. The application itself creates/migrates
+all tables on startup (ensureSchema_ in each module).
+
+Options:
+  -f, --force   Drop and recreate the database (DESTROYS ALL DATA).
+                Use this to reset to a clean state; tables are
+                recreated by the app on next startup.
+  -h, --help    Show this help.
+
+Environment overrides:
+  DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -f|--force) FORCE=1 ;;
+        -h|--help)  usage; exit 0 ;;
+        *) echo "[ERROR] Unknown option: $1" >&2; usage; exit 1 ;;
+    esac
+    shift
+done
+
+# ============================================================
 # Configuration — override with environment variables
 # ============================================================
 DB_HOST="${DB_HOST:-localhost}"
@@ -97,9 +130,20 @@ fi
 
 # ============================================================
 # 5. Create database if it doesn't exist
+#    (--force: drop it first for a clean state)
 # ============================================================
 DB_EXISTS=$(psql_super -tAc \
     "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}';" 2>/dev/null || echo "")
+
+if [ "${DB_EXISTS}" = "1" ] && [ "${FORCE}" = "1" ]; then
+    warn "--force given: dropping database '${DB_NAME}' (ALL DATA WILL BE LOST)..."
+    # Kick out any active connections so DROP DATABASE cannot fail
+    psql_super -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+                   WHERE datname='${DB_NAME}' AND pid <> pg_backend_pid();" > /dev/null
+    psql_super -c "DROP DATABASE ${DB_NAME};"
+    DB_EXISTS=""
+    success "Database '${DB_NAME}' dropped."
+fi
 
 if [ "${DB_EXISTS}" = "1" ]; then
     success "Database '${DB_NAME}' already exists."

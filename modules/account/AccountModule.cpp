@@ -1344,6 +1344,19 @@ void AccountModule::ensureSchema_() {
         )
     )");
 
+    // account_payment_term (referenced by account_move.payment_term_id)
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS account_payment_term (
+            id          SERIAL PRIMARY KEY,
+            name        VARCHAR NOT NULL,
+            note        TEXT,
+            lines_json  TEXT NOT NULL DEFAULT '[{"days":0,"value":"balance","value_amount":0}]',
+            active      BOOLEAN NOT NULL DEFAULT TRUE,
+            create_date TIMESTAMP DEFAULT now(),
+            write_date  TIMESTAMP DEFAULT now()
+        )
+    )");
+
     // account_move
     txn.exec(R"(
         CREATE TABLE IF NOT EXISTS account_move (
@@ -1433,19 +1446,6 @@ void AccountModule::ensureSchema_() {
             memo          VARCHAR,
             create_date   TIMESTAMP DEFAULT now(),
             write_date    TIMESTAMP DEFAULT now()
-        )
-    )");
-
-    // account_payment_term
-    txn.exec(R"(
-        CREATE TABLE IF NOT EXISTS account_payment_term (
-            id          SERIAL PRIMARY KEY,
-            name        VARCHAR NOT NULL,
-            note        TEXT,
-            lines_json  TEXT NOT NULL DEFAULT '[{"days":0,"value":"balance","value_amount":0}]',
-            active      BOOLEAN NOT NULL DEFAULT TRUE,
-            create_date TIMESTAMP DEFAULT now(),
-            write_date  TIMESTAMP DEFAULT now()
         )
     )");
 

@@ -1375,11 +1375,6 @@ void SaleModule::ensureSchema_() {
     auto conn = services_.db()->acquire();
     pqxx::work txn{conn.get()};
 
-    // Add sale_id FK to account_move if not already present
-    txn.exec(
-        "ALTER TABLE account_move "
-        "ADD COLUMN IF NOT EXISTS sale_id INTEGER REFERENCES sale_order(id)");
-
     // Sequence for SO/YYYY/NNNN
     txn.exec("CREATE SEQUENCE IF NOT EXISTS sale_order_seq START 1");
 
@@ -1409,6 +1404,11 @@ void SaleModule::ensureSchema_() {
             write_date          TIMESTAMP DEFAULT now()
         )
     )");
+
+    // Add sale_id FK to account_move if not already present (sale_order must exist first)
+    txn.exec(
+        "ALTER TABLE account_move "
+        "ADD COLUMN IF NOT EXISTS sale_id INTEGER REFERENCES sale_order(id)");
 
     // sale_order_line
     txn.exec(R"(
