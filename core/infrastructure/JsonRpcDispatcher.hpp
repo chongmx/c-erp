@@ -643,7 +643,8 @@ private:
             "product.supplierinfo",  // vendor pricelist (viewed in product form)
             "mail.message",          // chatter (gated by the parent document's access)
             "portal.partner",        // portal admin ViewModel (internal RPC only)
-            "audit.log",             // audit trail — read-only ViewModel (admins see all)
+            "audit.log",
+            "decimal.precision",     // P2: display precision (read by every client)             // audit trail — read-only ViewModel (admins see all)
         };
         if (kAllowed.count(model)) {
             // Still require at least a logged-in internal user (BASE_INTERNAL = 2)

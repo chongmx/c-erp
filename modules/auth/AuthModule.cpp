@@ -26,9 +26,9 @@ public:
         REGISTER_METHOD("search_read",  handleSearchRead)
         REGISTER_METHOD("read",         handleRead)
         REGISTER_METHOD("web_read",     handleRead)
-        REGISTER_METHOD("create",       handleCreate)
-        REGISTER_METHOD("write",        handleWrite)
-        REGISTER_METHOD("unlink",       handleUnlink)
+        REGISTER_MUTATOR("create",       handleCreate)
+        REGISTER_MUTATOR("write",        handleWrite)
+        REGISTER_MUTATOR("unlink",       handleUnlink)
         REGISTER_METHOD("fields_get",   handleFieldsGet)
         REGISTER_METHOD("search_count", handleSearchCount)
     }
@@ -57,7 +57,6 @@ private:
         ResCompany proto(db_);
         proto.setUserContext(ctx);
         const auto newId = proto.create(v);
-        audit_("create", static_cast<int>(newId), ctx);   // S-47
         return newId;
     }
     nlohmann::json handleWrite(const core::CallKwArgs& call) {
@@ -67,7 +66,6 @@ private:
         ResCompany proto(db_);
         proto.setUserContext(ctx);
         const auto result = proto.write(call.ids(), v);
-        audit_("write", call.ids(), ctx);   // S-47
         return result;
     }
     nlohmann::json handleUnlink(const core::CallKwArgs& call) {
@@ -76,7 +74,6 @@ private:
         proto.setUserContext(ctx);
         const auto ids    = call.ids();
         const auto result = proto.unlink(ids);
-        audit_("unlink", ids, ctx);         // S-47
         return result;
     }
     nlohmann::json handleFieldsGet(const core::CallKwArgs& call) {
@@ -100,9 +97,9 @@ public:
         REGISTER_METHOD("search_read",  handleSearchRead)
         REGISTER_METHOD("read",         handleRead)
         REGISTER_METHOD("web_read",     handleRead)
-        REGISTER_METHOD("create",       handleCreate)
-        REGISTER_METHOD("write",        handleWrite)
-        REGISTER_METHOD("unlink",       handleUnlink)
+        REGISTER_MUTATOR("create",       handleCreate)
+        REGISTER_MUTATOR("write",        handleWrite)
+        REGISTER_MUTATOR("unlink",       handleUnlink)
         REGISTER_METHOD("fields_get",   handleFieldsGet)
         REGISTER_METHOD("search_count", handleSearchCount)
     }
@@ -193,7 +190,6 @@ private:
         // S-47: group membership IS the privilege model here (Session::hasGroup
         // drives checkModelAccess_). Creating or editing a group is a privilege
         // change and must leave a trail.
-        audit_("create", newId, extractContext_(call));
         return newId;
     }
 
@@ -219,7 +215,6 @@ private:
                 pqxx::params{id});
             txn.commit();
         }
-        audit_("write", call.ids(), extractContext_(call));   // S-47
         return true;
     }
 
@@ -230,7 +225,6 @@ private:
         for (int id : ids)
             txn.exec("DELETE FROM res_groups WHERE id=$1", pqxx::params{id});
         txn.commit();
-        audit_("unlink", ids, extractContext_(call));         // S-47
         return true;
     }
 

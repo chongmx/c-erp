@@ -776,6 +776,30 @@ class InvoiceFormView extends Component {
                                    t-att-value="state.payAmount"
                                    t-on-input="ev => state.payAmount = ev.target.value"/>
                         </div>
+                        <!-- P1/FX: only for a foreign-currency invoice.
+                             The bank converts on receipt, so we ask for the
+                             base-currency amount that actually landed rather
+                             than a rate — the bank's spread makes any quoted
+                             rate wrong, and the statement figure is the one
+                             the user can actually verify. -->
+                        <t t-if="state.payIsForeign">
+                            <div class="so-field-row" style="margin-bottom:4px;">
+                                <label class="so-field-lbl"
+                                       t-esc="'Received (' + state.payBaseCode + ')'"/>
+                                <input class="form-input" type="number" step="0.01" min="0"
+                                       t-att-value="state.payReceivedBase"
+                                       t-att-placeholder="state.payExpectedBase"
+                                       t-on-input="ev => state.payReceivedBase = ev.target.value"/>
+                            </div>
+                            <div class="so-field-row" style="margin-bottom:4px;">
+                                <label class="so-field-lbl">Effective rate</label>
+                                <span class="so-field-val" t-esc="effectiveRateText"/>
+                            </div>
+                            <div class="so-field-row" style="margin-bottom:8px;">
+                                <label class="so-field-lbl">FX difference</label>
+                                <span class="so-field-val" t-esc="fxDiffText"/>
+                            </div>
+                        </t>
                         <div class="so-field-row" style="margin-bottom:4px;">
                             <label class="so-field-lbl">Payment Date</label>
                             <DatePicker value="state.payDate" onSelect.bind="setPayDate"/>
@@ -932,6 +956,7 @@ class InvoiceFormView extends Component {
                                 <th class="so-col-desc">Description</th>
                                 <th class="so-col-num">Qty</th>
                                 <th class="so-col-num">Unit Price</th>
+                                <th class="so-col-num">Tax</th>
                                 <th class="so-col-subtotal">Subtotal</th>
                                 <th class="so-col-del"/>
                             </tr>
@@ -986,6 +1011,21 @@ class InvoiceFormView extends Component {
                                                    t-att-data-key="ln._key"
                                                    data-line-field="price_unit"
                                                    t-att-value="ln.price_unit"/>
+                                        </td>
+                                        <!-- P3: tax picker. Writes tax_ids_json,
+                                             which the server's TaxEngine reads to
+                                             generate the invoice's tax lines. -->
+                                        <td class="so-col-num">
+                                            <select class="inv-line-input"
+                                                    t-att-data-key="ln._key"
+                                                    data-line-field="tax_ids_json">
+                                                <option value="[]">No tax</option>
+                                                <t t-foreach="state.taxOptions" t-as="tx" t-key="tx.id">
+                                                    <option t-att-value="'[' + tx.id + ']'"
+                                                            t-att-selected="ln.tax_ids_json === ('[' + tx.id + ']') ? true : undefined"
+                                                            t-esc="tx.display"/>
+                                                </t>
+                                            </select>
                                         </td>
                                         <td class="so-col-subtotal" t-esc="formatMoney(ln.credit)"/>
                                         <td class="so-col-del">
@@ -1072,6 +1112,7 @@ class InvoiceFormView extends Component {
             partners:       [],
             journals:       [],
             paymentTerms:   [],
+            taxOptions:     [],   // P3: tax picker on invoice lines
             chatRefreshKey: 0,
             payDialogOpen:  false,
             payDate:        '',
@@ -1079,6 +1120,12 @@ class InvoiceFormView extends Component {
             payJournals:    [],
             payJournalId:   null,
             payAmount:      '',
+            // P1/FX (docs/048 §4.6)
+            payIsForeign:    false,
+            payBaseCode:     '',
+            payReceivedBase: '',
+            payExpectedBase: '',
+            payBookedRate:   1,
             payMemo:        '',
         });
         this._nextKey   = 1;
@@ -1098,6 +1145,9 @@ class InvoiceFormView extends Component {
                 'invoice_date', 'due_date', 'date', 'ref', 'narration',
                 'payment_term_id', 'invoice_origin', 'payment_state',
                 'amount_untaxed', 'amount_tax', 'amount_total', 'amount_residual',
+                // currency_id + currency_rate drive the FX field in the payment
+                // dialog; line_precision governs how many decimals lines show.
+                'currency_id', 'currency_rate', 'line_precision',
             ];
             const recId = overrideId ?? this.props.recordId;
             const [rec] = await Promise.all([
@@ -1108,6 +1158,7 @@ class InvoiceFormView extends Component {
                 this.loadOpts('res.partner',          'partners',     ['id', 'name']),
                 this.loadOpts('account.journal',      'journals',     ['id', 'name']),
                 this.loadOpts('account.payment.term', 'paymentTerms', ['id', 'name']),
+                this.loadOpts('account.tax',          'taxOptions',   ['id', 'name']),
             ]);
             this.state.record = rec;
             this.state.deletedLineIds = [];
@@ -1131,13 +1182,23 @@ class InvoiceFormView extends Component {
     async loadLines(overrideId) {
         try {
             const recId = overrideId ?? this.props.recordId;
-            // Load income lines + section/note lines (exclude AR/AP debit-only lines)
+            // Load income lines + section/note lines (exclude AR/AP debit-only lines).
+            //
+            // tax_line_id = null excludes the SERVER-GENERATED tax lines. They
+            // are credit lines with debit = 0 too, so without this filter they
+            // would appear in the editable grid — and saving would then write
+            // them back as product lines, doubling the invoice.
+            // Note `null`, not `false`: the domain compiler turns null into
+            // `IS NULL`, whereas false binds the string 'false' to an integer
+            // column and errors.
             const raw = await RpcService.call('account.move.line', 'search_read',
                 [[['move_id', '=', recId],
-                  ['debit', '=', 0]]],
+                  ['debit', '=', 0],
+                  ['tax_line_id', '=', null]]],
                 { fields: ['id', 'name', 'quantity', 'price_unit', 'credit',
                             'display_type', 'account_id', 'journal_id',
-                            'company_id', 'date', 'partner_id'], limit: 200 });
+                            'company_id', 'date', 'partner_id',
+                            'tax_ids_json', 'tax_line_id'], limit: 200 });
 
             const lines = (Array.isArray(raw) ? raw : []).map(ln => {
                 // Fix missing price_unit for old invoices created before the column was added
@@ -1159,6 +1220,8 @@ class InvoiceFormView extends Component {
                     company_id:   ln.company_id,
                     date:         ln.date,
                     partner_id:   ln.partner_id,
+                    // P3: which taxes this line is subject to
+                    tax_ids_json: ln.tax_ids_json || '[]',
                 };
             });
 
@@ -1266,7 +1329,7 @@ class InvoiceFormView extends Component {
                       : addType === 'note'    ? 'line_note' : '';
             this.state.lines.push({
                 _key: key, _isNew: true, id: null,
-                name: '', quantity: 1, price_unit: 0, credit: 0,
+                name: '', quantity: 1, price_unit: 0, credit: 0, tax_ids_json: '[]',
                 display_type: dt,
             });
             return;
@@ -1331,6 +1394,8 @@ class InvoiceFormView extends Component {
                 company_id:   d.company_id || 1,
                 date:         d.date       || null,
                 partner_id:   d.partner_id || null,
+                // P3: the server's TaxEngine reads this to build the tax lines
+                tax_ids_json: isSection || isNote ? '[]' : (ln.tax_ids_json || '[]'),
             };
             if (ln._isNew) {
                 await RpcService.call('account.move.line', 'create', [vals], {});
@@ -1404,6 +1469,15 @@ class InvoiceFormView extends Component {
         this.state.payJournalId = null;
         this.state.payJournals  = [];
         this.state.payDialogOpen = true;
+
+        // FX (docs/048 §4.6): decide whether this invoice needs the
+        // "amount received in base currency" field.
+        this.state.payIsForeign     = false;
+        this.state.payBaseCode      = '';
+        this.state.payReceivedBase  = '';
+        this.state.payExpectedBase  = '';
+        this.state.payBookedRate    = 1;
+
         try {
             const journals = await RpcService.searchRead(
                 'account.journal',
@@ -1412,6 +1486,46 @@ class InvoiceFormView extends Component {
             this.state.payJournals  = journals;
             if (journals.length) this.state.payJournalId = journals[0].id;
         } catch (_) {}
+
+        try {
+            const [companies, currencies] = await Promise.all([
+                RpcService.searchRead('res.company', [], ['id', 'currency_id'], 0, 1),
+                RpcService.searchRead('res.currency', [], ['id', 'name', 'rate'], 0, 50),
+            ]);
+            const baseRaw = companies?.[0]?.currency_id;
+            const baseId  = Array.isArray(baseRaw) ? baseRaw[0] : baseRaw;
+            const base    = currencies.find(c => c.id === baseId);
+            this.state.payBaseCode = base ? base.name : '';
+
+            const invRaw = this.state.record.currency_id;
+            const invId  = Array.isArray(invRaw) ? invRaw[0] : invRaw;
+
+            if (invId && baseId && invId !== baseId) {
+                this.state.payIsForeign  = true;
+                // The rate the INVOICE was booked at, not today's — that is
+                // what the FX difference is measured against.
+                this.state.payBookedRate = Number(this.state.record.currency_rate) || 1;
+                const expected = (parseFloat(this.state.payAmount) || 0) * this.state.payBookedRate;
+                this.state.payExpectedBase = expected.toFixed(2);
+            }
+        } catch (_) { /* currency lookup is advisory; payment still works */ }
+    }
+
+    // Derived preview so the user sees what will be booked before validating.
+    get effectiveRateText() {
+        const amt  = parseFloat(this.state.payAmount) || 0;
+        const recv = parseFloat(this.state.payReceivedBase);
+        if (!amt || !Number.isFinite(recv) || recv <= 0) return '—';
+        return (recv / amt).toFixed(6);
+    }
+
+    get fxDiffText() {
+        const amt  = parseFloat(this.state.payAmount) || 0;
+        const recv = parseFloat(this.state.payReceivedBase);
+        if (!amt || !Number.isFinite(recv) || recv <= 0) return '—';
+        const diff = recv - amt * (this.state.payBookedRate || 1);
+        const sign = diff < 0 ? 'loss' : 'gain';
+        return `${diff.toFixed(2)} ${this.state.payBaseCode} (${sign})`;
     }
 
     onClosePayDialog() {
@@ -1436,6 +1550,13 @@ class InvoiceFormView extends Component {
                     journal_id:   this.state.payJournalId,
                     amount:       amount,
                     memo:         this.state.payMemo,
+                    // Only sent for a foreign-currency invoice. The server
+                    // derives the effective rate from it and posts the
+                    // realised FX difference to 7900.
+                    ...(this.state.payIsForeign &&
+                        parseFloat(this.state.payReceivedBase) > 0
+                            ? { amount_received_base: parseFloat(this.state.payReceivedBase) }
+                            : {}),
                 });
             this.state.payDialogOpen = false;
             this.state.chatRefreshKey++;
@@ -5252,6 +5373,8 @@ class ERPSettingsView extends Component {
                         t-on-click="()=>this.setTab('email')">Email</button>
                 <button t-attf-class="erp-tab{{ state.activeTab==='countries'?' active':'' }}"
                         t-on-click="()=>this.loadCountriesTab()">Countries</button>
+                <button t-attf-class="erp-tab{{ state.activeTab==='precision'?' active':'' }}"
+                        t-on-click="()=>this.loadPrecisionTab()">Precision &amp; Currency</button>
             </div>
             <div class="erp-settings-body">
                 <t t-if="state.loading">
@@ -5409,6 +5532,66 @@ class ERPSettingsView extends Component {
                     </t>
 
                     <!-- Countries Tab -->
+                    <t t-if="state.activeTab==='precision'">
+                        <div class="erp-section">
+                            <div class="erp-section-title">Decimal Precision</div>
+                            <div class="erp-hint">
+                                Controls how many decimals are <b>displayed</b> and where amounts are
+                                rounded. Values are always stored at 6 decimal places, so changing
+                                these never alters stored data — only how it is shown.
+                                The invoice <b>total</b> always rounds to the currency's own decimals,
+                                whatever is set here.
+                            </div>
+                            <t t-if="state.precLoading"><div class="loading">Loading…</div></t>
+                            <t t-else="">
+                                <div class="erp-field-grid">
+                                    <t t-foreach="state.precisions" t-as="p" t-key="p.id">
+                                        <div class="erp-field-row">
+                                            <label class="erp-field-label" t-esc="p.name"/>
+                                            <input class="erp-field-input" type="number"
+                                                   min="0" max="6" step="1"
+                                                   t-att-value="p.digits"
+                                                   t-on-change="(ev)=>this.onPrecisionChange(p.id, ev.target.value)"/>
+                                        </div>
+                                    </t>
+                                </div>
+                            </t>
+                        </div>
+
+                        <div class="erp-section">
+                            <div class="erp-section-title">Currencies</div>
+                            <div class="erp-hint">
+                                Rate = how many <b>base currency</b> units equal 1 unit of this
+                                currency. With MYR as base, USD 4.70 means 1 USD = RM 4.70.
+                                Documents record the rate they were booked at, so changing a rate
+                                here never restates existing invoices.
+                            </div>
+                            <t t-if="state.currLoading"><div class="loading">Loading…</div></t>
+                            <t t-else="">
+                                <div class="erp-field-grid">
+                                    <t t-foreach="state.currencies" t-as="c" t-key="c.id">
+                                        <div class="erp-field-row">
+                                            <label class="erp-field-label">
+                                                <span t-esc="c.name"/>
+                                                <span class="erp-country-code" t-esc="' (' + (c.symbol||'') + ')'"/>
+                                                <t t-if="c.is_base"><span class="erp-saved-ok"> base</span></t>
+                                            </label>
+                                            <input class="erp-field-input" type="number" step="0.000001" min="0"
+                                                   t-att-value="c.rate"
+                                                   t-att-disabled="c.is_base ? true : undefined"
+                                                   t-on-change="(ev)=>this.onRateChange(c.id, ev.target.value)"/>
+                                        </div>
+                                    </t>
+                                </div>
+                            </t>
+                        </div>
+
+                        <div class="erp-save-row">
+                            <t t-if="state.precSaved"><span class="erp-saved-ok">Saved!</span></t>
+                            <t t-if="state.precError"><span class="error" t-esc="state.precError"/></t>
+                        </div>
+                    </t>
+
                     <t t-if="state.activeTab==='countries'">
                         <div class="erp-section">
                             <div class="erp-section-title">Supported Countries</div>
@@ -5513,6 +5696,13 @@ class ERPSettingsView extends Component {
             countrySearch:     '',
             countrySaved:      false,
             countrySaveError:  '',
+            // P2 — Precision & Currency tab
+            precisions:        [],
+            precLoading:       false,
+            currencies:        [],
+            currLoading:       false,
+            precSaved:         false,
+            precError:         '',
         });
         onMounted(() => this.loadCfg());
     }
@@ -5525,6 +5715,92 @@ class ERPSettingsView extends Component {
     }
 
     setTab(tab) { this.state.activeTab = tab; }
+
+    // ---- Precision & Currency tab (P2, docs/048 §2) ----------------
+    async loadPrecisionTab() {
+        this.state.activeTab = 'precision';
+        this.state.precError = '';
+        if (this.state.precisions.length === 0) {
+            this.state.precLoading = true;
+            try {
+                const rows = await RpcService.call('decimal.precision', 'search_read', [[]], {
+                    fields: ['id', 'name', 'digits'], order: 'name ASC'
+                });
+                this.state.precisions = Array.isArray(rows) ? rows : [];
+            } catch (e) {
+                this.state.precError = e.message || 'Failed to load precision settings';
+            } finally {
+                this.state.precLoading = false;
+            }
+        }
+        if (this.state.currencies.length === 0) {
+            this.state.currLoading = true;
+            try {
+                const [rows, companies] = await Promise.all([
+                    RpcService.call('res.currency', 'search_read', [[['active', '=', true]]], {
+                        fields: ['id', 'name', 'symbol', 'rate', 'decimal_places'], order: 'name ASC'
+                    }),
+                    RpcService.call('res.company', 'search_read', [[]], {
+                        fields: ['id', 'currency_id'], limit: 1
+                    }),
+                ]);
+                // Mark the base currency so its rate is shown read-only — it is
+                // 1.0 by definition and editing it would be meaningless.
+                const baseRaw = companies?.[0]?.currency_id;
+                const baseId  = Array.isArray(baseRaw) ? baseRaw[0] : baseRaw;
+                this.state.currencies = (Array.isArray(rows) ? rows : [])
+                    .map(c => ({ ...c, is_base: c.id === baseId }));
+            } catch (e) {
+                this.state.precError = e.message || 'Failed to load currencies';
+            } finally {
+                this.state.currLoading = false;
+            }
+        }
+    }
+
+    async onPrecisionChange(id, raw) {
+        const digits = parseInt(raw, 10);
+        const row = this.state.precisions.find(p => p.id === id);
+        this.state.precSaved = false;
+        this.state.precError = '';
+        if (!Number.isInteger(digits) || digits < 0 || digits > 6) {
+            this.state.precError = 'Decimals must be a whole number between 0 and 6.';
+            return;
+        }
+        const previous = row ? row.digits : digits;
+        if (row) row.digits = digits;               // optimistic
+        try {
+            await RpcService.call('decimal.precision', 'write', [[id], { digits }], {});
+            this.state.precSaved = true;
+            // The server drops its fields_get cache on write, so re-fetching
+            // metadata anywhere in the app now returns the new `digits`.
+            setTimeout(() => { this.state.precSaved = false; }, 4000);
+        } catch (e) {
+            if (row) row.digits = previous;         // roll back the optimistic edit
+            this.state.precError = e.message || 'Failed to save';
+        }
+    }
+
+    async onRateChange(id, raw) {
+        const rate = parseFloat(raw);
+        const row = this.state.currencies.find(c => c.id === id);
+        this.state.precSaved = false;
+        this.state.precError = '';
+        if (!Number.isFinite(rate) || rate <= 0) {
+            this.state.precError = 'Rate must be a positive number.';
+            return;
+        }
+        const previous = row ? row.rate : rate;
+        if (row) row.rate = rate;
+        try {
+            await RpcService.call('res.currency', 'write', [[id], { rate }], {});
+            this.state.precSaved = true;
+            setTimeout(() => { this.state.precSaved = false; }, 4000);
+        } catch (e) {
+            if (row) row.rate = previous;
+            this.state.precError = e.message || 'Failed to save';
+        }
+    }
 
     async loadCountriesTab() {
         this.state.activeTab = 'countries';
@@ -8692,6 +8968,31 @@ class ProductCategoryListView extends Component {
 }
 
 // ----------------------------------------------------------------
+// CUSTOM_VIEWS — models that replace ActionView entirely
+//
+// These take over the whole action regardless of list/form mode, so they
+// short-circuit before the mode switch below.
+//
+// A map, not a t-elif ladder. The ladder needed a new rung AND a new
+// `isXxxModel` getter per model — two edits in two places, in a 9,000-line
+// file, for what is a single key/value fact. Rental adds three models; at
+// that point the ladder is seven rungs of identical shape.
+//
+// Every class named here is defined above this point in the file.
+// ----------------------------------------------------------------
+const CUSTOM_VIEWS = {
+    'ir.erp.settings':    ERPSettingsView,
+    'ir.report.template': DocumentLayoutEditor,
+    'portal.partner':     PortalUserListView,
+    'res.groups':         GroupsListView,
+    // Rental — loaded from components/rental/ by index.html, before this
+    // file. Adding a screen is now one line here instead of a t-elif rung
+    // plus a matching isXxxModel getter.
+    'rental.unit':        RentalUnitGrid,
+    'rental.dashboard':   RentalDashboard,
+};
+
+// ----------------------------------------------------------------
 // ActionView — orchestrates list ↔ form switching
 // ----------------------------------------------------------------
 class ActionView extends Component {
@@ -8700,17 +9001,8 @@ class ActionView extends Component {
             <t t-if="state.loading">
                 <div class="loading">Loading views…</div>
             </t>
-            <t t-elif="isERPSettingsModel">
-                <ERPSettingsView/>
-            </t>
-            <t t-elif="isReportTemplateModel">
-                <DocumentLayoutEditor/>
-            </t>
-            <t t-elif="isPortalPartnerModel">
-                <PortalUserListView/>
-            </t>
-            <t t-elif="isGroupsModel">
-                <GroupsListView/>
+            <t t-elif="customView">
+                <t t-component="customView"/>
             </t>
             <t t-elif="state.mode === 'list'">
                 <t t-if="isCategoryModel">
@@ -8828,13 +9120,15 @@ class ActionView extends Component {
     get isStockWarehouseModel()  { return this.currentAction.res_model === 'stock.warehouse'; }
     get isProductModel()         { return this.currentAction.res_model === 'product.product'; }
     get isBomModel()             { return this.currentAction.res_model === 'mrp.bom'; }
-    get isReportTemplateModel()  { return this.currentAction.res_model === 'ir.report.template'; }
-    get isERPSettingsModel()     { return this.currentAction.res_model === 'ir.erp.settings'; }
     get isPartnerModel()         { return this.currentAction.res_model === 'res.partner'; }
-    get isPortalPartnerModel()   { return this.currentAction.res_model === 'portal.partner'; }
     get isUsersModel()           { return this.currentAction.res_model === 'res.users'; }
-    get isGroupsModel()          { return this.currentAction.res_model === 'res.groups'; }
     get isCategoryModel()        { return this.currentAction.res_model === 'product.category'; }
+
+    // Whole-action takeover, or null to fall through to the mode switch.
+    // Replaces isERPSettingsModel / isReportTemplateModel /
+    // isPortalPartnerModel / isGroupsModel — one lookup instead of four
+    // getters that differed only in the string they compared against.
+    get customView()             { return CUSTOM_VIEWS[this.currentAction.res_model] || null; }
 
     setContactFilter(f) { this.state.contactFilter = f; }
 

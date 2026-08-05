@@ -3,6 +3,8 @@
 #include "infrastructure/DbConnection.hpp"
 #include "infrastructure/HttpServer.hpp"
 #include "infrastructure/JsonRpcDispatcher.hpp"
+#include "CacheInvalidation.hpp"
+#include "IrCron.hpp"
 #include "infrastructure/MigrationRunner.hpp"
 #include "infrastructure/SessionManager.hpp"
 #include "infrastructure/WebSocketServer.hpp"
@@ -152,6 +154,17 @@ public:
                                                    cfg.http.secureCookies,
                                                    cfg.http.devMode,
                                                    cfg.http.trustedProxies);
+
+        // P2: give ViewModels a way to drop the dispatcher's caches after a
+        // write. Without this the fields_get cache (300 s) keeps serving stale
+        // `digits` after a precision change, and the currency cache (60 s)
+        // stale rates. Captures a raw pointer deliberately — the dispatcher is
+        // owned by this Container and outlives every ViewModel.
+        {
+            auto* rpcPtr = rpc.get();
+            core::CacheInvalidation::onFieldsGet([rpcPtr] { rpcPtr->invalidateFieldsGetCache(); });
+            core::CacheInvalidation::onCurrency ([rpcPtr] { rpcPtr->invalidateCurrencyCache();  });
+        }
     }
 
     // ----------------------------------------------------------
@@ -242,6 +255,10 @@ public:
 
         // Stage 4 — HTTP: WebSocket upgrade routes
         ws->registerRoutes(*http);
+
+        // Stage 5 — ARCH-1: refuse to start if any ViewModel mutates outside
+        // the audited path. Last, so every module has finished registering.
+        verifyViewModelCompliance_();
     }
 
     // ----------------------------------------------------------
@@ -346,12 +363,88 @@ private:
      */
     void startSessionEviction_() {
         auto sess = sessions;
-        drogon::app().getLoop()->runEvery(60.0, [sess] {
+
+        // P5: session GC moved onto ir.cron. It was the first user of the bare
+        // runEvery() timer, so it is the natural first job — and running a real
+        // job through the scheduler is how we know the scheduler works.
+        if (core::IrCron::ready()) {
+            core::IrCron::instance().registerJob("session.gc", [sess] {
+                const std::size_t n = sess->evictExpired();
+                LOG_INFO << "[sessions] evicted " << n
+                         << " expired; " << sess->size() << " live";
+            });
+            core::IrCron::instance().start(30.0);
+        }
+
+        // Direct timer retained as a safety net, at a longer interval.
+        // Session eviction is a memory-exhaustion control (S-43); it must keep
+        // working even if someone deactivates its cron row.
+        drogon::app().getLoop()->runEvery(300.0, [sess] {
             const std::size_t n = sess->evictExpired();
             if (n > 0)
                 LOG_INFO << "[sessions] evicted " << n
-                         << " expired; " << sess->size() << " live";
+                         << " expired (safety net); " << sess->size() << " live";
         });
+    }
+
+    /**
+     * @brief Refuse to boot if any ViewModel mutates outside the audited path.
+     *        (P6 / ARCH-1)
+     *
+     * S-35, S-37, S-38 and S-47 were four instances of one defect: behaviour
+     * wired into GenericViewModel silently absent from hand-written
+     * ViewModels. Each was found by review, months apart, after shipping.
+     * This turns that class of defect into a startup failure — the next
+     * module that registers create/write/unlink without REGISTER_MUTATOR
+     * cannot reach production.
+     *
+     * The allowlist is deliberately explicit and named. Adding to it is a
+     * decision someone has to write down and justify, not a default.
+     */
+    void verifyViewModelCompliance_() {
+        // ViewModels permitted to mutate outside the audited path, each with
+        // the reason. An entry here means "audited elsewhere or audit is not
+        // meaningful", never "we did not get round to it".
+        static const std::unordered_map<std::string, const char*> kAllowed = {
+            // (empty — every mutating ViewModel currently uses REGISTER_MUTATOR)
+        };
+
+        std::vector<std::string> violations;
+        for (const auto& model : viewModels->registeredNames()) {
+            std::shared_ptr<core::IViewModel> vm;
+            try {
+                vm = viewModels->create(model, core::Lifetime::Transient);
+            } catch (const std::exception&) {
+                continue;   // not constructible here; boot will surface it elsewhere
+            }
+            if (!vm) continue;
+
+            const auto unguarded = vm->unguardedMutators();
+            if (unguarded.empty()) continue;
+            if (kAllowed.count(model)) continue;
+
+            std::string methods;
+            for (const auto& m : unguarded) {
+                if (!methods.empty()) methods += ", ";
+                methods += m;
+            }
+            violations.push_back(model + " (" + methods + ")");
+        }
+
+        if (!violations.empty()) {
+            std::string msg =
+                "ViewModel compliance check failed (ARCH-1).\n"
+                "These ViewModels register mutating methods without "
+                "REGISTER_MUTATOR, so their changes would not be audited:\n";
+            for (const auto& v : violations) msg += "    - " + v + "\n";
+            msg += "Use REGISTER_MUTATOR(\"write\", handler) instead of "
+                   "REGISTER_METHOD, or add the model to kAllowed in "
+                   "Container::verifyViewModelCompliance_() with a reason.";
+            throw std::runtime_error(msg);
+        }
+
+        LOG_INFO << "[arch] ViewModel compliance OK — "
+                 << viewModels->registeredNames().size() << " ViewModels checked";
     }
 
     void runMigrations_() {

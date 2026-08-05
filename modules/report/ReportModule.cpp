@@ -22,6 +22,7 @@
 #include "DbConnection.hpp"
 #include "SessionManager.hpp"
 #include "ProcessRunner.hpp"
+#include "Money.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <drogon/drogon.h>
@@ -143,9 +144,27 @@ static std::string fmtMoney(double v) {
     return s;
 }
 
+// P2: every money/price/quantity column the reports read is BIGINT
+// micro-units (migrations 901–970). These two helpers are the single funnel
+// for all report number formatting, so converting here covers every
+// document template at once — nothing downstream needs to know.
+//
+// Note some queries select `amount_total::TEXT`, which arrives as a string
+// rather than an int; reportMicros handles both.
+static double reportMicros(const pqxx::field& f) {
+    if (f.is_null()) return 0.0;
+    try {
+        return odoo::core::Money::fromMicros(f.as<long long>(0)).toJson();
+    } catch (...) {
+        // ::TEXT-cast columns come through as a decimal string of micro-units
+        try { return odoo::core::Money::parse(f.c_str()).toJson(); }
+        catch (...) { return 0.0; }
+    }
+}
+
 static std::string fmtMoneyField(const pqxx::field& f) {
     if (f.is_null()) return "0.00";
-    try { return fmtMoney(f.as<double>()); } catch (...) { return f.c_str(); }
+    return fmtMoney(reportMicros(f));
 }
 
 // Precision-aware format (comma-thousands, variable decimals)
@@ -162,7 +181,7 @@ static std::string fmtPrec(double v, int prec) {
 }
 static std::string fmtPrecF(const pqxx::field& f, int prec) {
     if (f.is_null()) return "0." + std::string(std::max(0, prec), '0');
-    try { return fmtPrec(f.as<double>(), prec); } catch (...) { return f.c_str(); }
+    return fmtPrec(reportMicros(f), prec);   // P2: micro-units → major units
 }
 
 // Convert YYYY-MM-DD to DD/MM/YYYY
@@ -554,7 +573,7 @@ public:
         REGISTER_METHOD("search_read",     handleSearchRead)
         REGISTER_METHOD("web_search_read", handleSearchRead)
         REGISTER_METHOD("read",            handleRead)
-        REGISTER_METHOD("write",           handleWrite)
+        REGISTER_MUTATOR("write",           handleWrite)
         REGISTER_METHOD("fields_get",      handleFieldsGet)
     }
 
@@ -784,7 +803,6 @@ private:
         // S-47: document templates are the injection surface behind S-44 —
         // whoever edits template_html controls what the PDF renderer parses.
         // Template edits must be attributable.
-        audit_("write", ids, extractContext_(call));
         return true;
     }
 
@@ -969,7 +987,9 @@ static std::string renderDoc_(
                         "SELECT COALESCE(aml.name,'') AS product_name, "
                         "COALESCE(aml.quantity, 0) AS qty, "
                         "COALESCE(aml.price_unit, 0) AS price_unit, "
-                        "COALESCE(NULLIF(aml.price_unit,0) * aml.quantity, aml.debit, 0) AS subtotal, "
+                        // P2: price_unit x quantity is micros x micros = scale 12;
+                        // divide by 1e6. aml.debit is already scale 6.
+                        "COALESCE(NULLIF(aml.price_unit,0) * aml.quantity / 1000000, aml.debit, 0) AS subtotal, "
                         "COALESCE(NULLIF(aml.display_type,''),'product') AS line_type "
                         "FROM account_move_line aml "
                         "JOIN account_account aa ON aa.id = aml.account_id "

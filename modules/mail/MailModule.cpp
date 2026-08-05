@@ -76,7 +76,7 @@ public:
     {
         REGISTER_METHOD("search_read",     handleSearchRead)
         REGISTER_METHOD("web_search_read", handleSearchRead)
-        REGISTER_METHOD("create",          handleCreate)
+        REGISTER_MUTATOR("create",          handleCreate)
         REGISTER_METHOD("fields_get",      handleFieldsGet)
     }
 
@@ -182,7 +182,6 @@ private:
         auto row = txn.exec("SELECT lastval()");
         int newId = row[0][0].as<int>();
         txn.commit();
-        audit_("create", newId, extractContext_(call));   // S-47
         return newId;
     }
 

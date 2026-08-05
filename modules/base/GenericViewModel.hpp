@@ -42,9 +42,9 @@ public:
         REGISTER_METHOD("web_search_read", handleSearchRead)
         REGISTER_METHOD("read",            handleRead)
         REGISTER_METHOD("web_read",        handleRead)
-        REGISTER_METHOD("create",          handleCreate)
-        REGISTER_METHOD("write",           handleWrite)
-        REGISTER_METHOD("unlink",          handleUnlink)
+        REGISTER_MUTATOR("create",          handleCreate)
+        REGISTER_MUTATOR("write",           handleWrite)
+        REGISTER_MUTATOR("unlink",          handleUnlink)
         REGISTER_METHOD("fields_get",      handleFieldsGet)
         REGISTER_METHOD("search_count",    handleSearchCount)
         REGISTER_METHOD("search",          handleSearch)
@@ -74,20 +74,15 @@ protected:
         TModel proto(db_);
         const auto ctx = extractContext_(call);
         proto.setUserContext(ctx);
-        const auto newId = proto.create(v);
-        if (infrastructure::AuditService::ready()) {
-            // proto.create() returns int directly; convert to json happens on return
-            int id = 0;
-            if constexpr (std::is_integral_v<std::decay_t<decltype(newId)>>) {
-                id = static_cast<int>(newId);
-            } else if (newId.is_number_integer()) {
-                id = newId.template get<int>();
-            }
-            if (id > 0)
-                infrastructure::AuditService::instance().log(
-                    TModel::MODEL_NAME, "create", {id}, ctx.uid);
-        }
-        return newId;
+        // No AuditService::log() here. REGISTER_MUTATOR already audits —
+        // registerMutator_ calls audit_("create", newId, ctx) around the
+        // handler — so logging again produced TWO rows for every create.
+        //
+        // This is the P6 leftover (docs/050): the registrations were
+        // converted to REGISTER_MUTATOR but the manual log() calls inside
+        // the handlers were not removed. It was fixed in the individual
+        // modules and missed here, in the template that backs most models.
+        return proto.create(v);
     }
     nlohmann::json handleWrite(const CallKwArgs& call) {
         const auto v = call.arg(1);
@@ -95,22 +90,17 @@ protected:
         TModel proto(db_);
         const auto ctx = extractContext_(call);
         proto.setUserContext(ctx);
-        const auto result = proto.write(call.ids(), v);
-        if (infrastructure::AuditService::ready() && !call.ids().empty())
-            infrastructure::AuditService::instance().log(
-                TModel::MODEL_NAME, "write", call.ids(), ctx.uid);
-        return result;
+        // Audited by REGISTER_MUTATOR — see handleCreate.
+        return proto.write(call.ids(), v);
     }
     nlohmann::json handleUnlink(const CallKwArgs& call) {
         TModel proto(db_);
         const auto ctx = extractContext_(call);
         proto.setUserContext(ctx);
-        const auto ids = call.ids();  // capture before unlink
-        const auto result = proto.unlink(ids);
-        if (infrastructure::AuditService::ready() && !ids.empty())
-            infrastructure::AuditService::instance().log(
-                TModel::MODEL_NAME, "unlink", ids, ctx.uid);
-        return result;
+        // Audited by REGISTER_MUTATOR, which captures the ids BEFORE the
+        // handler runs — necessary for unlink, since afterwards there is
+        // nothing left to read them from.
+        return proto.unlink(call.ids());
     }
     nlohmann::json handleFieldsGet(const CallKwArgs& call) {
         TModel proto(db_);

@@ -132,19 +132,117 @@ const Portal = (() => {
         document.getElementById('login-screen').style.display = 'none';
         document.getElementById('portal-app').style.display = 'block';
         document.getElementById('user-name').textContent = _user?.name || '';
-        showSection('invoices');
+        // Land on My Units: for a storage tenant that is the answer to
+        // "what am I renting and what do I owe", which is why they logged
+        // in. Invoices are one click away.
+        showSection('units');
     }
 
     function showSection(name) {
-        ['invoices', 'orders', 'deliveries', 'products'].forEach(s => {
-            document.getElementById('section-' + s).style.display = s === name ? '' : 'none';
+        ['units', 'invoices', 'orders', 'deliveries', 'products'].forEach(s => {
+            const el = document.getElementById('section-' + s);
+            if (el) el.style.display = s === name ? '' : 'none';
             const nav = document.querySelector(`.nav-item[data-section="${s}"]`);
             if (nav) nav.classList.toggle('active', s === name);
         });
+        if (name === 'units')      loadUnits();
         if (name === 'invoices')   loadInvoices();
         if (name === 'orders')     loadOrders();
         if (name === 'deliveries') loadDeliveries();
         if (name === 'products')   loadProducts();
+    }
+
+    // ── My Units ──────────────────────────────────────────────────
+    // docs/046 §7: one balance figure with overdue called out, then a
+    // card per unit. Deliberately no charts — a customer wants to know
+    // what they rent and what they owe.
+
+    // escHtml is declared further down; function declarations hoist, so
+    // it is usable here. Not duplicated — one escaper for the file.
+    const esc = s => escHtml(s == null ? '' : s);
+
+    async function loadUnits() {
+        const cards = document.getElementById('units-cards');
+        const summary = document.getElementById('units-summary');
+        cards.innerHTML = '<div class="empty-state">Loading…</div>';
+        summary.innerHTML = '';
+        try {
+            const d = await api('GET', '/units');
+            renderUnits(d);
+        } catch (e) {
+            cards.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`;
+        }
+    }
+
+    function renderUnits(d) {
+        const s = d.summary || {};
+        const overdue = Number(s.overdue || 0);
+        const summary = document.getElementById('units-summary');
+
+        // Overdue carries an icon AND a label, never colour alone.
+        const overdueBlock = overdue > 0
+            ? `<div class="bal-overdue"><div class="k">⚠ Overdue</div>
+                 <div class="v">${fmtAmount(overdue)}</div></div>`
+            : `<div class="bal-clear"><div class="k">✓ Overdue</div>
+                 <div class="v">None</div></div>`;
+
+        summary.innerHTML = `
+          <div class="bal-hero">
+            <div class="bal-main">
+              <div class="bal-label">Balance due</div>
+              <div class="bal-value">${fmtAmount(s.balance_due)}</div>
+              ${s.next_due_date
+                  ? `<div class="uc-per">Next payment due ${fmtDate(s.next_due_date)}</div>`
+                  : `<div class="uc-per">Nothing outstanding</div>`}
+            </div>
+            <div class="bal-side">
+              ${overdueBlock}
+              <div><div class="k">Units</div><div class="v">${s.count || 0}</div></div>
+              <div><div class="k">Per month</div>
+                   <div class="v">${fmtAmount(s.monthly_total)}</div></div>
+            </div>
+          </div>`;
+
+        const cards = document.getElementById('units-cards');
+        const units = d.units || [];
+        if (!units.length) {
+            cards.innerHTML =
+                '<div class="empty-state"><div class="icon">📦</div>' +
+                'You are not renting any units.</div>';
+            return;
+        }
+
+        cards.innerHTML = '<div class="unit-cards">' + units.map(u => {
+            const per = u.billing_months > 1 ? `every ${u.billing_months} months` : 'per month';
+            // A walk-in is billed by hand, so promising a next date would
+            // be a claim the system cannot keep.
+            const next = u.recurring && u.next_period
+                ? `<dt>Next period</dt><dd>${fmtDate(u.next_period)}</dd>` : '';
+            const badge = u.recurring
+                ? '<span class="uc-badge">Auto-billed</span>'
+                : '<span class="uc-badge manual">Billed manually</span>';
+            return `
+              <div class="unit-card">
+                <div class="uc-top">
+                  <div>
+                    <div class="uc-code">${esc(u.code || '—')}</div>
+                    <div class="uc-type">${esc(u.type || u.name || '')}</div>
+                  </div>
+                  <div style="text-align:right">
+                    <div class="uc-rate">${fmtAmount(u.net_rate)}</div>
+                    <div class="uc-per">${per}</div>
+                  </div>
+                </div>
+                ${badge}
+                <dl>
+                  ${u.zone ? `<dt>Zone</dt><dd>${esc(u.zone)}</dd>` : ''}
+                  <dt>Since</dt><dd>${fmtDate(u.since)}</dd>
+                  ${u.until ? `<dt>Until</dt><dd>${fmtDate(u.until)}</dd>` : ''}
+                  ${next}
+                  <dt>Status</dt><dd>${esc(u.state)}</dd>
+                </dl>
+              </div>`;
+        }).join('') + '</div>';
     }
 
     // ── Invoices ──────────────────────────────────────────────────

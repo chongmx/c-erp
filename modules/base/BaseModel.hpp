@@ -4,6 +4,7 @@
 #include "Domain.hpp"
 #include "DbConnection.hpp"
 #include "RuleEngine.hpp"
+#include "Money.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <memory>
@@ -446,13 +447,24 @@ private:
             val.is_array() && !val.empty() && val[0].is_number_integer())
             return nlohmann::json(val[0].get<int>());
 
+        // P2 write boundary: incoming JSON carries MAJOR units; the column is
+        // BIGINT micro-units. Convert here so every write path — create(),
+        // write(), CSV import — is covered in one place. Money::fromJson
+        // rounds at scale 6, so 0.1 arriving as 0.09999999999999999 still
+        // lands on exactly 100000 micros.
+        if (fdef.scaled && val.is_number())
+            return nlohmann::json(core::Money::fromJson(val.get<double>()).toDb());
+
         return val;
     }
 
     static void appendParam_(pqxx::params& p, const nlohmann::json& v) {
         if (v.is_null())    p.append(nullptr);
         else if (v.is_boolean()) p.append(v.get<bool>());
-        else if (v.is_number_integer()) p.append(v.get<int>());
+        // P2: must be long long, not int. Scaled columns arrive here as
+        // micro-units, so RM 2,148 is already 2,148,000,000 — past INT32_MAX.
+        // get<int>() would have silently truncated every amount above ~2,147.
+        else if (v.is_number_integer()) p.append(v.get<long long>());
         else if (v.is_number_float())   p.append(v.get<double>());
         else if (v.is_string()) p.append(v.get<std::string>());
         else p.append(v.dump());
@@ -466,7 +478,19 @@ private:
         return s + "}";
     }
 
-    static nlohmann::json rowsToJson_(const pqxx::result& res) {
+    /**
+     * @brief P2 read boundary: BIGINT micro-units → major units for JSON.
+     *
+     * After migrations 901–960 a money column is BIGINT, so the OID dispatch
+     * below would emit 250000000 where the client expects 250.00 — every
+     * amount wrong by a factor of a million. Converting here keeps the wire
+     * format identical to before the migration, which is what lets the 69
+     * frontend money sites stay untouched (docs/047 §3).
+     *
+     * Deliberately NOT static: it needs the field registry to know which
+     * columns are scaled.
+     */
+    nlohmann::json rowsToJson_(const pqxx::result& res) const {
         // PostgreSQL built-in OIDs used for zero-exception type dispatch
         static constexpr pqxx::oid OID_BOOL    = 16;
         static constexpr pqxx::oid OID_INT2    = 21;
@@ -490,6 +514,11 @@ private:
                     continue;
                 }
                 if (oid == OID_INT2 || oid == OID_INT4 || oid == OID_INT8 || oid == OID_OID) {
+                    // P2: a scaled column is micro-units — return major units.
+                    if (oid == OID_INT8 && fieldRegistry_.isScaled(col)) {
+                        obj[col] = core::Money::fromMicros(field.as<long long>()).toJson();
+                        continue;
+                    }
                     obj[col] = field.as<long long>(); continue;
                 }
                 if (oid == OID_FLOAT4 || oid == OID_FLOAT8 || oid == OID_NUMERIC) {

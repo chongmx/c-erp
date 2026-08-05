@@ -7,6 +7,7 @@
     <!-- OWL — served locally from web/static/lib/ -->
     <script src="/lib/owl.iife.js"></script>
     <link rel="stylesheet" href="/src/app.css">
+    <link rel="stylesheet" href="/src/components/rental/rental.css">
 </head>
 <body>
 <div id="app"></div>
@@ -14,6 +15,10 @@
 <script src="/src/components/LoginPage.js"></script>
 <script src="/src/components/UserMenu.js"></script>
 <script src="/src/components/DatePicker.js"></script>
+<!-- Rental components load BEFORE app.js, which is what lets app.js
+     reference RentalUnitGrid in its CUSTOM_VIEWS map at definition time. -->
+<script src="/src/components/rental/RentalUnitGrid.js"></script>
+<script src="/src/components/rental/RentalDashboard.js"></script>
 <script src="/src/app.js"></script>
 </body>
 </html>

@@ -13,6 +13,35 @@ cmake --build ./build
 rm -rf ./build
 ```
 
+## Test commands (P7)
+
+```bash
+# Everything — unit + integration. This is what CI runs; exit 0 means green.
+./scripts/run_tests.sh
+
+# Unit only: no database, no server, runs in milliseconds
+./scripts/run_tests.sh --unit
+
+# One suite while iterating on it
+./scripts/run_tests.sh --unit --filter Money
+./build/erp_tests Tax
+```
+
+`erp_tests` is **not** part of the default build target — `cmake --build ./build`
+stays the fast path. `run_tests.sh` builds it explicitly.
+
+Two tiers, and both are load-bearing:
+
+- **unit** (`tests/*.cpp`, registered with `ERP_TEST`) — pure functions only.
+  Never let these acquire a database dependency.
+- **integration** (`scripts/verify_*.sh`) — drive the real HTTP API against real
+  PostgreSQL. These catch what unit tests structurally cannot: migrations, field
+  registration, SQL, and whether the wiring between them is connected at all.
+
+Writing a new integration script: end with `All checks passed.` or
+`*** FAILURES ***`. The runner treats a missing verdict as a failure, so a script
+that dies early can never be scored as a pass.
+
 ## Project structure
 
 - `main.cpp` — entry point, server bootstrap

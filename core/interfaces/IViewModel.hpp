@@ -202,6 +202,15 @@ public:
      * @brief Return true if this ViewModel can handle the given method.
      * Default: linear scan of supportedMethods(). Override for O(1) lookup.
      */
+    /**
+     * @brief Mutating methods NOT registered through the audited path. (P6)
+     *
+     * Default {} so a ViewModel that does not derive from BaseViewModel is
+     * treated as compliant rather than failing boot for a reason it cannot
+     * act on. BaseViewModel overrides this with the real answer.
+     */
+    virtual std::vector<std::string> unguardedMutators() const { return {}; }
+
     virtual bool supportsMethod(const std::string& method) const {
         for (const auto& m : supportedMethods())
             if (m == method) return true;

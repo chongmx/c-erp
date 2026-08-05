@@ -3,6 +3,7 @@
 // =============================================================
 #include "ProductModule.hpp"
 #include "BaseModel.hpp"
+#include "DecimalPrecision.hpp"
 #include "BaseView.hpp"
 #include "GenericViewModel.hpp"
 #include "BaseViewModel.hpp"
@@ -161,6 +162,11 @@ public:
         fieldRegistry_.add({"purchase_lead_time",    FieldType::Float, "Purchase Lead Time"});
         fieldRegistry_.add({"purchase_line_warn",    FieldType::Char,  "Purchase Warning"});
         fieldRegistry_.add({"purchase_line_warn_msg",FieldType::Text,  "Purchase Warning Message"});
+        // P2: BIGINT micro-units (migration 950). purchase_lead_time, weight and
+        // volume stay NUMERIC — they are not money and were not migrated.
+        fieldRegistry_.setPrecision(core::DecimalPrecision::kProductPrice,
+                                    {"list_price", "standard_price"});
+        fieldRegistry_.markScaled({"list_price", "standard_price"});
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -390,9 +396,9 @@ public:
         REGISTER_METHOD("web_search_read", handleSearchRead)
         REGISTER_METHOD("read",            handleRead)
         REGISTER_METHOD("web_read",        handleRead)
-        REGISTER_METHOD("create",          handleCreate)
-        REGISTER_METHOD("write",           handleWrite)
-        REGISTER_METHOD("unlink",          handleUnlink)
+        REGISTER_MUTATOR("create",          handleCreate)
+        REGISTER_MUTATOR("write",           handleWrite)
+        REGISTER_MUTATOR("unlink",          handleUnlink)
         REGISTER_METHOD("fields_get",      handleFieldsGet)
         REGISTER_METHOD("name_search",     handleNameSearch)
         REGISTER_METHOD("search",          handleSearch)
@@ -502,7 +508,6 @@ public:
         }
         txn.commit();
         int newId = r[0]["id"].as<int>();
-        audit_("create", newId, extractContext_(call));   // S-47
         return nlohmann::json(newId);
     }
 
@@ -557,7 +562,6 @@ public:
             }
         }
         txn.commit();
-        audit_("write", ids, extractContext_(call));   // S-47
         return nlohmann::json(true);
     }
 
@@ -590,7 +594,6 @@ public:
             txn.exec("DELETE FROM product_category WHERE id=$1", pqxx::params{id});
         }
         txn.commit();
-        audit_("unlink", ids, extractContext_(call));   // S-47
         return nlohmann::json(true);
     }
 

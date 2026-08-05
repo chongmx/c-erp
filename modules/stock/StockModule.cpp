@@ -26,6 +26,8 @@
 #include "IModule.hpp"
 #include "Factories.hpp"
 #include "BaseModel.hpp"
+#include "IrSequence.hpp"
+#include "DecimalPrecision.hpp"
 #include "BaseView.hpp"
 #include "BaseViewModel.hpp"
 #include "GenericViewModel.hpp"
@@ -275,6 +277,9 @@ public:
         fieldRegistry_.add({"location_dest_id", FieldType::Many2one,"To",               true,  false, true,  false, "stock.location"});
         fieldRegistry_.add({"company_id",       FieldType::Many2one,"Company",           false, false, true,  false, "res.company"});
         fieldRegistry_.add({"origin",           FieldType::Char,    "Source Document"});
+        fieldRegistry_.setPrecision(core::DecimalPrecision::kStock,
+                                    {"product_uom_qty", "quantity"});
+        fieldRegistry_.markScaled({"product_uom_qty", "quantity"});   // P2: migration 940
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -395,9 +400,9 @@ public:
         REGISTER_METHOD("web_search_read", handleSearchRead)
         REGISTER_METHOD("read",            handleRead)
         REGISTER_METHOD("web_read",        handleRead)
-        REGISTER_METHOD("create",          handleCreate)
-        REGISTER_METHOD("write",           handleWrite)
-        REGISTER_METHOD("unlink",          handleUnlink)
+        REGISTER_MUTATOR("create",          handleCreate)
+        REGISTER_MUTATOR("write",           handleWrite)
+        REGISTER_MUTATOR("unlink",          handleUnlink)
         REGISTER_METHOD("fields_get",      handleFieldsGet)
         REGISTER_METHOD("search_count",    handleSearchCount)
         REGISTER_METHOD("search",          handleSearch)
@@ -494,8 +499,6 @@ private:
         const auto ctx = extractContext_(call);
         proto.setUserContext(ctx);
         const int newId = proto.create(v);
-        if (AuditService::ready() && newId > 0)
-            AuditService::instance().log("stock.picking", "create", {newId}, ctx.uid);
         return newId;
     }
     nlohmann::json handleWrite(const CallKwArgs& call) {
@@ -505,8 +508,6 @@ private:
         const auto ctx = extractContext_(call);
         proto.setUserContext(ctx);
         const auto result = proto.write(call.ids(), v);
-        if (AuditService::ready() && !call.ids().empty())
-            AuditService::instance().log("stock.picking", "write", call.ids(), ctx.uid);
         return result;
     }
     nlohmann::json handleUnlink(const CallKwArgs& call) {
@@ -515,8 +516,6 @@ private:
         proto.setUserContext(ctx);
         const auto ids = call.ids();
         const auto result = proto.unlink(ids);
-        if (AuditService::ready() && !ids.empty())
-            AuditService::instance().log("stock.picking", "unlink", ids, ctx.uid);
         return result;
     }
     nlohmann::json handleFieldsGet(const CallKwArgs& call) {
@@ -582,19 +581,17 @@ private:
             auto pt = txn.exec(
                 "SELECT code, sequence_prefix FROM stock_picking_type WHERE id=$1",
                 pqxx::params{ptId});
-            std::string seqName  = "stock_in_seq";
-            std::string prefix   = "WH/IN/";
+            // P4: one ir.sequence per picking direction. The prefix and
+            // padding now live in the sequence record rather than here, so an
+            // operator can change "WH/OUT/" without a code change.
+            std::string seqCode = "stock.picking.in";
             if (!pt.empty()) {
                 const std::string code = pt[0]["code"].c_str();
-                if (code == "outgoing") { seqName = "stock_out_seq"; prefix = "WH/OUT/"; }
-                else if (code == "internal") { seqName = "stock_int_seq"; prefix = "WH/INT/"; }
+                if      (code == "outgoing") seqCode = "stock.picking.out";
+                else if (code == "internal") seqCode = "stock.picking.int";
             }
-
-            // Generate sequence number
-            auto seqRes = txn.exec("SELECT nextval('" + seqName + "')");
-            const long long seq = seqRes[0][0].as<long long>();
-            const std::string year = txn.exec("SELECT to_char(now(),'YYYY')")[0][0].c_str();
-            const std::string ref  = prefix + year + "/" + std::string(4 - std::min(4, (int)std::to_string(seq).size()), '0') + std::to_string(seq);
+            const std::string ref =
+                core::IrSequence::instance().nextByCode(txn, seqCode);
 
             txn.exec(
                 "UPDATE stock_picking SET state='confirmed', name=$1, write_date=now() WHERE id=$2",
@@ -827,9 +824,9 @@ public:
         REGISTER_METHOD("web_search_read", handleSearchRead)
         REGISTER_METHOD("read",            handleRead)
         REGISTER_METHOD("web_read",        handleRead)
-        REGISTER_METHOD("create",          handleCreate)
-        REGISTER_METHOD("write",           handleWrite)
-        REGISTER_METHOD("unlink",          handleUnlink)
+        REGISTER_MUTATOR("create",          handleCreate)
+        REGISTER_MUTATOR("write",           handleWrite)
+        REGISTER_MUTATOR("unlink",          handleUnlink)
         REGISTER_METHOD("fields_get",      handleFieldsGet)
         REGISTER_METHOD("search_count",    handleSearchCount)
         REGISTER_METHOD("search",          handleSearch)
@@ -906,8 +903,11 @@ private:
             obj["name"]            = row["name"].is_null()    ? nlohmann::json(false) : nlohmann::json(row["name"].c_str());
             obj["state"]           = row["state"].is_null()   ? nlohmann::json(false) : nlohmann::json(row["state"].c_str());
             obj["origin"]          = row["origin"].is_null()  ? nlohmann::json(false) : nlohmann::json(row["origin"].c_str());
-            obj["product_uom_qty"] = row["product_uom_qty"].is_null() ? 0.0 : row["product_uom_qty"].as<double>();
-            obj["quantity"]        = row["quantity"].is_null()        ? 0.0 : row["quantity"].as<double>();
+            // P2: both are BIGINT micro-units (migration 940)
+            obj["product_uom_qty"] = row["product_uom_qty"].is_null() ? 0.0
+                : core::Money::fromMicros(row["product_uom_qty"].as<long long>(0)).toJson();
+            obj["quantity"]        = row["quantity"].is_null() ? 0.0
+                : core::Money::fromMicros(row["quantity"].as<long long>(0)).toJson();
             obj["picking_id"]       = m2o(row, "picking_id",       "picking_name");
             obj["product_id"]       = m2o(row, "product_id",       "product_name");
             obj["product_uom_id"]   = m2o(row, "product_uom_id",   "product_uom_name");
@@ -931,8 +931,6 @@ private:
         const auto ctx = extractContext_(call);
         proto.setUserContext(ctx);
         const int newId = proto.create(v);
-        if (AuditService::ready() && newId > 0)
-            AuditService::instance().log("stock.move", "create", {newId}, ctx.uid);
         return newId;
     }
     nlohmann::json handleWrite(const CallKwArgs& call) {
@@ -942,8 +940,6 @@ private:
         const auto ctx = extractContext_(call);
         proto.setUserContext(ctx);
         const auto result = proto.write(call.ids(), v);
-        if (AuditService::ready() && !call.ids().empty())
-            AuditService::instance().log("stock.move", "write", call.ids(), ctx.uid);
         return result;
     }
     nlohmann::json handleUnlink(const CallKwArgs& call) {
@@ -952,8 +948,6 @@ private:
         proto.setUserContext(ctx);
         const auto ids = call.ids();
         const auto result = proto.unlink(ids);
-        if (AuditService::ready() && !ids.empty())
-            AuditService::instance().log("stock.move", "unlink", ids, ctx.uid);
         return result;
     }
     nlohmann::json handleFieldsGet(const CallKwArgs& call) {

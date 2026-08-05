@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace odoo::core {
@@ -38,6 +39,49 @@ namespace odoo::core {
  */
 #define REGISTER_METHOD(method_name, handler)                              \
     registerMethod_(method_name,                                           \
+        [this](const ::odoo::core::CallKwArgs& call) -> nlohmann::json {  \
+            return this->handler(call);                                    \
+        });
+
+
+// ============================================================
+// REGISTER_MUTATOR macro  (P6 / ARCH-1)
+// ============================================================
+/**
+ * @brief Register a create / write / unlink handler with audit applied
+ *        automatically.
+ *
+ * WHY THIS EXISTS
+ *   S-35 (record rules), S-37 (audit), S-38 (CSV rules) and S-47
+ *   (identity audit) were four instances of ONE defect: behaviour wired
+ *   into GenericViewModel is silently absent from hand-written
+ *   ViewModels. Each was retrofitted case by case, and each retrofit
+ *   missed ViewModels written earlier. Four occurrences is enough to fix
+ *   the pattern rather than the instances.
+ *
+ * WHAT IT GUARANTEES
+ *   The audit entry is written after the handler succeeds, with the
+ *   right model name and the acting uid, without the author having to
+ *   remember. A handler that throws writes no audit row — correct, since
+ *   nothing changed.
+ *
+ * WHAT IT DOES NOT GUARANTEE
+ *   Record-rule enforcement. That needs the model prototype
+ *   (proto.setUserContext()), which BaseViewModel has no access to —
+ *   GenericViewModel does it because it owns TModel. ViewModels built on
+ *   hand-written SQL still have to merge the rule domain themselves.
+ *   The boot check below reports which ones those are rather than
+ *   letting the gap stay invisible.
+ *
+ * Usage — identical in shape to REGISTER_METHOD:
+ * @code
+ *   REGISTER_MUTATOR("write",  handleWrite)
+ *   REGISTER_MUTATOR("create", handleCreate)
+ *   REGISTER_MUTATOR("unlink", handleUnlink)
+ * @endcode
+ */
+#define REGISTER_MUTATOR(method_name, handler)                             \
+    registerMutator_(method_name,                                          \
         [this](const ::odoo::core::CallKwArgs& call) -> nlohmann::json {  \
             return this->handler(call);                                    \
         });
@@ -100,6 +144,23 @@ public:
         return dispatch_.count(method) > 0;
     }
 
+    /**
+     * @brief Mutating methods registered WITHOUT the audited path. (P6)
+     *
+     * Any create/write/unlink that went through REGISTER_METHOD instead of
+     * REGISTER_MUTATOR. Container checks this at boot and refuses to start
+     * unless the ViewModel is on a named allowlist — so the S-35/37/38/47
+     * class of defect cannot be reintroduced silently by the next module.
+     */
+    std::vector<std::string> unguardedMutators() const override {
+        static const char* kMutating[] = {"create", "write", "unlink"};
+        std::vector<std::string> out;
+        for (const char* m : kMutating)
+            if (dispatch_.count(m) && !guardedMutators_.count(m))
+                out.emplace_back(m);
+        return out;
+    }
+
 protected:
     using Handler = std::function<nlohmann::json(const CallKwArgs&)>;
 
@@ -109,6 +170,37 @@ protected:
      */
     void registerMethod_(const std::string& method, Handler handler) {
         dispatch_[method] = std::move(handler);
+    }
+
+    /**
+     * @brief Register a mutating handler, wrapping it with audit. (P6)
+     * Called by REGISTER_MUTATOR; see the macro for the rationale.
+     */
+    void registerMutator_(const std::string& method, Handler handler) {
+        guardedMutators_.insert(method);
+        dispatch_[method] = [this, method, h = std::move(handler)]
+                            (const CallKwArgs& call) -> nlohmann::json {
+            const UserContext ctx = extractContext_(call);
+            // Capture ids BEFORE the call: unlink destroys them, and a write
+            // handler is free to mutate what it was given.
+            const std::vector<int> idsBefore = call.ids();
+
+            nlohmann::json result = h(call);
+
+            // A throwing handler never reaches here, so a failed operation
+            // writes no audit row.
+            if (method == "create") {
+                int newId = 0;
+                if (result.is_number_integer())      newId = result.get<int>();
+                else if (result.is_array() && !result.empty()
+                         && result[0].is_number_integer())
+                                                     newId = result[0].get<int>();
+                audit_("create", newId, ctx);
+            } else {
+                audit_(method, idsBefore, ctx);
+            }
+            return result;
+        };
     }
 
     /**
@@ -188,6 +280,7 @@ protected:
 
 private:
     std::unordered_map<std::string, Handler> dispatch_;
+    std::unordered_set<std::string>          guardedMutators_;   // P6
 };
 
 } // namespace odoo::core

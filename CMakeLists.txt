@@ -41,6 +41,7 @@ target_include_directories(c-erp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/mail
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/report
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/portal
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/rental
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/include
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/drogon/lib/inc
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/drogon
@@ -52,5 +53,35 @@ target_link_libraries(c-erp PRIVATE
     drogon
     pqxx
 )
+
+# ------------------------------------------------------------------
+# P7 — unit tests (docs/033 §3)
+#
+#   cmake --build ./build --target erp_tests && ./build/erp_tests
+#
+# Deliberately NOT built by the default target: `cmake --build ./build`
+# stays the fast path for iterating on the server. scripts/run_tests.sh
+# builds it explicitly and then runs the integration suites too.
+#
+# Only the units under test are compiled in. Linking the whole module set
+# would drag in Container and every module's static registration, which
+# would need a live database to construct — the point of these cases is
+# that they run with no database at all.
+# ------------------------------------------------------------------
+file(GLOB TEST_SOURCES "tests/*.cpp")
+add_executable(erp_tests EXCLUDE_FROM_ALL
+    ${TEST_SOURCES}
+    core/Money.cpp
+    core/TaxEngine.cpp
+    # SessionManager is header-only; test_session.cpp includes it directly.
+)
+target_include_directories(erp_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/infrastructure
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/include
+)
+target_link_libraries(erp_tests PRIVATE ssl crypto)
 
 message(STATUS "Source files: ${SOURCES}")

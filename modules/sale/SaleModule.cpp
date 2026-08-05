@@ -3,6 +3,9 @@
 // =============================================================
 #include "SaleModule.hpp"
 #include "BaseModel.hpp"
+#include "IrSequence.hpp"
+#include "TaxHelpers.hpp"
+#include "DecimalPrecision.hpp"
 #include "BaseView.hpp"
 #include "MailHelpers.hpp"
 #include "BaseViewModel.hpp"
@@ -108,6 +111,7 @@ public:
         fieldRegistry_.add({.name="amount_tax",    .type=FieldType::Monetary,  .string="Taxes",          .readonly=true, .compute=true, .depends="order_line"});
         fieldRegistry_.add({.name="amount_total",  .type=FieldType::Monetary,  .string="Total",          .readonly=true, .compute=true, .depends="order_line"});
         fieldRegistry_.add({"order_line", FieldType::One2many, "Order Lines", false, false, false, false, "sale.order.line", "order_id"});
+        fieldRegistry_.markScaled({"amount_untaxed", "amount_tax", "amount_total"});  // P2: 920
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -214,6 +218,12 @@ public:
         fieldRegistry_.add({.name="qty_delivered",  .type=FieldType::Float,    .string="Delivered Qty", .readonly=true, .compute=true, .depends="order_id.picking_ids"});
         fieldRegistry_.add({"company_id",      FieldType::Many2one,  "Company",         false, false, true, false, "res.company"});
         fieldRegistry_.add({"currency_id",     FieldType::Many2one,  "Currency",        false, false, true, false, "res.currency"});
+        // P2: BIGINT micro-units (migration 921)
+        fieldRegistry_.setPrecision(core::DecimalPrecision::kProductPrice, {"price_unit"});
+        fieldRegistry_.setPrecision(core::DecimalPrecision::kDiscount,     {"discount"});
+        fieldRegistry_.markScaled({"price_unit", "product_uom_qty", "discount",
+                                   "price_subtotal", "price_tax", "price_total",
+                                   "qty_invoiced", "qty_delivered"});
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -453,9 +463,9 @@ public:
         REGISTER_METHOD("web_search_read", handleSearchRead)
         REGISTER_METHOD("read",            handleRead)
         REGISTER_METHOD("web_read",        handleRead)
-        REGISTER_METHOD("create",          handleCreate)
-        REGISTER_METHOD("write",           handleWrite)
-        REGISTER_METHOD("unlink",          handleUnlink)
+        REGISTER_MUTATOR("create",          handleCreate)
+        REGISTER_MUTATOR("write",           handleWrite)
+        REGISTER_MUTATOR("unlink",          handleUnlink)
         REGISTER_METHOD("fields_get",      handleFieldsGet)
         REGISTER_METHOD("search_count",    handleSearchCount)
         REGISTER_METHOD("search",          handleSearch)
@@ -498,8 +508,6 @@ protected:
         const auto ctx = extractContext_(call);
         proto.setUserContext(ctx);
         const int newId = proto.create(v);
-        if (AuditService::ready() && newId > 0)
-            AuditService::instance().log(TModel::MODEL_NAME, "create", {newId}, ctx.uid);
         return newId;
     }
     nlohmann::json handleWrite(const CallKwArgs& call) {
@@ -509,8 +517,6 @@ protected:
         const auto ctx = extractContext_(call);
         proto.setUserContext(ctx);
         const auto result = proto.write(call.ids(), v);
-        if (AuditService::ready() && !call.ids().empty())
-            AuditService::instance().log(TModel::MODEL_NAME, "write", call.ids(), ctx.uid);
         return result;
     }
     nlohmann::json handleUnlink(const CallKwArgs& call) {
@@ -519,8 +525,6 @@ protected:
         proto.setUserContext(ctx);
         const auto ids = call.ids();
         const auto result = proto.unlink(ids);
-        if (AuditService::ready() && !ids.empty())
-            AuditService::instance().log(TModel::MODEL_NAME, "unlink", ids, ctx.uid);
         return result;
     }
     nlohmann::json handleFieldsGet(const CallKwArgs& call) {
@@ -584,21 +588,12 @@ private:
             if (st != "draft")
                 throw std::runtime_error("Only draft orders can be confirmed");
 
-            // Generate SO name from sequence
-            std::string year = []{
-                std::time_t t = std::time(nullptr);
-                char buf[8];
-                std::strftime(buf, sizeof(buf), "%Y", std::gmtime(&t));
-                return std::string(buf);
-            }();
-
-            auto cnt = txn.exec(
-                "SELECT nextval('sale_order_seq')",
-                pqxx::params{});
-            long long seq = cnt[0][0].as<long long>();
-
+            // P4: ir.sequence, allocated inside THIS transaction. The old
+            // nextval() burned a number on rollback because PG sequences are
+            // deliberately non-transactional; sharing the caller's txn means
+            // the number returns if the confirm fails.
             std::ostringstream ss;
-            ss << "SO/" << year << "/" << std::setfill('0') << std::setw(4) << seq;
+            ss << core::IrSequence::instance().nextByCode(txn, "sale.order");
 
             txn.exec(
                 "UPDATE sale_order "
@@ -623,10 +618,8 @@ private:
                 int partnerId = soRow[0]["partner_id"].is_null() ? 0 : soRow[0]["partner_id"].as<int>();
                 int companyId = soRow[0]["company_id"].is_null() ? 0 : soRow[0]["company_id"].as<int>();
 
-                auto seqRow  = txn.exec("SELECT nextval('stock_out_seq')");
-                long long ps = seqRow[0][0].as<long long>();
-                std::string pickName = "WH/OUT/" + year + "/" +
-                    std::string(4 - std::min(4, (int)std::to_string(ps).size()), '0') + std::to_string(ps);
+                const std::string pickName =                       // P4
+                    core::IrSequence::instance().nextByCode(txn, "stock.picking.out");
 
                 auto pickRow = txn.exec(
                     "INSERT INTO stock_picking "
@@ -1143,8 +1136,8 @@ public:
         : SaleViewModel<SaleOrderLine>(std::move(db))
     {
         // Override base CRUD registrations with amount-aware versions
-        REGISTER_METHOD("create",   handleCreate)
-        REGISTER_METHOD("write",    handleWrite)
+        REGISTER_MUTATOR("create",   handleCreate)
+        REGISTER_MUTATOR("write",    handleWrite)
         REGISTER_METHOD("onchange", handleOnchange)
     }
 
@@ -1177,7 +1170,10 @@ public:
 
             auto& val = result["value"];
             val["name"]       = r[0]["name"].c_str();
-            val["price_unit"] = r[0]["list_price"].as<double>(0.0);
+            // P2: list_price is micro-units (950); val goes back through
+            // BaseModel::write, which rescales, so it must hold MAJOR units.
+            val["price_unit"] = core::Money::fromMicros(
+                                    r[0]["list_price"].as<long long>(0)).toJson();
             if (!r[0]["uom_id"].is_null()) {
                 val["product_uom_id"] = nlohmann::json::array({
                     r[0]["uom_id"].as<int>(),
@@ -1200,8 +1196,6 @@ public:
         SaleOrderLine proto(db_);
         proto.setUserContext(ctx);
         const int newId = proto.create(vals);
-        if (AuditService::ready() && newId > 0)
-            AuditService::instance().log("sale.order.line", "create", {newId}, ctx.uid);
 
         // Update parent order totals
         int orderId = 0;
@@ -1257,8 +1251,6 @@ public:
             SaleOrderLine proto(db_);
             proto.setUserContext(ctx);
             proto.write({id}, merged);
-            if (AuditService::ready())
-                AuditService::instance().log("sale.order.line", "write", {id}, ctx.uid);
 
             // 5. Update parent order totals
             if (orderId > 0) updateOrderTotals_(orderId);
@@ -1268,42 +1260,17 @@ public:
     }
 
 private:
-    // Recompute price_subtotal, price_tax, price_total from qty/unit/disc/taxes
+    // P3: recompute via TaxEngine.
+    //
+    // What was here handled `percent && !price_include` only, so a
+    // price-INCLUDED tax contributed nothing: the whole gross landed in the
+    // subtotal and the order reported zero tax. It also worked in double with
+    // its own rounding, which P2 replaced everywhere else.
     void recomputeAmounts_(nlohmann::json& vals) {
-        double qty  = vals.value("product_uom_qty", 1.0);
-        double unit = vals.value("price_unit",      0.0);
-        double disc = vals.value("discount",         0.0);
-
-        double subtotal = qty * unit * (1.0 - disc / 100.0);
-
-        // Sum taxes from tax_ids_json by fetching amounts from DB
-        double taxAmt = 0.0;
-        std::string taxJson = vals.value("tax_ids_json", std::string("[]"));
-        try {
-            auto taxIds = nlohmann::json::parse(taxJson);
-            if (taxIds.is_array() && !taxIds.empty()) {
-                auto conn = db_->acquire();
-                pqxx::work txn{conn.get()};
-                for (const auto& tid : taxIds) {
-                    if (!tid.is_number_integer()) continue;
-                    int taxId = tid.get<int>();
-                    auto tr = txn.exec(
-                        "SELECT amount, amount_type, price_include "
-                        "FROM account_tax WHERE id = $1 AND active = TRUE",
-                        pqxx::params{taxId});
-                    if (tr.empty()) continue;
-                    double taxRate    = tr[0][0].as<double>();
-                    std::string atype = tr[0][1].c_str();
-                    bool priceIncl    = tr[0][2].as<bool>();
-                    if (atype == "percent" && !priceIncl)
-                        taxAmt += subtotal * taxRate / 100.0;
-                }
-            }
-        } catch (...) { /* malformed JSON — skip taxes */ }
-
-        vals["price_subtotal"] = std::round(subtotal * 100.0) / 100.0;
-        vals["price_tax"]      = std::round(taxAmt   * 100.0) / 100.0;
-        vals["price_total"]    = std::round((subtotal + taxAmt) * 100.0) / 100.0;
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        core::applyLineTaxes(txn, vals, "product_uom_qty");
+        txn.commit();
     }
 
     void updateOrderTotals_(int orderId) {

@@ -1,0 +1,469 @@
+/* =============================================================
+   rental.css — tokens and the unit grid (docs/046 §3, §4)
+
+   The colour values here are NOT chosen by eye. They come from the
+   validated palette in docs/046 §3, which was run through the six checks
+   (lightness band, chroma floor, adjacent-pair CVD separation,
+   normal-vision floor, contrast). Do not substitute a hue without
+   re-running the validator.
+
+   Dark values are a SELECTED set of steps, not an automatic inversion,
+   and are declared under both prefers-color-scheme and
+   :root[data-theme="dark"] so the app's own theme toggle wins in both
+   directions.
+
+   Light mode carries a known contrast WARN on the reserved (#1baf7a) and
+   maintenance (#eda100) fills. That is not dismissable — it obliges
+   relief, satisfied here by a glyph plus a text label on every cell and
+   by the list view being a full table alternative.
+   ============================================================= */
+
+.viz-root {
+    /* Occupancy — 4 categorical slots, fixed order, never cycled. */
+    --u-occupied:    #2a78d6;
+    --u-available:   #eb6834;
+    --u-reserved:    #1baf7a;
+    --u-maintenance: #eda100;
+    --u-retired:     #8a8f98;
+
+    /* Series slots 1–2, for income vs expenses. Same validated pair as
+       the categorical ramp's first two slots (docs/046 §3). Colour
+       follows the ENTITY: income is always slot 1, expenses always
+       slot 2, whatever the filter does. */
+    --s-income:  #2a78d6;
+    --s-expense: #eb6834;
+
+    /* Status — RESERVED. Never reused as a series colour. */
+    --st-good:     #0ca30c;
+    --st-warning:  #fab219;
+    --st-serious:  #ec835a;
+    --st-critical: #d03b3b;
+
+    /* Surfaces and ink. */
+    --viz-surface:    #ffffff;
+    --viz-surface-2:  #f6f7f9;
+    --viz-border:     #d8dce2;
+    --ink-primary:    #1c1f23;
+    --ink-secondary:  #4a5058;
+    --ink-muted:      #767d87;
+    --ink-on-fill:    #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+    .viz-root {
+        --u-occupied:    #3987e5;
+        --u-available:   #d95926;
+        --u-reserved:    #199e70;
+        --u-maintenance: #c98500;
+        --u-retired:     #6b7079;
+
+        --s-income:  #3987e5;
+        --s-expense: #d95926;
+
+        --viz-surface:   #16191d;
+        --viz-surface-2: #1e2227;
+        --viz-border:    #333941;
+        --ink-primary:   #e8eaed;
+        --ink-secondary: #b0b6bf;
+        --ink-muted:     #858c96;
+        --ink-on-fill:   #ffffff;
+    }
+}
+
+/* The toggle must beat the media query in BOTH directions, so light is
+   restated explicitly rather than relying on the cascade. */
+:root[data-theme="dark"] .viz-root {
+    --u-occupied:    #3987e5;
+    --u-available:   #d95926;
+    --u-reserved:    #199e70;
+    --u-maintenance: #c98500;
+    --u-retired:     #6b7079;
+
+    --s-income:  #3987e5;
+    --s-expense: #d95926;
+
+    --viz-surface:   #16191d;
+    --viz-surface-2: #1e2227;
+    --viz-border:    #333941;
+    --ink-primary:   #e8eaed;
+    --ink-secondary: #b0b6bf;
+    --ink-muted:     #858c96;
+}
+:root[data-theme="light"] .viz-root {
+    --u-occupied:    #2a78d6;
+    --u-available:   #eb6834;
+    --u-reserved:    #1baf7a;
+    --u-maintenance: #eda100;
+    --u-retired:     #8a8f98;
+
+    --s-income:  #2a78d6;
+    --s-expense: #eb6834;
+
+    --viz-surface:   #ffffff;
+    --viz-surface-2: #f6f7f9;
+    --viz-border:    #d8dce2;
+    --ink-primary:   #1c1f23;
+    --ink-secondary: #4a5058;
+    --ink-muted:     #767d87;
+}
+
+/* ------------------------------------------------------------------
+   Unit grid — the signature view (docs/046 §4)
+   ------------------------------------------------------------------ */
+
+.rental-grid-wrap {
+    padding: 12px 16px;
+    color: var(--ink-primary);
+    background: var(--viz-surface);
+}
+
+/* Filters in ONE row above the grid. */
+.rental-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 14px;
+}
+.rental-filters select,
+.rental-filters input {
+    padding: 5px 8px;
+    border: 1px solid var(--viz-border);
+    border-radius: 4px;
+    background: var(--viz-surface);
+    color: var(--ink-primary);
+    font-size: 13px;
+}
+.rental-filters .spacer { flex: 1; }
+
+.rental-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-bottom: 14px;
+    font-size: 12px;
+    color: var(--ink-secondary);
+}
+.rental-legend .item { display: flex; align-items: center; gap: 6px; }
+.rental-legend .swatch {
+    width: 12px; height: 12px;
+    border-radius: 3px;
+    display: inline-block;
+}
+
+.rental-zone { margin-bottom: 22px; }
+.rental-zone h3 {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0 0 8px;
+    color: var(--ink-secondary);
+    text-transform: uppercase;
+    letter-spacing: .04em;
+}
+
+/* Auto-fill rather than a fixed count: the grid reflows instead of
+   scrolling the page sideways. */
+.rental-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+    gap: 8px;
+}
+
+/* A cell is a heatmap-shaped mark, so it carries colour AND a glyph AND
+   its code — state is never colour alone. */
+.rental-cell {
+    position: relative;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 6px 8px;
+    min-height: 58px;
+    cursor: pointer;
+    text-align: left;
+    color: var(--ink-on-fill);
+    font: inherit;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    /* 2px surface gap between adjacent fills. */
+    outline: 2px solid var(--viz-surface);
+    outline-offset: -1px;
+    transition: transform .08s ease;
+}
+.rental-cell:hover  { transform: translateY(-1px); }
+.rental-cell:focus-visible {
+    outline: 3px solid var(--ink-primary);
+    outline-offset: 1px;
+}
+
+.rental-cell .code {
+    font-weight: 600;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+}
+.rental-cell .glyph { font-size: 13px; line-height: 1; }
+.rental-cell .label {
+    font-size: 10px;
+    opacity: .92;
+    text-transform: capitalize;
+}
+.rental-cell .top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 4px;
+}
+
+.rental-cell.is-occupied    { background: var(--u-occupied); }
+.rental-cell.is-available   { background: var(--u-available); }
+.rental-cell.is-reserved    { background: var(--u-reserved); }
+.rental-cell.is-maintenance { background: var(--u-maintenance); }
+.rental-cell.is-retired     { background: var(--u-retired); }
+
+/* Tooltip — hit target is the whole cell, which is larger than the mark. */
+.rental-tip {
+    position: fixed;
+    z-index: 900;
+    pointer-events: none;
+    background: var(--viz-surface);
+    color: var(--ink-primary);
+    border: 1px solid var(--viz-border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.16);
+    max-width: 260px;
+}
+.rental-tip .t-code { font-weight: 600; margin-bottom: 3px; }
+.rental-tip .t-row  { color: var(--ink-secondary); }
+.rental-tip .t-row b { color: var(--ink-primary); font-weight: 600; }
+
+.rental-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    margin-bottom: 16px;
+    font-size: 12px;
+    color: var(--ink-secondary);
+}
+.rental-summary .n {
+    font-size: 19px;
+    font-weight: 600;
+    color: var(--ink-primary);
+    display: block;
+    /* Proportional for a headline figure; tabular in tables and axes. */
+}
+
+.rental-empty {
+    padding: 28px;
+    text-align: center;
+    color: var(--ink-muted);
+    background: var(--viz-surface-2);
+    border-radius: 6px;
+}
+
+/* Below this width the grid is unreadable; the list view is the
+   fallback AND the accessible table alternative. */
+@media (max-width: 560px) {
+    .rental-grid { grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); }
+    .rental-cell .label { display: none; }
+}
+
+/* ------------------------------------------------------------------
+   Table view — the relief for the light-mode contrast WARN, and the
+   accessible alternative to the grid. Always available, not a fallback.
+   ------------------------------------------------------------------ */
+.rental-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rental-table th, .rental-table td {
+    text-align: left;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--viz-border);
+    font-variant-numeric: tabular-nums;
+}
+.rental-table th { color: var(--ink-secondary); font-weight: 600; }
+.rental-table .dot {
+    display: inline-block;
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: baseline;
+}
+
+/* ------------------------------------------------------------------
+   Dashboard (docs/046 §2)
+   ------------------------------------------------------------------ */
+.rental-dash {
+    padding: 12px 16px 32px;
+    color: var(--ink-primary);
+    background: var(--viz-surface);
+}
+.rental-dash .dash-label { font-size: 12px; color: var(--ink-secondary); }
+
+/* KPI row — stat tiles. A single current value is a tile, never a
+   one-bar bar chart. */
+.kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+    margin-bottom: 18px;
+}
+.kpi {
+    background: var(--viz-surface-2);
+    border: 1px solid var(--viz-border);
+    border-radius: 8px;
+    padding: 12px 14px;
+}
+.kpi-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: var(--ink-secondary);
+}
+.kpi-value {
+    font-size: 26px;
+    font-weight: 600;
+    margin: 4px 0 2px;
+    /* Proportional for a headline figure; tabular in tables and axes. */
+}
+.kpi-sub { font-size: 11px; color: var(--ink-muted); }
+.kpi.is-warn .kpi-value { color: var(--st-critical); }
+
+/* Occupancy is a ratio against a limit, so it gets a meter — not a
+   two-slice pie. */
+.kpi-meter {
+    height: 5px;
+    border-radius: 3px;
+    background: var(--viz-border);
+    overflow: hidden;
+    margin: 6px 0 4px;
+}
+.kpi-meter-fill { height: 100%; background: var(--u-occupied); }
+
+.panel {
+    background: var(--viz-surface-2);
+    border: 1px solid var(--viz-border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+}
+.panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+.panel-head h3 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--ink-secondary);
+}
+.panel-tools { display: flex; gap: 4px; }
+.panel-tools button {
+    font-size: 12px;
+    padding: 3px 10px;
+    border: 1px solid var(--viz-border);
+    border-radius: 4px;
+    background: var(--viz-surface);
+    color: var(--ink-secondary);
+    cursor: pointer;
+}
+.panel-tools button.on {
+    background: var(--u-occupied);
+    border-color: var(--u-occupied);
+    color: #fff;
+}
+
+/* Two panels side by side, stacking on narrow screens. */
+.panel-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 14px;
+}
+.panel-row .panel { margin-bottom: 0; }
+
+/* The chart scrolls inside its own container; the page never scrolls
+   sideways. */
+.chart-wrap { overflow-x: auto; }
+.chart { width: 100%; min-width: 420px; height: auto; display: block; }
+.chart .grid { stroke: var(--viz-border); stroke-width: 1; }
+.chart .zero { stroke: var(--ink-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.chart .axis {
+    fill: var(--ink-muted);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+}
+.chart .cum-line {
+    fill: none;
+    stroke: var(--s-income);
+    stroke-width: 2;
+    stroke-linejoin: round;
+}
+.chart rect, .chart circle { cursor: pointer; }
+/* 2px surface ring so overlapping marks stay separable. */
+.chart circle { stroke: var(--viz-surface); stroke-width: 2; }
+
+.chart-note {
+    font-size: 11px;
+    color: var(--ink-muted);
+    margin-top: 6px;
+}
+.assumptions { margin-top: 10px; font-size: 12px; color: var(--ink-secondary); }
+.assumptions summary { cursor: pointer; color: var(--ink-muted); }
+.assumptions ul { margin: 6px 0 0; padding-left: 18px; }
+.assumptions li { margin: 3px 0; }
+
+.table-scroll { overflow-x: auto; }
+.rental-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.rental-table .neg  { color: var(--st-critical); }
+.rental-table .attn { font-weight: 600; }
+.st-icon { margin-right: 6px; }
+
+/* Occupancy stacked bars — horizontal, because type names are long. */
+.stack-row { margin-bottom: 10px; }
+.stack-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--ink-secondary);
+    margin-bottom: 4px;
+}
+.stack-label .muted { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.stack { display: flex; height: 22px; border-radius: 4px; overflow: hidden; }
+.seg {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: var(--ink-on-fill);
+    /* 2px surface gap between adjacent segments. */
+    box-shadow: inset -2px 0 0 var(--viz-surface-2);
+}
+.seg:last-child { box-shadow: none; }
+
+/* Ageing — ordinal ramp, one hue. */
+.age-row {
+    display: grid;
+    grid-template-columns: 110px 1fr 110px;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 7px;
+    font-size: 12px;
+}
+.age-label { color: var(--ink-secondary); }
+.age-track { height: 14px; background: var(--viz-border); border-radius: 3px; overflow: hidden; }
+.age-fill  { height: 100%; border-radius: 3px; }
+.age-amt   { text-align: right; font-variant-numeric: tabular-nums; }
+
+.feed { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.feed li {
+    display: flex;
+    gap: 10px;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--viz-border);
+}
+.feed li:last-child { border-bottom: none; }
+.feed-at  { color: var(--ink-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.feed-sum { color: var(--ink-primary); }

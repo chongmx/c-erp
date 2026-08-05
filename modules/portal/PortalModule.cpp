@@ -3,6 +3,7 @@
 // =============================================================
 #include "PortalModule.hpp"
 #include "ProcessRunner.hpp"
+#include "Money.hpp"
 #include "ClientIp.hpp"
 #include "BaseViewModel.hpp"
 #include "modules/base/Domain.hpp"
@@ -15,6 +16,7 @@
 #include <openssl/bio.h>
 #include <openssl/buffer.h>
 #include <pqxx/pqxx>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -91,6 +93,15 @@ static std::vector<char> portalBase64Decode(const std::string& encoded) {
  * @param rounds     Iteration count (default: 600000).
  * @returns          Hash string ready for storage.
  */
+// P2: money/price/quantity columns are BIGINT micro-units (migrations
+// 901–970). The portal builds its JSON from raw SQL, so it bypasses
+// BaseModel::rowsToJson_ and has to convert here. Null-safe: a missing
+// value reads as 0.00 rather than throwing.
+static double portalMoney(const pqxx::field& f) {
+    return f.is_null() ? 0.0
+                       : odoo::core::Money::fromMicros(f.as<long long>(0)).toJson();
+}
+
 static std::string portalHashPassword(const std::string& plaintext,
                                       int rounds = 600000)
 {
@@ -523,6 +534,10 @@ static std::string portalRenderDoc(
     };
 
     if (model == "account.move") {
+        // is_rental is derived from rental_invoice_link rather than from
+        // rental_contract_id, because a WALK-IN invoice has no contract
+        // but is no less a rental invoice. The link rows exist for every
+        // generated rental invoice, contract or not.
         auto rows = txn.exec(
             "SELECT am.name, am.move_type, am.state, "
             "to_char(am.invoice_date, 'YYYY-MM-DD') AS invoice_date, "
@@ -530,6 +545,9 @@ static std::string portalRenderDoc(
             "COALESCE(am.amount_untaxed::TEXT,'0') AS amount_untaxed, "
             "COALESCE(am.amount_tax::TEXT,'0') AS amount_tax, "
             "COALESCE(am.amount_total::TEXT,'0') AS amount_total, "
+            "COALESCE(am.invoice_origin,'') AS invoice_origin, "
+            "EXISTS (SELECT 1 FROM rental_invoice_link ril "
+            "         WHERE ril.move_id = am.id) AS is_rental, "
             "am.partner_id, am.company_id "
             "FROM account_move am "
             "WHERE am.id=$1 AND am.partner_id=$2",
@@ -538,9 +556,13 @@ static std::string portalRenderDoc(
         const auto& r = rows[0];
         companyId = r["company_id"].is_null() ? 1 : r["company_id"].as<int>();
         std::string moveType = portalSafeStr(r["move_type"]);
+        const bool isRental = r["is_rental"].as<bool>(false);
         vars["document_title"] = (moveType == "in_invoice") ? "Vendor Bill" :
                                   (moveType == "out_refund")  ? "Credit Note" :
-                                  (moveType == "in_refund")   ? "Vendor Credit Note" : "Sales Invoice";
+                                  (moveType == "in_refund")   ? "Vendor Credit Note" :
+                                  isRental                    ? "Rental Invoice" : "Sales Invoice";
+        // The source document, as a sale-generated invoice shows it.
+        vars["doc_origin"] = portalSafeStr(r["invoice_origin"]);
         vars["doc_number"]     = portalSafeStr(r["name"]);
         vars["doc_date"]       = portalYmdToDisplay(portalSafeStr(r["invoice_date"]));
         vars["doc_date_due"]   = portalYmdToDisplay(portalSafeStr(r["invoice_date_due"]));
@@ -551,7 +573,10 @@ static std::string portalRenderDoc(
             "SELECT COALESCE(aml.name,'') AS product_name, "
             "COALESCE(aml.quantity, 0) AS qty, "
             "COALESCE(aml.price_unit, 0) AS price_unit, "
-            "COALESCE(NULLIF(aml.price_unit,0) * aml.quantity, aml.debit, 0) AS subtotal, "
+            // P2: price_unit and quantity are BOTH micro-units, so their
+            // product is scale 12 — divide by 1e6 to return to scale 6.
+            // aml.debit is already scale 6 and must NOT be divided.
+            "COALESCE(NULLIF(aml.price_unit,0) * aml.quantity / 1000000, aml.debit, 0) AS subtotal, "
             "COALESCE(NULLIF(aml.display_type,''),'product') AS line_type "
             "FROM account_move_line aml "
             "JOIN account_account aa ON aa.id = aml.account_id "
@@ -931,7 +956,7 @@ public:
     {
         REGISTER_METHOD("search_read",             handleSearchRead)
         REGISTER_METHOD("web_search_read",         handleSearchRead)
-        REGISTER_METHOD("write",                   handleWrite)
+        REGISTER_MUTATOR("write",                   handleWrite)
         REGISTER_METHOD("set_portal_password",     handleSetPortalPassword)
         REGISTER_METHOD("get_companies",           handleGetCompanies)
         REGISTER_METHOD("portal_reset_password",   handleResetPassword)
@@ -1044,7 +1069,6 @@ private:
             }
         }
         txn.commit();
-        audit_("write", ids, extractContext_(call));   // S-47
         return true;
     }
 
@@ -1176,7 +1200,10 @@ private:
                 "VALUES ($1, $2, $3) "
                 "ON CONFLICT (partner_id, product_id) "
                 "DO UPDATE SET price_unit = EXCLUDED.price_unit",
-                pqxx::params{partnerId, productId, priceUnit});
+                // P2: partner_rental_price.price_unit is micro-units (970).
+                // Raw SQL, so it converts here rather than in normalizeForDb_.
+                pqxx::params{partnerId, productId,
+                             odoo::core::Money::fromJson(priceUnit).toDb()});
         }
         txn.commit();
 
@@ -1210,7 +1237,7 @@ private:
                 {"partner_id", row["partner_id"].as<int>()},
                 {"product_id", row["product_id"].as<int>()},
                 {"name",       std::string(row["name"].c_str())},
-                {"price_unit", row["price_unit"].as<double>()},
+                {"price_unit", portalMoney(row["price_unit"])},
             });
         }
         return result;
@@ -1580,11 +1607,19 @@ void PortalModule::registerRoutes() {
                 auto conn = db->acquire();
                 pqxx::work txn{conn.get()};
 
+                // invoice_origin and is_rental let the customer see WHAT
+                // each invoice is for without opening it — a storage
+                // tenant's list is otherwise a column of identical
+                // amounts differing only by date.
                 auto invoiceRows = txn.exec(
-                    "SELECT id, name, invoice_date, amount_total, payment_state, state "
-                    "FROM account_move "
-                    "WHERE partner_id=$1 AND move_type='out_invoice' "
-                    "ORDER BY id DESC LIMIT 50",
+                    "SELECT am.id, am.name, am.invoice_date, am.amount_total, "
+                    "       am.payment_state, am.state, "
+                    "       COALESCE(am.invoice_origin,'') AS invoice_origin, "
+                    "       EXISTS (SELECT 1 FROM rental_invoice_link ril "
+                    "                WHERE ril.move_id = am.id) AS is_rental "
+                    "FROM account_move am "
+                    "WHERE am.partner_id=$1 AND am.move_type='out_invoice' "
+                    "ORDER BY am.id DESC LIMIT 50",
                     pqxx::params{session->partnerId});
 
                 // Fetch all payment proofs for this partner at once
@@ -1619,13 +1654,13 @@ void PortalModule::registerRoutes() {
                         {"invoice_date",  row["invoice_date"].is_null()
                                           ? ""
                                           : std::string(row["invoice_date"].c_str())},
-                        {"amount_total",  row["amount_total"].is_null()
-                                          ? 0.0
-                                          : row["amount_total"].as<double>()},
+                        {"amount_total",  portalMoney(row["amount_total"])},
                         {"payment_state", row["payment_state"].is_null()
                                           ? ""
                                           : std::string(row["payment_state"].c_str())},
                         {"state",         std::string(row["state"].c_str())},
+                        {"origin",        std::string(row["invoice_origin"].c_str())},
+                        {"is_rental",     row["is_rental"].as<bool>(false)},
                         {"proofs",        proofMap.count(invoiceId)
                                           ? proofMap[invoiceId]
                                           : nlohmann::json::array()},
@@ -1687,8 +1722,8 @@ void PortalModule::registerRoutes() {
 
                 // Verify invoice belongs to this partner
                 auto hdrRows = txn.exec(
-                    "SELECT id, name, invoice_date, amount_total, amount_untaxed, "
-                    "payment_state, state "
+                    "SELECT id, name, invoice_date, due_date, amount_total, amount_untaxed, "
+                    "payment_state, state, COALESCE(invoice_origin,'') AS invoice_origin "
                     "FROM account_move "
                     "WHERE id=$1 AND partner_id=$2 AND move_type='out_invoice'",
                     pqxx::params{invoiceId, session->partnerId});
@@ -1705,7 +1740,8 @@ void PortalModule::registerRoutes() {
                 // Fetch invoice lines
                 auto lineRows = txn.exec(
                     "SELECT name, quantity, price_unit, "
-                    "(quantity * price_unit) AS subtotal "
+                    // P2: both operands are micro-units -> product is scale 12
+                    "(quantity * price_unit / 1000000) AS subtotal "
                     "FROM account_move_line "
                     "WHERE move_id=$1 AND display_type='' "
                     "ORDER BY id",
@@ -1715,9 +1751,39 @@ void PortalModule::registerRoutes() {
                 for (const auto& lr : lineRows) {
                     lines.push_back({
                         {"name",       std::string(lr["name"].c_str())},
-                        {"quantity",   lr["quantity"].as<double>()},
-                        {"price_unit", lr["price_unit"].as<double>()},
-                        {"subtotal",   lr["subtotal"].as<double>()},
+                        {"quantity",   portalMoney(lr["quantity"])},
+                        {"price_unit", portalMoney(lr["price_unit"])},
+                        {"subtotal",   portalMoney(lr["subtotal"])},
+                    });
+                }
+
+                // What this invoice actually covers. rental_invoice_link
+                // already records it per line — unit, period, amount — so
+                // the "what am I paying for" answer is a join, not a new
+                // structure. Scoped through the header check above, which
+                // has already established the invoice belongs to the
+                // caller.
+                auto covRows = txn.exec(
+                    "SELECT COALESCE(u.code, '')  AS unit_code, "
+                    "       COALESCE(u.name, '')  AS unit_name, "
+                    "       to_char(ril.period_start,'YYYY-MM-DD') AS period_start, "
+                    "       to_char(ril.period_end,'YYYY-MM-DD')   AS period_end, "
+                    "       ril.amount "
+                    "  FROM rental_invoice_link ril "
+                    "  LEFT JOIN rental_contract_line l ON l.id = ril.contract_line_id "
+                    "  LEFT JOIN rental_unit u          ON u.id = l.unit_id "
+                    " WHERE ril.move_id = $1 "
+                    " ORDER BY u.code",
+                    pqxx::params{invoiceId});
+
+                nlohmann::json covers = nlohmann::json::array();
+                for (const auto& cr : covRows) {
+                    covers.push_back({
+                        {"unit_code",    std::string(cr["unit_code"].c_str())},
+                        {"unit_name",    std::string(cr["unit_name"].c_str())},
+                        {"period_start", std::string(cr["period_start"].c_str())},
+                        {"period_end",   std::string(cr["period_end"].c_str())},
+                        {"amount",       portalMoney(cr["amount"])},
                     });
                 }
 
@@ -1727,16 +1793,18 @@ void PortalModule::registerRoutes() {
                     {"invoice_date",  hdr["invoice_date"].is_null()
                                       ? ""
                                       : std::string(hdr["invoice_date"].c_str())},
-                    {"amount_total",  hdr["amount_total"].is_null()
-                                      ? 0.0
-                                      : hdr["amount_total"].as<double>()},
-                    {"amount_untaxed",hdr["amount_untaxed"].is_null()
-                                      ? 0.0
-                                      : hdr["amount_untaxed"].as<double>()},
+                    {"due_date",      hdr["due_date"].is_null()
+                                      ? ""
+                                      : std::string(hdr["due_date"].c_str())},
+                    {"origin",        std::string(hdr["invoice_origin"].c_str())},
+                    {"amount_total",  portalMoney(hdr["amount_total"])},
+                    {"amount_untaxed",portalMoney(hdr["amount_untaxed"])},
                     {"payment_state", hdr["payment_state"].is_null()
                                       ? ""
                                       : std::string(hdr["payment_state"].c_str())},
                     {"state",         std::string(hdr["state"].c_str())},
+                    {"is_rental",     !covers.empty()},
+                    {"covers",        covers},
                     {"lines",         lines},
                 };
 
@@ -1836,7 +1904,7 @@ void PortalModule::registerRoutes() {
                     result.push_back({{"id",row["id"].as<int>()},{"name",std::string(row["name"].c_str())},
                         {"state",std::string(row["state"].c_str())},
                         {"date_order",row["date_order"].is_null()?"":std::string(row["date_order"].c_str())},
-                        {"amount_total",row["amount_total"].as<double>()}});
+                        {"amount_total",portalMoney(row["amount_total"])}});
                 res->setStatusCode(drogon::k200OK);
                 res->setBody(result.dump());
                 cb(res);
@@ -1907,18 +1975,18 @@ void PortalModule::registerRoutes() {
                 nlohmann::json lines = nlohmann::json::array();
                 for (const auto& lr : lrows)
                     lines.push_back({{"name",std::string(lr["name"].c_str())},
-                        {"quantity",lr["quantity"].as<double>()},
-                        {"price_unit",lr["price_unit"].as<double>()},
-                        {"subtotal",lr["subtotal"].as<double>()},
+                        {"quantity",portalMoney(lr["quantity"])},
+                        {"price_unit",portalMoney(lr["price_unit"])},
+                        {"subtotal",portalMoney(lr["subtotal"])},
                         {"uom",std::string(lr["uom"].c_str())}});
                 const auto& r = hdr[0];
                 nlohmann::json result = {
                     {"id",r["id"].as<int>()},{"name",std::string(r["name"].c_str())},
                     {"state",std::string(r["state"].c_str())},
                     {"date_order",r["date_order"].is_null()?"":std::string(r["date_order"].c_str())},
-                    {"amount_untaxed",r["amount_untaxed"].as<double>()},
-                    {"amount_tax",r["amount_tax"].as<double>()},
-                    {"amount_total",r["amount_total"].as<double>()},{"lines",lines}};
+                    {"amount_untaxed",portalMoney(r["amount_untaxed"])},
+                    {"amount_tax",portalMoney(r["amount_tax"])},
+                    {"amount_total",portalMoney(r["amount_total"])},{"lines",lines}};
                 res->setStatusCode(drogon::k200OK);
                 res->setBody(result.dump());
                 cb(res);
@@ -2488,6 +2556,130 @@ void PortalModule::registerRoutes() {
     // i. GET /portal/api/products  — require portal session
     // Returns partner-specific rental prices
     // ----------------------------------------------------------
+    // ----------------------------------------------------------
+    // My units — what this customer is renting, and what they owe.
+    //
+    // docs/046 §7: a card per unit (code, type, since, monthly rate) plus
+    // one balance figure with overdue called out. Customers want one
+    // number and a list; no dashboard, no charts.
+    //
+    // Scoped on rental_contract_line.partner_id, which is the customer on
+    // the tenancy itself — a walk-in has no contract to scope through.
+    // ----------------------------------------------------------
+    drogon::app().registerHandler("/portal/api/units",
+        [db, portalSessions, addSecHeaders, devMode](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb)
+        {
+            auto res = drogon::HttpResponse::newHttpResponse();
+            res->addHeader("Content-Type", "application/json");
+            addSecHeaders(res);
+
+            const std::string sid = req->getCookie(PortalSessionManager::kCookieName);
+            auto session = portalSessions->get(sid);
+            if (!session) {
+                res->setStatusCode(drogon::k401Unauthorized);
+                res->setBody(nlohmann::json{{"error", "Not authenticated"}}.dump());
+                cb(res);
+                return;
+            }
+
+            try {
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+
+                auto rows = txn.exec(
+                    "SELECT l.id, "
+                    "       COALESCE(u.code,'')  AS code, "
+                    "       COALESCE(u.name,'')  AS unit_name, "
+                    "       COALESCE(t.name,'')  AS type_name, "
+                    "       COALESCE(u.zone,'')  AS zone, "
+                    "       to_char(l.date_start,'YYYY-MM-DD')        AS since, "
+                    "       to_char(l.date_end,'YYYY-MM-DD')          AS until, "
+                    "       to_char(l.next_period_start,'YYYY-MM-DD') AS next_period, "
+                    "       l.unit_price, l.discount_pct, l.billing_mode, "
+                    "       l.billing_months, l.state "
+                    "  FROM rental_contract_line l "
+                    "  LEFT JOIN rental_unit      u ON u.id = l.unit_id "
+                    "  LEFT JOIN rental_unit_type t ON t.id = u.type_id "
+                    " WHERE l.partner_id = $1 "
+                    "   AND l.state IN ('pending','active') "
+                    " ORDER BY u.code, l.id "
+                    " LIMIT 200",
+                    pqxx::params{session->partnerId});
+
+                nlohmann::json units = nlohmann::json::array();
+                long long monthlyTotal = 0;
+                for (const auto& r : rows) {
+                    const long long price = r["unit_price"].as<long long>(0);
+                    const long long disc  = r["discount_pct"].as<long long>(0);
+                    // Net of any discount, and normalised to a month so a
+                    // quarterly tenancy does not read as three times its
+                    // monthly cost.
+                    const long long net   = price - (price * disc) / 100000000;
+                    const int months      = std::max(1, r["billing_months"].as<int>(1));
+                    monthlyTotal += (net > 0 ? net : 0) / months;
+
+                    units.push_back({
+                        {"code",         std::string(r["code"].c_str())},
+                        {"name",         std::string(r["unit_name"].c_str())},
+                        {"type",         std::string(r["type_name"].c_str())},
+                        {"zone",         std::string(r["zone"].c_str())},
+                        {"since",        r["since"].is_null() ? "" : std::string(r["since"].c_str())},
+                        {"until",        r["until"].is_null() ? "" : std::string(r["until"].c_str())},
+                        {"next_period",  r["next_period"].is_null()
+                                         ? "" : std::string(r["next_period"].c_str())},
+                        {"rate",         portalMoney(r["unit_price"])},
+                        {"net_rate",     Money::fromMicros(net).toJson()},
+                        {"billing_months", months},
+                        {"recurring",    std::string(r["billing_mode"].c_str()) == "recurring"},
+                        {"state",        std::string(r["state"].c_str())},
+                    });
+                }
+
+                // The balance, from the same invoices the Invoices tab
+                // shows — one figure, with overdue called out separately
+                // because that is the part that needs acting on.
+                auto bal = txn.exec(
+                    "SELECT COALESCE(SUM(amount_residual),0) AS due, "
+                    "       COALESCE(SUM(CASE WHEN due_date < CURRENT_DATE "
+                    "                         THEN amount_residual ELSE 0 END),0) AS overdue, "
+                    "       to_char(MIN(CASE WHEN amount_residual > 0 THEN due_date END),"
+                    "               'YYYY-MM-DD') AS next_due "
+                    "  FROM account_move "
+                    " WHERE partner_id = $1 AND move_type = 'out_invoice' "
+                    "   AND state = 'posted' AND amount_residual > 0",
+                    pqxx::params{session->partnerId});
+
+                nlohmann::json result = {
+                    {"units", units},
+                    {"summary", {
+                        {"count",         static_cast<int>(units.size())},
+                        {"monthly_total", Money::fromMicros(monthlyTotal).toJson()},
+                        {"balance_due",   portalMoney(bal[0]["due"])},
+                        {"overdue",       portalMoney(bal[0]["overdue"])},
+                        {"next_due_date", bal[0]["next_due"].is_null()
+                                          ? "" : std::string(bal[0]["next_due"].c_str())},
+                    }},
+                };
+
+                res->setStatusCode(drogon::k200OK);
+                res->setBody(result.dump());
+                cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error", "The server is temporarily overloaded. Please retry."}}.dump());
+                cb(res);
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[portal/units] " << e.what();
+                res->setStatusCode(drogon::k500InternalServerError);
+                res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
+                cb(res);
+            }
+        },
+        {drogon::Get});
+
     drogon::app().registerHandler("/portal/api/products",
         [db, portalSessions, addSecHeaders, devMode](
             const drogon::HttpRequestPtr& req,
@@ -2524,7 +2716,7 @@ void PortalModule::registerRoutes() {
                         {"id",         row["id"].as<int>()},
                         {"product_id", row["product_id"].as<int>()},
                         {"name",       std::string(row["name"].c_str())},
-                        {"price_unit", row["price_unit"].as<double>()},
+                        {"price_unit", portalMoney(row["price_unit"])},
                     });
                 }
 
@@ -2608,7 +2800,9 @@ void PortalModule::registerRoutes() {
                     return;
                 }
 
-                const double      priceUnit      = priceRows[0]["price_unit"].as<double>();
+                // P2: micro-units (migration 970) → major units for the
+                // arithmetic that follows.
+                const double      priceUnit      = portalMoney(priceRows[0]["price_unit"]);
                 const std::string productName    = priceRows[0]["name"].c_str();
                 const int         incomeAccountId = priceRows[0]["income_account_id"].is_null()
                                                     ? 6  // fallback to account id=6

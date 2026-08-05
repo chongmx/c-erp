@@ -6,6 +6,12 @@
 // =============================================================
 #include "AccountModule.hpp"
 #include "BaseModel.hpp"
+#include "IrSequence.hpp"
+#include "PaymentAllocation.hpp"
+#include <map>
+#include "TaxEngine.hpp"
+#include "TaxHelpers.hpp"
+#include "DecimalPrecision.hpp"
 #include "BaseViewModel.hpp"
 #include "DbConnection.hpp"
 #include "AuditService.hpp"
@@ -287,6 +293,9 @@ public:
         fieldRegistry_.add({"amount_residual",  core::FieldType::Monetary,  "Amount Due",        false, true});
         fieldRegistry_.add({"payment_term_id",  core::FieldType::Many2one,  "Payment Terms",     false, false, true, false, "account.payment.term"});
         fieldRegistry_.add({"invoice_origin",   core::FieldType::Char,      "Source Document"});
+        // P2: BIGINT micro-units (migration 911)
+        fieldRegistry_.markScaled({"amount_untaxed", "amount_tax",
+                                   "amount_total", "amount_residual"});
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -362,6 +371,9 @@ public:
     double      priceUnit      = 0.0;
     std::string displayType;   // '' | 'line_section' | 'line_note'
     int         taxLineId      = 0;
+    // P3: which taxes this PRODUCT line is subject to, as a JSON id array.
+    // Distinct from taxLineId, which marks a line that IS a generated tax.
+    std::string taxIdsJson     = "[]";
     bool        reconciled     = false;
 
     explicit AccountMoveLine(std::shared_ptr<infrastructure::DbConnection> db)
@@ -383,7 +395,16 @@ public:
         fieldRegistry_.add({"price_unit",      core::FieldType::Float,    "Unit Price"});
         fieldRegistry_.add({"display_type",    core::FieldType::Char,     "Display Type"});
         fieldRegistry_.add({"tax_line_id",     core::FieldType::Many2one, "Tax",            false, false, true, false, "account.tax"});
+        // Migration 1000 added the column, but without this registration
+        // BaseModel::write() dropped the value silently — the invoice form's
+        // tax picker wrote and the line came back '[]'.
+        fieldRegistry_.add({"tax_ids_json",    core::FieldType::Char,     "Taxes"});
         fieldRegistry_.add({"reconciled",      core::FieldType::Boolean,  "Reconciled"});
+        // P2: BIGINT micro-units (migration 910). `balance` is generated in
+        // the DB and never written from here, so it is not listed.
+        fieldRegistry_.setPrecision(core::DecimalPrecision::kProductPrice, {"price_unit"});
+        fieldRegistry_.markScaled({"debit", "credit", "amount_currency",
+                                   "quantity", "price_unit"});
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -402,6 +423,7 @@ public:
         j["price_unit"]      = priceUnit;
         j["display_type"]    = displayType.empty() ? nlohmann::json("") : nlohmann::json(displayType);
         j["tax_line_id"]     = taxLineId > 0 ? nlohmann::json(taxLineId) : nlohmann::json(false);
+        j["tax_ids_json"]    = taxIdsJson.empty() ? nlohmann::json("[]") : nlohmann::json(taxIdsJson);
         j["reconciled"]      = reconciled;
     }
 
@@ -421,6 +443,13 @@ public:
         if (j.contains("price_unit")    && j["price_unit"].is_number())   priceUnit      = j["price_unit"].get<double>();
         if (j.contains("display_type")  && j["display_type"].is_string()) displayType    = j["display_type"].get<std::string>();
         if (j.contains("tax_line_id"))      taxLineId      = m2oToId_(j["tax_line_id"]);
+        // The picker sends "[]" to clear, so an empty string is normalised
+        // rather than treated as "no change" — otherwise a tax could be added
+        // but never removed.
+        if (j.contains("tax_ids_json") && j["tax_ids_json"].is_string()) {
+            taxIdsJson = j["tax_ids_json"].get<std::string>();
+            if (taxIdsJson.empty()) taxIdsJson = "[]";
+        }
         if (j.contains("reconciled")    && j["reconciled"].is_boolean())   reconciled     = j["reconciled"].get<bool>();
     }
 
@@ -468,6 +497,7 @@ public:
         fieldRegistry_.add({"state",        core::FieldType::Selection, "Status",           false, true});
         fieldRegistry_.add({"move_id",      core::FieldType::Many2one,  "Journal Entry",    false, true,  true, false, "account.move"});
         fieldRegistry_.add({"memo",         core::FieldType::Char,      "Memo"});
+        fieldRegistry_.markScaled({"amount"});   // P2: migration 912
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -568,9 +598,9 @@ public:
         REGISTER_METHOD("web_search_read", handleSearchRead)
         REGISTER_METHOD("read",            handleRead)
         REGISTER_METHOD("web_read",        handleRead)
-        REGISTER_METHOD("create",          handleCreate)
-        REGISTER_METHOD("write",           handleWrite)
-        REGISTER_METHOD("unlink",          handleUnlink)
+        REGISTER_MUTATOR("create",          handleCreate)
+        REGISTER_MUTATOR("write",           handleWrite)
+        REGISTER_MUTATOR("unlink",          handleUnlink)
         REGISTER_METHOD("fields_get",      handleFieldsGet)
         REGISTER_METHOD("search_count",    handleSearchCount)
         REGISTER_METHOD("search",          handleSearch)
@@ -706,20 +736,34 @@ private:
                                   pqxx::params{jid});
             std::string jcode = jrow.empty() ? "MISC" : std::string(jrow[0][0].c_str());
 
-            // Year from date
-            std::string year = date.size() >= 4 ? date.substr(0, 4) : "2026";
+            // P4: invoice numbering via ir.sequence, per journal.
+            //
+            // What this replaces was genuinely unsafe: the number was
+            // `COUNT(*) of posted moves for this journal+year + 1`, computed
+            // with no lock. Two concurrent posts read the same count and
+            // produced the SAME invoice number — duplicate numbers on a legal
+            // document. It also reused numbers if a posted move was ever
+            // deleted or reset to draft.
+            //
+            // ir.sequence takes a row lock (SELECT ... FOR UPDATE) inside this
+            // transaction, so concurrent posts serialise, and the allocation
+            // rolls back with the post if it fails — gapless, which is what
+            // tax-invoice numbering requires.
+            const std::string seqCode = "account.move." + jcode;
 
-            // Sequence: count of posted moves for this journal+year + 1
-            auto cnt = txn.exec(
-                "SELECT COUNT(*) FROM account_move "
-                "WHERE journal_id = $1 AND state = 'posted' "
-                "AND EXTRACT(YEAR FROM date::date) = $2::int",
-                pqxx::params{jid, std::stoi(year)});
-            int seq = cnt[0][0].as<int>() + 1;
+            // Journals are user-defined, so the sequence is created on first
+            // post rather than guessed at migration time. ON CONFLICT DO
+            // NOTHING makes concurrent first-posts safe.
+            txn.exec(
+                "INSERT INTO ir_sequence (code, name, prefix, padding, reset_policy) "
+                "VALUES ($1, $2, $3, 4, 'yearly') "
+                "ON CONFLICT (code) WHERE company_id IS NULL DO NOTHING",
+                pqxx::params{seqCode,
+                             "Invoice — " + jcode,
+                             jcode + "/%(year)s/"});
 
             std::ostringstream ss;
-            ss << jcode << "/" << year << "/"
-               << std::setfill('0') << std::setw(4) << seq;
+            ss << core::IrSequence::instance().nextByCode(txn, seqCode);
 
             txn.exec(
                 "UPDATE account_move "
@@ -757,6 +801,104 @@ private:
         return true;
     }
 
+    /**
+     * @brief Recompute an invoice's tax lines from its product lines. (P3)
+     *
+     * Deletes the generated tax lines and rebuilds them, so the result is the
+     * same however many times it runs — the function is called on every line
+     * edit, and appending instead of replacing would multiply the tax on each
+     * save.
+     *
+     * A "generated tax line" is exactly `tax_line_id IS NOT NULL`. Lines a
+     * user entered by hand have no tax_line_id and are never touched.
+     *
+     * @returns total tax in micro-units.
+     */
+    long long recomputeTaxLines_(pqxx::work& txn, int moveId) {
+        // Rebuild, do not append.
+        txn.exec("DELETE FROM account_move_line "
+                 " WHERE move_id = $1 AND tax_line_id IS NOT NULL",
+                 pqxx::params{moveId});
+
+        auto hdr = txn.exec(
+            "SELECT journal_id, company_id, date, COALESCE(line_precision, 0) AS lp "
+            "  FROM account_move WHERE id = $1", pqxx::params{moveId});
+        if (hdr.empty()) return 0;
+        const int journalId = hdr[0]["journal_id"].is_null() ? 0 : hdr[0]["journal_id"].as<int>();
+        const int companyId = hdr[0]["company_id"].is_null() ? 1 : hdr[0]["company_id"].as<int>();
+        const std::string date = hdr[0]["date"].is_null() ? "" : hdr[0]["date"].c_str();
+        const int linePrec = hdr[0]["lp"].as<int>(0);
+
+        auto lines = txn.exec(
+            "SELECT id, quantity, price_unit, tax_ids_json, partner_id "
+            "  FROM account_move_line "
+            " WHERE move_id = $1 AND display_type = '' AND tax_line_id IS NULL",
+            pqxx::params{moveId});
+
+        // Accumulate per tax so one tax used on several lines produces ONE tax
+        // line, which is what an invoice is expected to show.
+        std::map<int, core::Money> byTax;
+        std::map<int, std::string> taxNames;
+        core::Money grandTotal = core::Money::zero();
+
+        for (const auto& l : lines) {
+            nlohmann::json vals;
+            vals["quantity"]     = core::Money::fromMicros(l["quantity"].as<long long>(0)).toJson();
+            vals["price_unit"]   = core::Money::fromMicros(l["price_unit"].as<long long>(0)).toJson();
+            vals["discount"]     = 0.0;
+            vals["tax_ids_json"] = l["tax_ids_json"].is_null() ? "[]" : l["tax_ids_json"].c_str();
+
+            const auto taxes = core::loadTaxes(txn, vals["tax_ids_json"].get<std::string>());
+            if (taxes.empty()) continue;
+
+            const int dp = linePrec > 0 ? linePrec
+                         : (core::DecimalPrecision::ready()
+                                ? core::DecimalPrecision::instance()
+                                      .digits(core::DecimalPrecision::kAccount, 2)
+                                : 2);
+            const auto res = core::TaxEngine::compute(
+                core::Money::fromJson(vals["price_unit"].get<double>()),
+                core::Money::fromJson(vals["quantity"].get<double>()),
+                core::Money::zero(), taxes, dp);
+
+            for (const auto& c : res.components) {
+                byTax[c.taxId]    += c.amount;
+                taxNames[c.taxId]  = c.name;
+                grandTotal        += c.amount;
+            }
+        }
+
+        // One credit line per tax, posted to that tax's account.
+        for (const auto& [taxId, amount] : byTax) {
+            if (amount.isZero()) continue;
+            auto ta = txn.exec("SELECT account_id FROM account_tax WHERE id = $1",
+                               pqxx::params{taxId});
+            int acctId = (ta.empty() || ta[0][0].is_null()) ? 0 : ta[0][0].as<int>();
+            if (acctId == 0) {
+                // No tax account configured: fall back to Tax Payable so the
+                // entry still balances rather than silently dropping the tax.
+                auto fb = txn.exec(
+                    "SELECT id FROM account_account "
+                    " WHERE code = '2200' AND company_id = $1 LIMIT 1",
+                    pqxx::params{companyId});
+                if (fb.empty()) continue;   // nothing sane to post to
+                acctId = fb[0][0].as<int>();
+            }
+            pqxx::params p;
+            p.append(moveId); p.append(acctId);
+            if (journalId > 0) p.append(journalId); else p.append(nullptr);
+            p.append(companyId); p.append(date);
+            p.append(taxNames[taxId]); p.append(taxId);
+            p.append(amount.toDb());
+            txn.exec(
+                "INSERT INTO account_move_line "
+                "(move_id, account_id, journal_id, company_id, date, name, "
+                " tax_line_id, credit, debit, display_type) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,'')", p);
+        }
+        return grandTotal.toDb();
+    }
+
     nlohmann::json handleRecomputeTotals(const core::CallKwArgs& call) {
         const auto ids = call.ids();
         if (ids.empty()) return true;
@@ -765,27 +907,48 @@ private:
         pqxx::work txn{conn.get()};
 
         for (int id : ids) {
+            // tax_line_id IS NULL excludes the generated tax lines. They are
+            // credit lines too, so without this filter the tax would be
+            // counted as revenue and then added again as tax — inflating the
+            // invoice by the tax amount on every recompute.
             auto incRow = txn.exec(
                 "SELECT COALESCE(SUM(credit),0) FROM account_move_line "
-                "WHERE move_id=$1 AND credit>0 AND display_type=''",
+                "WHERE move_id=$1 AND credit>0 AND display_type='' "
+                "  AND tax_line_id IS NULL",
                 pqxx::params{id});
-            double untaxed = incRow[0][0].as<double>();
+            // P2: every value in this block is micro-units — SUM() over
+            // micro-unit columns, added to a micro-unit column, written back to
+            // micro-unit columns. Self-consistent, so no scaling is applied
+            // here. Held as long long rather than double so the units are
+            // explicit and the arithmetic is exact by construction.
+            long long untaxed = incRow[0][0].as<long long>(0);
 
             auto mvRow = txn.exec(
                 "SELECT amount_tax, payment_state FROM account_move WHERE id=$1",
                 pqxx::params{id});
             if (mvRow.empty()) continue;
 
-            double tax      = mvRow[0][0].as<double>();
-            std::string ps  = mvRow[0][1].c_str();
-            double total    = untaxed + tax;
-            double residual = (ps == "not_paid" || ps == "partial") ? total : 0.0;
+            std::string ps = mvRow[0][1].c_str();
 
+            // P3: compute tax from the product lines and regenerate the tax
+            // lines, instead of trusting whatever amount_tax already held.
+            // Before this, amount_tax could only be copied from a sale order
+            // or typed by hand — an invoice created directly always showed
+            // zero tax, and no tax line was ever posted to the ledger.
+            const long long tax = recomputeTaxLines_(txn, id);
+
+            long long total    = untaxed + tax;
+            long long residual = (ps == "not_paid" || ps == "partial") ? total : 0;
+
+            // amount_tax is written too. The original only ever READ it —
+            // so a computed tax reached the ledger as a tax line and the
+            // total, but the header still displayed zero tax.
             txn.exec(
                 "UPDATE account_move "
-                "SET amount_untaxed=$1, amount_total=$2, amount_residual=$3, write_date=now() "
-                "WHERE id=$4",
-                pqxx::params{untaxed, total, residual, id});
+                "SET amount_untaxed=$1, amount_tax=$2, amount_total=$3, "
+                "    amount_residual=$4, write_date=now() "
+                "WHERE id=$5",
+                pqxx::params{untaxed, tax, total, residual, id});
 
             // Update the AR/AP line (debit > 0) to match new total
             txn.exec(
@@ -845,7 +1008,13 @@ private:
                 throw odoo::infrastructure::AccessDeniedError(
                     "Invoice is already fully paid");
 
-            double amountResidual = invRow[0]["amount_residual"].as<double>(0.0);
+            // P2: amount_residual is BIGINT micro-units (migration 911).
+            // Reading it straight as a double would yield 250000000 where
+            // 250.00 is meant, and every payment comparison below would be
+            // wrong by a factor of a million.
+            const double amountResidual =
+                core::Money::fromMicros(invRow[0]["amount_residual"].as<long long>(0))
+                    .toJson();
             int    partnerId      = invRow[0]["partner_id"].is_null()  ? 0 : invRow[0]["partner_id"].as<int>();
             int    companyId      = invRow[0]["company_id"].is_null()  ? 1 : invRow[0]["company_id"].as<int>();
             int    currencyId     = invRow[0]["currency_id"].is_null() ? 0 : invRow[0]["currency_id"].as<int>();
@@ -905,7 +1074,9 @@ private:
             if (partnerId > 0) pp.append(partnerId); else pp.append(nullptr);
             pp.append(companyId);
             if (currencyId > 0) pp.append(currencyId); else pp.append(nullptr);
-            pp.append(payAmount); pp.append(payType); pp.append(partType); pp.append(memo);
+            // P2: account_payment.amount is micro-units (migration 912)
+            pp.append(core::Money::fromJson(payAmount).toDb());
+            pp.append(payType); pp.append(partType); pp.append(memo);
 
             auto pmtRow = txn.exec(
                 "INSERT INTO account_payment "
@@ -917,14 +1088,16 @@ private:
 
             // --- Generate journal entry name ---
             std::string year = payDate.size() >= 4 ? payDate.substr(0, 4) : "2026";
-            auto cnt = txn.exec(
-                "SELECT COUNT(*) FROM account_move "
-                "WHERE journal_id=$1 AND state='posted' "
-                "AND EXTRACT(YEAR FROM date::date)=$2::int",
-                pqxx::params{journalId, std::stoi(year)});
-            int seq = cnt[0][0].as<int>() + 1;
+            // P4: same COUNT(*)+1 race as invoice numbering had — two
+            // concurrent payments produced the same journal entry name.
+            const std::string pSeqCode = "account.move." + jcode;
+            txn.exec(
+                "INSERT INTO ir_sequence (code, name, prefix, padding, reset_policy) "
+                "VALUES ($1, $2, $3, 4, 'yearly') "
+                "ON CONFLICT (code) WHERE company_id IS NULL DO NOTHING",
+                pqxx::params{pSeqCode, "Journal — " + jcode, jcode + "/%(year)s/"});
             std::ostringstream ss;
-            ss << jcode << "/" << year << "/" << std::setfill('0') << std::setw(4) << seq;
+            ss << core::IrSequence::instance().nextByCode(txn, pSeqCode);
 
             // --- Create journal entry ---
             pqxx::params mp;
@@ -947,20 +1120,30 @@ private:
             int drAccId = isOutInvoice ? cashAccountId : partnerAccId;
             int crAccId = isOutInvoice ? partnerAccId  : cashAccountId;
 
-            auto insertLine = [&](int acctId, double debit, double credit) {
+            // P2: debit/credit are BIGINT micro-units (migration 910). This is
+            // raw SQL, so it bypasses BaseModel::normalizeForDb_ and must do
+            // the major->micro conversion itself. The lambda takes micro-units
+            // directly so the FX arithmetic below never round-trips through
+            // double — the whole point of P2.
+            auto insertLine = [&](int acctId, long long debit, long long credit) {
                 pqxx::params lp;
                 lp.append(moveId); lp.append(acctId); lp.append(journalId);
                 lp.append(companyId); lp.append(payDate); lp.append(memo);
                 if (partnerId > 0) lp.append(partnerId); else lp.append(nullptr);
-                lp.append(debit); lp.append(credit);
+                lp.append(debit);
+                lp.append(credit);
                 txn.exec(
                     "INSERT INTO account_move_line "
                     "(move_id, account_id, journal_id, company_id, date, name, "
                     " partner_id, debit, credit) "
                     "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)", lp);
             };
-            insertLine(drAccId, payAmount, 0.0);
-            insertLine(crAccId, 0.0, payAmount);
+            // The two legs are NOT written yet. Under a foreign settlement the
+            // cash leg and the receivable leg are DIFFERENT amounts, and the
+            // gap between them is exactly the realised FX — which only the
+            // allocator below can compute. Writing them here (both at
+            // payAmount) left the entry out of balance by the FX difference
+            // the moment a 7900 line was added.
 
             // Link payment → move
             txn.exec(
@@ -968,13 +1151,87 @@ private:
                 "WHERE id=$3",
                 pqxx::params{moveId, ss.str(), pmtId});
 
-            // --- Update invoice ---
-            double newResidual = std::max(0.0, amountResidual - payAmount);
-            std::string newPayState = (newResidual < 0.001) ? "paid" : "partial";
-            txn.exec(
-                "UPDATE account_move SET payment_state=$1, amount_residual=$2, write_date=now() "
-                "WHERE id=$3 AND state='posted'",
-                pqxx::params{newPayState, newResidual, id});
+            // --- Allocate (P1) ---
+            //
+            // Replaces `residual = residual - paid` with a reconcile row.
+            // The scalar could not represent one payment across several
+            // invoices, an unallocated advance, or a reversal; residual is
+            // now DERIVED from the allocation rows so the two cannot
+            // disagree, and "fully paid" is an exact isZero() rather than a
+            // `< 0.001` epsilon.
+            //
+            // receivedBase: what actually landed, in base currency. The
+            // dialog collects it for a foreign-currency invoice (the bank
+            // converts on receipt, so the rate is derived from the amount
+            // rather than typed — docs/048 §4.6). Zero means same-currency.
+            const core::Money receivedBase =
+                call.kwargs.contains("amount_received_base") &&
+                call.kwargs["amount_received_base"].is_number()
+                    ? core::Money::fromJson(call.kwargs["amount_received_base"].get<double>())
+                    : core::Money::zero();
+
+            const auto alloc = core::PaymentAllocation::allocate(
+                txn, pmtId, receivedBase, {id});
+
+            // --- The journal entry, now that the FX is known ---
+            //
+            // Same-currency settlement: both legs are payAmount, as before.
+            //
+            // Foreign settlement (docs/048 §4.6): the bank converted on
+            // receipt, so the two legs differ.
+            //
+            //     100 USD invoice booked at 4.70   AR carries 470.00 MYR
+            //     bank credits                                 448.50 MYR
+            //
+            //     DR Bank            448.50   <- what actually moved
+            //     DR FX loss          21.50   <- the gap
+            //     CR Receivable      470.00   <- what the AR was carrying
+            //
+            // The receivable must be relieved at its BOOKED base value or the
+            // customer's ledger never clears; the bank must be debited with
+            // what actually landed or the cash book is wrong. Both cannot be
+            // the same number, and the difference is the realised FX.
+            const long long fxMicros     = alloc.totalFxDiff.toDb();
+            const long long payMicros    = core::Money::fromJson(payAmount).toDb();
+            const bool      hasFx        = fxMicros != 0;
+            const long long cashMicros   = hasFx ? receivedBase.toDb() : payMicros;
+            // booked = received - fxDiff, since fxDiff = settlement - booked.
+            const long long bookedMicros = hasFx ? cashMicros - fxMicros : payMicros;
+
+            insertLine(drAccId, isOutInvoice ? cashMicros : bookedMicros, 0);
+            insertLine(crAccId, 0, isOutInvoice ? bookedMicros : cashMicros);
+
+            // Realised FX goes to 7900 as a journal line on the PAYMENT
+            // entry, never as a line on the customer invoice — the customer
+            // owes the invoice amount regardless of what the ringgit did.
+            if (hasFx) {
+                auto fxAcc = txn.exec(
+                    "SELECT id FROM account_account "
+                    " WHERE code = '7900' AND company_id = $1 LIMIT 1",
+                    pqxx::params{companyId});
+                if (!fxAcc.empty()) {
+                    const int fxId = fxAcc[0][0].as<int>();
+                    // gap = booked - cash. On a RECEIPT it balances on the
+                    // debit side (a positive gap is a loss); on a PAYMENT the
+                    // legs are reversed, so the same gap balances on the
+                    // credit side and a positive gap is a gain — we settled a
+                    // liability for less base currency than it was booked at.
+                    const long long gap = bookedMicros - cashMicros;   // = -fxDiff
+                    const bool debitSide = isOutInvoice ? (gap >= 0) : (gap < 0);
+                    const long long mag  = gap >= 0 ? gap : -gap;
+                    insertLine(fxId, debitSide ? mag : 0, debitSide ? 0 : mag);
+
+                    // "Loss" is from the company's point of view: on a receipt
+                    // a negative fxDiff means less base landed than was booked;
+                    // on a payment the sign flips.
+                    const bool isLoss = isOutInvoice ? (fxMicros < 0) : (fxMicros > 0);
+                    odoo::modules::mail::postLog(
+                        txn, "account.move", id, 0,
+                        std::string("Realised FX ") + (isLoss ? "loss " : "gain ") +
+                            core::Money::fromMicros(mag).toString(2) + " posted to 7900.",
+                        "log_note");
+                }
+            }
 
             // Chatter
             std::ostringstream logMsg;
@@ -984,10 +1241,20 @@ private:
                 logMsg << " Ref: " << memo;
             odoo::modules::mail::postLog(txn, "account.move", id, 0, logMsg.str(), "log_note");
 
-            result.push_back({
+            // Residual and payment_state are DERIVED from the allocation rows
+            // by PaymentAllocation::refreshResidual, so they are read back
+            // rather than recomputed here — one source of truth.
+            auto st = txn.exec(
+                "SELECT payment_state, amount_residual FROM account_move WHERE id=$1",
+                pqxx::params{id});
+            result.push_back(nlohmann::json{
                 {"payment_id",      pmtId},
-                {"payment_state",   newPayState},
-                {"amount_residual", newResidual}
+                {"payment_state",   st.empty() ? std::string("partial")
+                                               : std::string(st[0][0].c_str())},
+                {"amount_residual", st.empty() ? 0.0
+                    : core::Money::fromMicros(st[0][1].as<long long>(0)).toJson()},
+                {"unallocated",     alloc.unallocated.toJson()},
+                {"fx_difference",   alloc.totalFxDiff.toJson()}
             });
         }
 

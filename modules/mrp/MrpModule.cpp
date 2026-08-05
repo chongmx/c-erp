@@ -58,6 +58,7 @@ public:
         fieldRegistry_.add({"product_uom_id", FieldType::Many2one,"Unit of Measure",false, false, true, false, "uom.uom"});
         fieldRegistry_.add({"company_id",     FieldType::Many2one,"Company",         false, false, true, false, "res.company"});
         fieldRegistry_.add({"active",         FieldType::Boolean, "Active"});
+        fieldRegistry_.markScaled({"product_qty"});   // P2: migration 972
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -120,6 +121,7 @@ public:
         fieldRegistry_.add({"product_qty",    FieldType::Float,   "Quantity"});
         fieldRegistry_.add({"product_uom_id", FieldType::Many2one,"Unit of Measure", false, false, true, false, "uom.uom"});
         fieldRegistry_.add({"sequence",       FieldType::Integer, "Sequence"});
+        fieldRegistry_.markScaled({"product_qty"});   // P2: migration 960
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -225,9 +227,9 @@ public:
     explicit MrpBomViewModel(std::shared_ptr<DbConnection> db) : db_(std::move(db)) {
         REGISTER_METHOD("search_read",  handleSearchRead)
         REGISTER_METHOD("read",         handleRead)
-        REGISTER_METHOD("create",       handleCreate)
-        REGISTER_METHOD("write",        handleWrite)
-        REGISTER_METHOD("unlink",       handleUnlink)
+        REGISTER_MUTATOR("create",       handleCreate)
+        REGISTER_MUTATOR("write",        handleWrite)
+        REGISTER_MUTATOR("unlink",       handleUnlink)
         REGISTER_METHOD("fields_get",   handleFieldsGet)
         REGISTER_METHOD("search_count", handleSearchCount)
         REGISTER_METHOD("search",       handleSearch)
@@ -277,7 +279,10 @@ private:
                                                              row["product_name"].c_str()});
             j["code"]           = row["code"].is_null() ? "" : row["code"].c_str();
             j["bom_type"]       = row["bom_type"].is_null() ? "normal" : row["bom_type"].c_str();
-            j["product_qty"]    = row["product_qty"].as<double>(1.0);
+            // P2: product_qty is BIGINT micro-units (migration 960). Default
+            // 1'000'000 micros = 1.0, matching the previous default of 1.0.
+            j["product_qty"]    = core::Money::fromMicros(
+                                      row["product_qty"].as<long long>(1000000)).toJson();
             j["product_uom_id"] = row["product_uom_id"].is_null()
                                     ? nlohmann::json(false)
                                     : nlohmann::json::array({row["product_uom_id"].as<int>(),
@@ -322,7 +327,10 @@ private:
                                                              row["product_name"].c_str()});
             j["code"]           = row["code"].is_null()     ? "" : row["code"].c_str();
             j["bom_type"]       = row["bom_type"].is_null() ? "normal" : row["bom_type"].c_str();
-            j["product_qty"]    = row["product_qty"].as<double>(1.0);
+            // P2: product_qty is BIGINT micro-units (migration 960). Default
+            // 1'000'000 micros = 1.0, matching the previous default of 1.0.
+            j["product_qty"]    = core::Money::fromMicros(
+                                      row["product_qty"].as<long long>(1000000)).toJson();
             j["product_uom_id"] = row["product_uom_id"].is_null()
                                     ? nlohmann::json(false)
                                     : nlohmann::json::array({row["product_uom_id"].as<int>(),
@@ -339,8 +347,6 @@ private:
         const auto ctx = extractContext_(call);
         proto.setUserContext(ctx);
         const int newId = proto.create(call.arg(0));
-        if (AuditService::ready() && newId > 0)
-            AuditService::instance().log("mrp.bom", "create", {newId}, ctx.uid);
         return newId;
     }
 
@@ -349,8 +355,6 @@ private:
         const auto ctx = extractContext_(call);
         proto.setUserContext(ctx);
         const auto result = proto.write(call.ids(), call.arg(1));
-        if (AuditService::ready() && !call.ids().empty())
-            AuditService::instance().log("mrp.bom", "write", call.ids(), ctx.uid);
         return result;
     }
 
@@ -369,8 +373,6 @@ private:
         txn.exec("DELETE FROM mrp_bom_line WHERE bom_id IN (" + inList + ")");
         txn.exec("DELETE FROM mrp_bom        WHERE id      IN (" + inList + ")");
         txn.commit();
-        if (AuditService::ready())
-            AuditService::instance().log("mrp.bom", "unlink", ids, ctx.uid);
         return true;
     }
 
@@ -403,9 +405,9 @@ public:
     explicit MrpBomLineViewModel(std::shared_ptr<DbConnection> db) : db_(std::move(db)) {
         REGISTER_METHOD("search_read",  handleSearchRead)
         REGISTER_METHOD("read",         handleRead)
-        REGISTER_METHOD("create",       handleCreate)
-        REGISTER_METHOD("write",        handleWrite)
-        REGISTER_METHOD("unlink",       handleUnlink)
+        REGISTER_MUTATOR("create",       handleCreate)
+        REGISTER_MUTATOR("write",        handleWrite)
+        REGISTER_MUTATOR("unlink",       handleUnlink)
         REGISTER_METHOD("fields_get",   handleFieldsGet)
     }
 
@@ -459,7 +461,10 @@ private:
                                     ? nlohmann::json(false)
                                     : nlohmann::json::array({row["product_id"].as<int>(),
                                                              row["product_name"].c_str()});
-            j["product_qty"]    = row["product_qty"].as<double>(1.0);
+            // P2: product_qty is BIGINT micro-units (migration 960). Default
+            // 1'000'000 micros = 1.0, matching the previous default of 1.0.
+            j["product_qty"]    = core::Money::fromMicros(
+                                      row["product_qty"].as<long long>(1000000)).toJson();
             j["product_uom_id"] = row["product_uom_id"].is_null()
                                     ? nlohmann::json(false)
                                     : nlohmann::json::array({row["product_uom_id"].as<int>(),
@@ -481,8 +486,6 @@ private:
         const auto ctx = extractContext_(call);
         proto.setUserContext(ctx);
         const int newId = proto.create(call.arg(0));
-        if (AuditService::ready() && newId > 0)
-            AuditService::instance().log("mrp.bom.line", "create", {newId}, ctx.uid);
         return newId;
     }
 
@@ -491,8 +494,6 @@ private:
         const auto ctx = extractContext_(call);
         proto.setUserContext(ctx);
         const auto result = proto.write(call.ids(), call.arg(1));
-        if (AuditService::ready() && !call.ids().empty())
-            AuditService::instance().log("mrp.bom.line", "write", call.ids(), ctx.uid);
         return result;
     }
 
@@ -502,8 +503,6 @@ private:
         proto.setUserContext(ctx);
         const auto ids = call.ids();
         const auto result = proto.unlink(ids);
-        if (AuditService::ready() && !ids.empty())
-            AuditService::instance().log("mrp.bom.line", "unlink", ids, ctx.uid);
         return result;
     }
 

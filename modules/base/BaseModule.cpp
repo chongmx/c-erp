@@ -3,12 +3,18 @@
 // =============================================================
 #include "BaseModule.hpp"
 #include "BaseModel.hpp"
+#include "DecimalPrecision.hpp"
 #include "BaseService.hpp"
 #include "BaseView.hpp"
 #include "BaseViewModel.hpp"
+#include "Errors.hpp"
+#include "CacheInvalidation.hpp"
+#include "GenericViewModel.hpp"
 #include "Domain.hpp"
 #include "FieldRegistry.hpp"
 #include "WorldData.hpp"
+#include "MoneyMigrations.hpp"
+#include "MigrationRunner.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <memory>
@@ -96,6 +102,9 @@ public:
     std::string position      = "after";
     double      rounding      = 0.01;
     int         decimalPlaces = 2;
+    // P2: base units per 1 unit of this currency, micro-units (docs/048 4.3).
+    // Scaled, so BaseModel converts it at both boundaries like any money column.
+    double      rate          = 1.0;
     bool        active        = true;
 
     explicit ResCurrency(std::shared_ptr<infrastructure::DbConnection> db)
@@ -108,6 +117,9 @@ public:
         fieldRegistry_.add({"rounding",       core::FieldType::Float,   "Rounding"});
         fieldRegistry_.add({"decimal_places", core::FieldType::Integer, "Decimals"});
         fieldRegistry_.add({"active",         core::FieldType::Boolean, "Active"});
+        fieldRegistry_.add({"rate",           core::FieldType::Float,   "Rate"});
+        fieldRegistry_.markScaled({"rate"});          // P2: migration 901
+        fieldRegistry_.setPrecision(core::DecimalPrecision::kProductPrice, {"rate"});
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -117,6 +129,7 @@ public:
         j["rounding"]       = rounding;
         j["decimal_places"] = decimalPlaces;
         j["active"]         = active;
+        j["rate"]           = rate;
     }
 
     void deserializeFields(const nlohmann::json& j) override {
@@ -132,6 +145,8 @@ public:
             decimalPlaces  = j["decimal_places"].get<int>();
         if (j.contains("active")         && j["active"].is_boolean())
             active         = j["active"].get<bool>();
+        if (j.contains("rate")           && j["rate"].is_number())
+            rate           = j["rate"].get<double>();
     }
 
     std::vector<std::string> validate() const override {
@@ -464,6 +479,40 @@ public:
 // 4. VIEWMODELS
 // ================================================================
 
+// ----------------------------------------------------------------
+// CurrencyViewModel — res.currency  (P2)
+//
+// res.currency used to be read-only (LookupViewModel), but the FX rate is
+// now user-maintained (docs/048 §4.3), so write has to be supported. Any
+// write drops the dispatcher's 60 s currency cache — otherwise a rate
+// change is invisible for up to a minute, which looks like a lost edit.
+// ----------------------------------------------------------------
+class CurrencyViewModel : public core::GenericViewModel<ResCurrency> {
+public:
+    explicit CurrencyViewModel(std::shared_ptr<infrastructure::DbConnection> db)
+        : core::GenericViewModel<ResCurrency>(std::move(db))
+    {
+        REGISTER_MUTATOR("write", handleWriteAndInvalidate)
+    }
+
+    nlohmann::json handleWriteAndInvalidate(const core::CallKwArgs& call) {
+        const auto vals = call.arg(1);
+        if (vals.is_object() && vals.contains("rate")) {
+            if (!vals["rate"].is_number())
+                throw infrastructure::ValidationError("Rate must be a number.");
+            // A zero or negative rate makes every conversion nonsense and a
+            // division by it undefined; reject rather than store it.
+            if (vals["rate"].get<double>() <= 0.0)
+                throw infrastructure::ValidationError(
+                    "Rate must be greater than zero. It is how many base-currency "
+                    "units equal 1 unit of this currency.");
+        }
+        auto result = this->handleWrite(call);
+        core::CacheInvalidation::currency();
+        return result;
+    }
+};
+
 // Generic read-only viewmodel for lookup tables (lang, currency, country, etc.)
 template<typename TModel>
 class LookupViewModel : public core::BaseViewModel {
@@ -515,9 +564,9 @@ public:
         REGISTER_METHOD("search_read",  handleSearchRead)
         REGISTER_METHOD("read",         handleRead)
         REGISTER_METHOD("web_read",     handleRead)
-        REGISTER_METHOD("create",       handleCreate)
-        REGISTER_METHOD("write",        handleWrite)
-        REGISTER_METHOD("unlink",       handleUnlink)
+        REGISTER_MUTATOR("create",       handleCreate)
+        REGISTER_MUTATOR("write",        handleWrite)
+        REGISTER_MUTATOR("unlink",       handleUnlink)
         REGISTER_METHOD("fields_get",   handleFieldsGet)
         REGISTER_METHOD("search_count", handleSearchCount)
     }
@@ -541,20 +590,17 @@ private:
         const auto v = call.arg(0);
         if (!v.is_object()) throw std::runtime_error("create: args[0] must be a dict");
         const auto newId = service_->create(v);
-        audit_("create", static_cast<int>(newId), extractContext_(call));   // S-47
         return newId;
     }
     nlohmann::json handleWrite(const core::CallKwArgs& call) {
         const auto v = call.arg(1);
         if (!v.is_object()) throw std::runtime_error("write: args[1] must be a dict");
         const auto result = service_->write(call.ids(), v);
-        audit_("write", call.ids(), extractContext_(call));              // S-47
         return result;
     }
     nlohmann::json handleUnlink(const core::CallKwArgs& call) {
         const auto ids    = call.ids();
         const auto result = service_->unlink(ids);
-        audit_("unlink", ids, extractContext_(call));                    // S-47
         return result;
     }
     nlohmann::json handleFieldsGet(const core::CallKwArgs& call) {
@@ -624,7 +670,7 @@ void BaseModule::registerViewModels() {
         return std::make_shared<LookupViewModel<ResLang>>(db);
     });
     viewModels_.registerCreator("res.currency", [db]{
-        return std::make_shared<LookupViewModel<ResCurrency>>(db);
+        return std::make_shared<CurrencyViewModel>(db);   // P2: writable (rate)
     });
     viewModels_.registerCreator("res.country", [db]{
         // ResCountry needs write support for the Settings → Countries tab
@@ -636,7 +682,7 @@ void BaseModule::registerViewModels() {
                 REGISTER_METHOD("web_read",     handleRead)
                 REGISTER_METHOD("fields_get",   handleFieldsGet)
                 REGISTER_METHOD("search_count", handleSearchCount)
-                REGISTER_METHOD("write",        handleWrite)
+                REGISTER_MUTATOR("write",        handleWrite)
             }
             std::string modelName() const override { return "res.country"; }
             nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
@@ -669,6 +715,21 @@ void BaseModule::registerViewModels() {
 }
 
 void BaseModule::registerRoutes() {}
+
+// P2 (docs/047, docs/048). Registered from BaseModule because these
+// migrations rewrite tables owned by account/sale/purchase/stock/product,
+// and MigrationRunner applies strictly in version order regardless of which
+// module registered them — so ordering is governed by the 9xx numbers, not
+// by module boot sequence.
+void BaseModule::registerMigrations(odoo::infrastructure::MigrationRunner& runner) {
+    // P2 (docs/047, docs/048): money, price and quantity columns become BIGINT
+    // micro-units. Enabled once Phases 3 and 4 were complete — the conversion
+    // boundary in BaseModel plus the 22 raw-SQL sites outside it (docs/049).
+    //
+    // Take a pg_dump before first run. MigrationRunner applies each migration
+    // in its own transaction and halts startup on failure.
+    odoo::core::registerMoneyMigrations(runner);
+}
 
 void BaseModule::initialize() {
     ensureSchema_();

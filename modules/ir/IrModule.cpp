@@ -11,6 +11,11 @@
 #include "TtlCache.hpp"
 #include "RuleEngine.hpp"
 #include "AuditService.hpp"
+#include "DecimalPrecision.hpp"
+#include "IrSequence.hpp"
+#include "IrCron.hpp"
+#include "Money.hpp"
+#include "CacheInvalidation.hpp"
 #include "MigrationRunner.hpp"
 #include "CsvParser.hpp"
 #include "Errors.hpp"
@@ -189,9 +194,97 @@ public:
     }
 };
 
+// ----------------------------------------------------------------
+// DecimalPrecisionModel — decimal.precision  (P2, docs/048 §2.1)
+//
+// User-configurable DISPLAY precision. Storage is always Money::SCALE
+// and is not affected by these values; they govern rendering and the
+// rounding boundary only.
+// ----------------------------------------------------------------
+class DecimalPrecisionModel : public core::BaseModel<DecimalPrecisionModel> {
+public:
+    ODOO_MODEL("decimal.precision", "decimal_precision")
+
+    std::string name;
+    int         digits = 2;
+
+    explicit DecimalPrecisionModel(std::shared_ptr<infrastructure::DbConnection> db)
+        : core::BaseModel<DecimalPrecisionModel>(std::move(db)) {}
+
+    void registerFields() override {
+        fieldRegistry_.add({"name",   core::FieldType::Char,    "Usage",    true, true});
+        fieldRegistry_.add({"digits", core::FieldType::Integer, "Decimals", true});
+    }
+
+    void serializeFields(nlohmann::json& j) const override {
+        j["name"]   = name;
+        j["digits"] = digits;
+    }
+
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("name")   && j["name"].is_string())          name   = j["name"].get<std::string>();
+        if (j.contains("digits") && j["digits"].is_number_integer()) digits = j["digits"].get<int>();
+    }
+
+    std::vector<std::string> validate() const override {
+        std::vector<std::string> e;
+        if (name.empty())               e.push_back("Usage is required");
+        // Mirrors the DB CHECK constraint. Enforced here too so the user gets
+        // a clear message instead of a raw constraint violation, and because
+        // Money::SCALE is the hard ceiling — more decimals than the storage
+        // scale cannot be represented.
+        if (digits < 0 || digits > core::Money::SCALE)
+            e.push_back("Decimals must be between 0 and " +
+                        std::to_string(core::Money::SCALE));
+        return e;
+    }
+};
+
 // ================================================================
 // 2. VIEWMODELS
 // ================================================================
+
+// P2: writing a precision changes what fields_get reports, so both the
+// dispatcher's fields_get cache and DecimalPrecision's own cache must be
+// dropped — otherwise the change is invisible until the next restart.
+class DecimalPrecisionViewModel : public core::GenericViewModel<DecimalPrecisionModel> {
+public:
+    explicit DecimalPrecisionViewModel(std::shared_ptr<infrastructure::DbConnection> db)
+        : core::GenericViewModel<DecimalPrecisionModel>(std::move(db))
+    {
+        // Re-register over the generic handlers so the invalidation runs after
+        // the write succeeds. Deliberately no `create`/`unlink`: the five rows
+        // are seeded by migration 901 and adding or removing usages would
+        // silently detach fields whose precisionName no longer resolves.
+        REGISTER_MUTATOR("write", handleWriteAndInvalidate)
+    }
+
+    nlohmann::json handleWriteAndInvalidate(const core::CallKwArgs& call) {
+        // Validate before the write. BaseModel::write() does NOT call
+        // validate(), so without this the only guard is the DB CHECK
+        // constraint — whose pqxx error is gated behind devMode by SEC-28 and
+        // reaches the user as "An internal error occurred". A settings screen
+        // has to say what is actually wrong.
+        const auto vals = call.arg(1);
+        if (vals.is_object() && vals.contains("digits")) {
+            if (!vals["digits"].is_number_integer())
+                throw infrastructure::ValidationError("Decimals must be a whole number.");
+            const int d = vals["digits"].get<int>();
+            if (d < 0 || d > core::Money::SCALE)
+                throw infrastructure::ValidationError(
+                    "Decimals must be between 0 and " +
+                    std::to_string(core::Money::SCALE) +
+                    ". Values are stored at " + std::to_string(core::Money::SCALE) +
+                    " decimal places, so more than that cannot be represented.");
+        }
+
+        auto result = this->handleWrite(call);
+        if (core::DecimalPrecision::ready())
+            core::DecimalPrecision::instance().invalidate();
+        core::CacheInvalidation::fieldsGet();
+        return result;
+    }
+};
 
 class IrMenuViewModel : public core::BaseViewModel {
 public:
@@ -522,6 +615,9 @@ void IrModule::registerModels() {
     });
     models_.registerCreator("ir.config.parameter", [db]{
         return std::make_shared<IrConfigParameter>(db);
+    });
+    models_.registerCreator("decimal.precision", [db]{      // P2
+        return std::make_shared<DecimalPrecisionModel>(db);
     });
     models_.registerCreator("audit.log", [db]{
         return std::make_shared<AuditLog>(db);
@@ -881,6 +977,9 @@ void IrModule::registerViewModels() {
         return std::make_shared<IrModelViewModel>(
             std::shared_ptr<core::ModelFactory>(&mf, [](auto*){}));
     });
+    viewModels_.registerCreator("decimal.precision", [db]{
+        return std::make_shared<DecimalPrecisionViewModel>(db);
+    });
     viewModels_.registerCreator("ir.config.parameter", [db]{
         return std::make_shared<core::GenericViewModel<IrConfigParameter>>(db);
     });
@@ -918,6 +1017,13 @@ void IrModule::initialize() {
     core::RuleEngine::initialize(services_.db());
     // Audit trail: initialize after schema is ready
     infrastructure::AuditService::initialize(services_.db());
+    // P2: display precision, read lazily and cached (docs/048 §2.1).
+    // Safe to initialize here even though migration 901 creates the table
+    // later in the same boot — the first digits() call is lazy, and a
+    // missing table falls back to the caller's default rather than throwing.
+    core::DecimalPrecision::initialize(services_.db());
+    core::IrSequence::initialize(services_.db());   // P4
+    core::IrCron::initialize(services_.db());       // P5
 }
 
 void IrModule::ensureSchema_() {

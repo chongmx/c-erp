@@ -31,6 +31,7 @@ public:
     void registerViews()      override;
     void registerViewModels() override;
     void registerRoutes()     override;
+    void registerMigrations(odoo::infrastructure::MigrationRunner&) override;
     void initialize()         override;
 
 private:

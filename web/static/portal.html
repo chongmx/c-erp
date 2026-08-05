@@ -138,6 +138,40 @@ tr:hover td { background:#fafafa; }
          padding:12px 20px; border-radius:8px; font-size:13px; z-index:9999;
          opacity:0; transition:opacity .3s; pointer-events:none; max-width:320px; }
 #toast.show { opacity:1; }
+/* ── My Units (docs/046 §7) ───────────────────────────────────── */
+/* The balance is a hero figure: one number, large, with overdue
+   separated out because that is the part needing action. */
+.bal-hero { display:flex; flex-wrap:wrap; gap:24px; align-items:flex-end;
+            background:#fff; border:1px solid #e2e8f0; border-radius:8px;
+            padding:18px 22px; margin-bottom:18px; }
+.bal-main .bal-label { font-size:12px; color:#64748b; text-transform:uppercase;
+                       letter-spacing:.05em; }
+.bal-main .bal-value { font-size:34px; font-weight:600; color:#0f172a; line-height:1.1; }
+.bal-side { display:flex; gap:22px; margin-left:auto; }
+.bal-side .k { font-size:11px; color:#64748b; text-transform:uppercase; letter-spacing:.05em; }
+.bal-side .v { font-size:17px; font-weight:600; color:#0f172a; font-variant-numeric:tabular-nums; }
+/* Status is icon + label, never a bare colour. */
+.bal-overdue .v { color:#b91c1c; }
+.bal-clear   .v { color:#15803d; }
+
+.unit-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr));
+              gap:12px; }
+.unit-card { background:#fff; border:1px solid #e2e8f0; border-radius:8px;
+             padding:14px 16px; }
+.unit-card .uc-top { display:flex; justify-content:space-between; align-items:baseline;
+                     gap:8px; margin-bottom:8px; }
+.unit-card .uc-code { font-size:18px; font-weight:600; color:#0f172a; }
+.unit-card .uc-type { font-size:12px; color:#64748b; }
+.unit-card .uc-rate { font-size:20px; font-weight:600; color:#0f172a;
+                      font-variant-numeric:tabular-nums; }
+.unit-card .uc-per  { font-size:11px; color:#64748b; }
+.unit-card dl { margin:10px 0 0; display:grid; grid-template-columns:auto 1fr;
+                gap:3px 10px; font-size:12px; }
+.unit-card dt { color:#64748b; }
+.unit-card dd { margin:0; color:#0f172a; font-variant-numeric:tabular-nums; }
+.uc-badge { display:inline-block; font-size:11px; padding:1px 7px; border-radius:10px;
+            background:#eff6ff; color:#1d4ed8; }
+.uc-badge.manual { background:#fef3c7; color:#92400e; }
 </style>
 </head>
 <body>
@@ -169,15 +203,25 @@ tr:hover td { background:#fafafa; }
   </header>
   <div class="app-body">
     <nav class="sidebar">
-      <div class="nav-item active" data-section="invoices" onclick="Portal.showSection('invoices')">Invoices</div>
+      <div class="nav-item active" data-section="units" onclick="Portal.showSection('units')">My Units</div>
+      <div class="nav-item" data-section="invoices" onclick="Portal.showSection('invoices')">Invoices</div>
       <div class="nav-item" data-section="orders" onclick="Portal.showSection('orders')">Orders</div>
       <div class="nav-item" data-section="deliveries" onclick="Portal.showSection('deliveries')">Deliveries</div>
       <div class="nav-item" data-section="products" onclick="Portal.showSection('products')">Products</div>
     </nav>
     <main class="content">
 
+      <!-- My Units — docs/046 §7. Customers want one number and a list,
+           so: a hero balance with overdue called out, then a card per
+           unit. No dashboard, no charts. -->
+      <div id="section-units">
+        <div class="page-title">My Units</div>
+        <div id="units-summary"></div>
+        <div id="units-cards"><div class="empty-state">Loading…</div></div>
+      </div>
+
       <!-- Invoices section -->
-      <div id="section-invoices">
+      <div id="section-invoices" style="display:none">
         <div class="page-title">My Invoices</div>
         <div class="card">
           <div class="card-body" style="padding:0">

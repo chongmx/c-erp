@@ -1,5 +1,6 @@
 #pragma once
 #include <nlohmann/json.hpp>
+#include "DecimalPrecision.hpp"
 #include <cctype>
 #include <string>
 #include <vector>
@@ -69,6 +70,39 @@ struct FieldDef {
     bool        compute = false;  ///< true = server-derived; client must not edit
     std::string depends;          ///< comma-separated field names this depends on
 
+    /**
+     * @brief Column is stored as BIGINT micro-units (Money scale 6). (P2)
+     *
+     * Set on money, price and quantity columns migrated by 901–960
+     * (docs/047 §2.1). BaseModel converts these at both boundaries:
+     *   read  — micro-units → major units before they reach JSON
+     *   write — major units → micro-units before they reach SQL
+     * so the wire format is unchanged and the frontend needs no edits
+     * (docs/047 §3).
+     *
+     * FieldType alone cannot carry this: `Float` covers both converted
+     * quantities (product_uom_qty) and untouched physical values
+     * (weight, volume, hours_per_day), so the distinction has to be
+     * declared rather than inferred.
+     */
+    bool        scaled  = false;
+
+    /**
+     * @brief Which `decimal_precision` entry governs this field's display. (P2)
+     *
+     * Empty = no explicit precision; the client falls back to its default.
+     * Set by markScaled(), which infers it from the field type so the 23
+     * scaled columns do not each need it spelled out:
+     *   Monetary -> "Account"        (invoice amounts, totals)
+     *   Float    -> "Product UoM"    (quantities)
+     * Override afterwards for the handful that differ — unit prices want
+     * "Product Price" (5 dp), not "Account" (2 dp).
+     *
+     * Surfaces in fields_get as `digits: [16, N]`, the Odoo convention the
+     * OWL client already understands.
+     */
+    std::string precisionName;
+
     nlohmann::json toJson() const {
         // computed fields are always readonly from the client's perspective
         const bool effectiveReadonly = readonly || compute;
@@ -83,6 +117,17 @@ struct FieldDef {
         if (compute) {
             j["compute"] = true;
             if (!depends.empty()) j["depends"] = depends;
+        }
+        // P2: tell the client how many decimals to render. Resolved against
+        // the live decimal_precision table so a Settings change takes effect
+        // without a restart (fields_get is cached 300 s in the dispatcher —
+        // invalidateFieldsGetCache() is called when precision is written).
+        if (!precisionName.empty()) {
+            const int d = DecimalPrecision::ready()
+                        ? DecimalPrecision::instance().digits(precisionName)
+                        : 2;
+            j["digits"]          = nlohmann::json::array({16, d});
+            j["precision_name"]  = precisionName;
         }
         if (!relation.empty())
             j["relation"] = relation;
@@ -211,6 +256,57 @@ public:
     }
 
     /** @brief Column name list for SELECT (store=true fields only). */
+    /// P2: true when the column holds BIGINT micro-units. Unknown → false,
+    /// so a column absent from the registry is never rescaled by accident.
+    bool isScaled(const std::string& name) const {
+        auto it = index_.find(name);
+        return it != index_.end() && fields_[it->second].scaled;
+    }
+
+    /**
+     * @brief P2: mark already-registered fields as micro-unit columns.
+     *
+     * Called at the end of registerFields(). A separate call rather than a
+     * constructor argument because `scaled` is the last member of FieldDef
+     * and the existing registrations use positional aggregate init with
+     * varying arity — setting it inline would mean spelling out every
+     * intermediate field at 23 sites.
+     *
+     * Naming a field that was never registered throws: a typo here would
+     * silently leave a money column unscaled, which is exactly the
+     * factor-of-a-million bug this whole change exists to avoid.
+     */
+    void markScaled(std::initializer_list<const char*> names) {
+        for (const char* n : names) {
+            auto it = index_.find(n);
+            if (it == index_.end())
+                throw std::runtime_error(
+                    std::string("markScaled: no such field '") + n +
+                    "' — check the name against registerFields()");
+            auto& f = fields_[it->second];
+            f.scaled = true;
+            // Infer the display precision from the field type so the common
+            // case needs no extra declaration. Unit prices are the notable
+            // exception and are corrected by setPrecision() below.
+            if (f.precisionName.empty())
+                f.precisionName = (f.type == FieldType::Monetary)
+                                ? DecimalPrecision::kAccount     // 2 dp
+                                : DecimalPrecision::kProductUom; // 4 dp
+        }
+    }
+
+    /// Override the display precision for specific fields (P2).
+    void setPrecision(const std::string& precisionName,
+                      std::initializer_list<const char*> names) {
+        for (const char* n : names) {
+            auto it = index_.find(n);
+            if (it == index_.end())
+                throw std::runtime_error(
+                    std::string("setPrecision: no such field '") + n + "'");
+            fields_[it->second].precisionName = precisionName;
+        }
+    }
+
     std::vector<std::string> storedColumnNames() const {
         std::vector<std::string> cols = {"id"};
         for (const auto& f : fields_)
