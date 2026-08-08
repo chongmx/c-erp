@@ -522,13 +522,16 @@ class RentalDashboard extends owl.Component {
     // --- ageing ---------------------------------------------------
     get ageRows() {
         const a = this.d.ageing || {};
-        // One hue, light -> dark: an ordinal ramp, from docs/046 §3.
+        // An ordinal ramp in one hue. The steps are CSS tokens, not
+        // literals, so the ramp flips direction with the theme — on a
+        // dark surface it must run dim -> bright as the debt ages, or
+        // the 90+ bucket becomes the least visible thing on the panel.
         const defs = [
-            { key: 'current',  label: 'Not yet due', color: '#86b6ef' },
-            { key: 'd0_30',    label: '0–30 days',   color: '#3987e5' },
-            { key: 'd31_60',   label: '31–60 days',  color: '#256abf' },
-            { key: 'd61_90',   label: '61–90 days',  color: '#104281' },
-            { key: 'd90_plus', label: '90+ days',    color: '#0b2f5c' },
+            { key: 'current',  label: 'Not yet due', color: 'var(--age-current)' },
+            { key: 'd0_30',    label: '0–30 days',   color: 'var(--age-0-30)' },
+            { key: 'd31_60',   label: '31–60 days',  color: 'var(--age-31-60)' },
+            { key: 'd61_90',   label: '61–90 days',  color: 'var(--age-61-90)' },
+            { key: 'd90_plus', label: '90+ days',    color: 'var(--age-90-plus)' },
         ];
         const max = Math.max(1, ...defs.map(d => Number(a[d.key] || 0)));
         return defs.map(d => ({

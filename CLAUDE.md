@@ -94,6 +94,24 @@ const std::string safe = kAllowed.count(dbValue) ? dbValue : "default";
 
 Never use raw DB values in `std::system()` calls via string concatenation.
 
+### S-49: A column name reaching SQL must be allowlisted, not just charset-checked
+
+Any user-supplied identifier interpolated into SQL — a domain filter field, an `ORDER BY`
+column, a `GROUP BY` — must be checked against the model's **registered fields**, not merely
+validated for `[A-Za-z0-9_]`. A charset check stops injection but still lets an authenticated
+user *name any real column* (e.g. `password`) and read it blind via a `like` filter, one
+substring at a time — the SELECT list being restricted does not help, because the leak is in
+the `WHERE`.
+
+```cpp
+// domain compile: pass the stored-column allowlist
+domainFromJson(merged).toSql(&filterableColumns_());   // rejects unregistered columns
+// ORDER BY: validateOrder_ already checks fieldRegistry_.has(col)
+```
+
+Values are bound (`$N`); it is the column *name* that needs the allowlist. See
+`verify_domain_field_allowlist.sh` and `docs/062`.
+
 ## Coding conventions (PERF-E — mandatory for every new module)
 
 ### Module file split: `.hpp` (declaration) + `.cpp` (implementation)

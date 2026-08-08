@@ -36,7 +36,8 @@ public:
                        core::ViewFactory&      views);
 
     static constexpr const char* staticModuleName() { return "mrp"; }
-    std::string moduleName() const override;
+    std::string              moduleName()   const override;
+    std::vector<std::string> dependencies() const override;
 
     void registerModels()     override;
     void registerServices()   override;
@@ -52,6 +53,7 @@ private:
     core::ViewFactory&      views_;
 
     void ensureSchema_();
+    void seedProductionData_();   // Production location + MO sequence
     void seedMenus_();
 };
 

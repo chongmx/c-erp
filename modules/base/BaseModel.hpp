@@ -240,7 +240,7 @@ public:
         validateOrder_(order);
         // S-30: merge rule domain into user domain before compiling SQL
         const nlohmann::json merged = mergeRuleDomain_(domainJson, RuleOp::Read);
-        auto [where, paramVec] = domainFromJson(merged).toSql();
+        auto [where, paramVec] = domainFromJson(merged).toSql(&filterableColumns_());
         std::string sql =
             "SELECT id FROM " + std::string(TDerived::TABLE_NAME) +
             " WHERE " + where;
@@ -276,7 +276,7 @@ public:
         if (limit <= 0 || limit > kMaxPageSize) limit = kMaxPageSize;
         // S-30: merge rule domain into user domain before compiling SQL
         const nlohmann::json merged = mergeRuleDomain_(domainJson, RuleOp::Read);
-        auto [where, paramVec] = domainFromJson(merged).toSql();
+        auto [where, paramVec] = domainFromJson(merged).toSql(&filterableColumns_());
         const std::string cols = buildSelectCols_(fields);
         std::string sql =
             "SELECT " + cols + " FROM " + std::string(TDerived::TABLE_NAME) +
@@ -300,7 +300,7 @@ public:
     int searchCount(const nlohmann::json& domainJson) override {
         // S-30: merge rule domain
         const nlohmann::json merged = mergeRuleDomain_(domainJson, RuleOp::Read);
-        auto [where, paramVec] = domainFromJson(merged).toSql();
+        auto [where, paramVec] = domainFromJson(merged).toSql(&filterableColumns_());
         const std::string sql =
             "SELECT COUNT(*) FROM " + std::string(TDerived::TABLE_NAME) +
             " WHERE " + where;
@@ -333,6 +333,20 @@ protected:
     inline static FieldRegistry fieldRegistry_{};
 
 private:
+    // ── S-49: filterable-column allowlist ──────────────────────
+    //
+    // The set a domain may filter on: the model's stored columns. Built
+    // once per model. The rule-domain merge appends leaves too, but those
+    // name registered fields by construction, so one allowlist covers
+    // both the user's leaves and the rule's.
+    static const std::set<std::string>& filterableColumns_() {
+        static const std::set<std::string> cols = [] {
+            const auto v = fieldRegistry_.storedColumnNames();
+            return std::set<std::string>(v.begin(), v.end());
+        }();
+        return cols;
+    }
+
     // ── S-30: Record-rule helpers ──────────────────────────────
 
     // Returns the user domain merged with applicable ir.rule domains (implicit AND).

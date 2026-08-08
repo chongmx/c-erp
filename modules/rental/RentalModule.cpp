@@ -12,6 +12,8 @@
 #include "RentalExpenses.hpp"
 #include "RentalForecast.hpp"
 #include "RentalDashboard.hpp"
+#include "RentalDemo.hpp"
+#include "SessionManager.hpp"
 
 #include "BaseModel.hpp"
 #include "BaseView.hpp"
@@ -807,14 +809,40 @@ void RentalModule::registerRoutes() {
     auto db = services_.db();
     // SEC-28: captured ONCE, outside the lambda.
     const bool devMode = services_.devMode();
+    auto sessions = services_.sessions();
+
+    // Every route below mutates or discloses business data, so every one
+    // of them authenticates.
+    //
+    // The first cut of these routes had NO auth at all: /rental/billing/run
+    // would create invoices, and /rental/dashboard would disclose MRR and
+    // receivables, to anyone who could reach the port. Loopback binding
+    // and nginx are not access control — they decide who can knock, not
+    // who gets in. Same checkAuth shape ReportModule uses.
+    auto checkAuth = [sessions](const drogon::HttpRequestPtr& req) -> bool {
+        if (!sessions) return false;
+        const std::string sid = req->getCookie(SessionManager::cookieName());
+        if (sid.empty()) return false;
+        auto s = sessions->get(sid);
+        return s.has_value() && s->isAuthenticated();
+    };
+    auto unauthorized = []() -> drogon::HttpResponsePtr {
+        auto r = drogon::HttpResponse::newHttpResponse();
+        r->setStatusCode(drogon::k401Unauthorized);
+        r->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        r->setBody(nlohmann::json{{"error", "Not authenticated"}}.dump());
+        return r;
+    };
 
     // "Generate invoices now" — the SAME RentalBilling::run the cron
     // calls, differing only by the as-of date. A manual path with its own
     // implementation is how double-billing gets discovered in production.
     drogon::app().registerHandler(
         "/rental/billing/run",
-        [db, devMode](const drogon::HttpRequestPtr& req,
-                      std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+        [db, devMode, checkAuth, unauthorized](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+            if (!checkAuth(req)) { cb(unauthorized()); return; }
             auto json = [&cb](int code, const nlohmann::json& body) {
                 auto r = drogon::HttpResponse::newHttpResponse();
                 r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
@@ -853,8 +881,10 @@ void RentalModule::registerRoutes() {
     // the billing action: one code path, shared with the cron.
     drogon::app().registerHandler(
         "/rental/expenses/generate",
-        [db, devMode](const drogon::HttpRequestPtr& req,
-                      std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+        [db, devMode, checkAuth, unauthorized](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+            if (!checkAuth(req)) { cb(unauthorized()); return; }
             auto json = [&cb](int code, const nlohmann::json& body) {
                 auto r = drogon::HttpResponse::newHttpResponse();
                 r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
@@ -887,8 +917,10 @@ void RentalModule::registerRoutes() {
     // than N search_read calls assembled in the browser — docs/040 §3.4.
     drogon::app().registerHandler(
         "/rental/cashflow",
-        [db, devMode](const drogon::HttpRequestPtr& req,
-                      std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+        [db, devMode, checkAuth, unauthorized](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+            if (!checkAuth(req)) { cb(unauthorized()); return; }
             auto json = [&cb](int code, const nlohmann::json& body) {
                 auto r = drogon::HttpResponse::newHttpResponse();
                 r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
@@ -923,8 +955,10 @@ void RentalModule::registerRoutes() {
     // docs/040 §3.4.
     drogon::app().registerHandler(
         "/rental/dashboard",
-        [db, devMode](const drogon::HttpRequestPtr& req,
-                      std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+        [db, devMode, checkAuth, unauthorized](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+            if (!checkAuth(req)) { cb(unauthorized()); return; }
             auto json = [&cb](int code, const nlohmann::json& body) {
                 auto r = drogon::HttpResponse::newHttpResponse();
                 r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
@@ -949,6 +983,51 @@ void RentalModule::registerRoutes() {
             }
         },
         {drogon::Get});
+
+    // ----------------------------------------------------------
+    // Demo data — Settings -> Technical -> Demo Data.
+    //
+    // /clear is DESTRUCTIVE, so three things hold:
+    //   * it authenticates, like everything else here
+    //   * /status reports exactly what exists, so the UI can show what is
+    //     about to be removed instead of asking for blind confirmation
+    //   * what counts as demo data is defined once in RentalDemo, so seed
+    //     and clear can never disagree about what they own
+    // ----------------------------------------------------------
+    auto demoRoute = [db, devMode, checkAuth, unauthorized](
+        const char* what,
+        std::function<nlohmann::json(std::shared_ptr<DbConnection>)> fn) {
+        return [db, devMode, checkAuth, unauthorized, what, fn](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+            auto json = [&cb](int code, const nlohmann::json& body) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
+                r->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                r->setBody(body.dump());
+                cb(r);
+            };
+            if (!checkAuth(req)) { cb(unauthorized()); return; }
+            try {
+                json(200, fn(db));
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[rental/demo] pool: " << e.what();
+                json(503, {{"error", "The server is temporarily overloaded. Please retry."}});
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[rental/demo/" << what << "] " << e.what();
+                json(500, {{"error", devMode ? e.what() : "An internal error occurred"}});
+            }
+        };
+    };
+
+    drogon::app().registerHandler("/rental/demo/status",
+        demoRoute("status", &RentalDemo::status), {drogon::Get});
+    // POST for both mutations: a GET that changes data can be triggered by
+    // a link, a prefetch or a crawler.
+    drogon::app().registerHandler("/rental/demo/seed",
+        demoRoute("seed",  &RentalDemo::seed),  {drogon::Post});
+    drogon::app().registerHandler("/rental/demo/clear",
+        demoRoute("clear", &RentalDemo::clear), {drogon::Post});
 }
 
 void RentalModule::registerMigrations(odoo::infrastructure::MigrationRunner& runner) {
@@ -990,7 +1069,8 @@ void RentalModule::seedActions_() {
             (42, 'Contracts',  'rental.contract',        'list,form'),
             (43, 'Expenses',   'rental.expense',         'list,form'),
             (44, 'Categories', 'rental.expense.category','list,form'),
-            (45, 'Events',     'rental.event',           'list')
+            (45, 'Events',     'rental.event',           'list'),
+            (46, 'Demo Data',  'rental.demo.data',       'list')
         ON CONFLICT (id) DO UPDATE
             SET res_model = EXCLUDED.res_model,
                 view_mode = EXCLUDED.view_mode
@@ -1027,6 +1107,17 @@ void RentalModule::seedMenus_() {
             (322, 'Expense Categories', 320, 20, 44)
         ON CONFLICT (id) DO UPDATE SET action_id = EXCLUDED.action_id
     )SQL");
+    // Demo Data lives under Settings -> Technical (menu 101), not under
+    // Rental: it is an administrative tool for evaluating the module, not
+    // part of running a facility. Putting a "delete everything" button in
+    // the operator's daily navigation is asking for it to be pressed.
+    txn.exec(R"SQL(
+        INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
+            (330, 'Demo Data', 101, 30, 46)
+        ON CONFLICT (id) DO UPDATE SET action_id = EXCLUDED.action_id,
+                                       parent_id = EXCLUDED.parent_id
+    )SQL");
+
     txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");
     txn.commit();
 }

@@ -1,5 +1,7 @@
 #pragma once
 #include <nlohmann/json.hpp>
+#include <cctype>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <variant>
@@ -100,27 +102,46 @@ public:
      * @endcode
      */
     SqlResult toSql() const {
+        return toSql(nullptr);
+    }
+
+    /**
+     * @brief Compile, restricting filterable columns to an allowlist.
+     *
+     * @param allowed  columns a caller may filter on — normally the
+     *                 model's stored fields. When non-null, a leaf naming
+     *                 anything outside the set is REJECTED.
+     *
+     * S-49: without this, sanitizeColumn_ only charset-checked the field
+     * name, so an authenticated user could filter on ANY column —
+     * including `password` — and blind-extract it one `like` substring at
+     * a time (the SELECT list is restricted, but the WHERE clause was
+     * not). Proven with `password like 'pbkdf2'` -> 1 row vs
+     * `like 'ZZZZZ'` -> 0 rows. See verify_domain_field_allowlist.sh.
+     */
+    SqlResult toSql(const std::set<std::string>* allowed) const {
         if (isEmpty()) return {"TRUE", {}};
         SqlResult r;
-        r.clause = compileNode_(root_, r.params);
+        r.clause = compileNode_(root_, r.params, allowed);
         return r;
     }
 
 private:
     DomainNode root_;
 
-    static std::string compileNode_(const DomainNode&        node,
-                                    std::vector<std::string>& params) {
+    static std::string compileNode_(const DomainNode&           node,
+                                    std::vector<std::string>&    params,
+                                    const std::set<std::string>* allowed) {
         switch (node.kind) {
             case DomainNode::Kind::Leaf:
-                return compileLeaf_(node.leaf, params);
+                return compileLeaf_(node.leaf, params, allowed);
 
             case DomainNode::Kind::And: {
                 if (node.children.empty()) return "TRUE";
                 std::string s = "(";
                 for (std::size_t i = 0; i < node.children.size(); ++i) {
                     if (i) s += " AND ";
-                    s += compileNode_(node.children[i], params);
+                    s += compileNode_(node.children[i], params, allowed);
                 }
                 return s + ")";
             }
@@ -130,20 +151,21 @@ private:
                 std::string s = "(";
                 for (std::size_t i = 0; i < node.children.size(); ++i) {
                     if (i) s += " OR ";
-                    s += compileNode_(node.children[i], params);
+                    s += compileNode_(node.children[i], params, allowed);
                 }
                 return s + ")";
             }
 
             case DomainNode::Kind::Not:
-                return "(NOT " + compileNode_(node.children[0], params) + ")";
+                return "(NOT " + compileNode_(node.children[0], params, allowed) + ")";
         }
         return "TRUE";
     }
 
-    static std::string compileLeaf_(const DomainLeaf&        leaf,
-                                    std::vector<std::string>& params) {
-        const std::string col = sanitizeColumn_(leaf.field);
+    static std::string compileLeaf_(const DomainLeaf&            leaf,
+                                    std::vector<std::string>&    params,
+                                    const std::set<std::string>* allowed) {
+        const std::string col = sanitizeColumn_(leaf.field, allowed);
         const std::string op  = leaf.op;
 
         auto placeholder = [&]() -> std::string {
@@ -200,12 +222,22 @@ private:
         throw std::runtime_error("Domain: unsupported operator '" + op + "'");
     }
 
-    static std::string sanitizeColumn_(const std::string& field) {
-        // Allow only alphanumeric + underscore to prevent injection.
+    static std::string sanitizeColumn_(const std::string&           field,
+                                        const std::set<std::string>* allowed) {
+        // Charset check first — defence in depth even behind the allowlist,
+        // and the only guard when no allowlist is supplied.
         for (char c : field)
-            if (!std::isalnum(c) && c != '_')
+            if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_'))
                 throw std::runtime_error("Domain: invalid field name '" + field + "'");
-        return field;  // pqxx will quote if needed at execute time
+
+        // S-49: reject any column that is not a registered, stored field.
+        // Without this an authenticated user can filter on `password` and
+        // extract it blind. `allowed` is null only for internal callers
+        // that build domains from trusted, fixed field names.
+        if (allowed && !allowed->count(field))
+            throw std::runtime_error("Domain: field '" + field +
+                                     "' is not filterable on this model");
+        return field;  // pqxx binds the VALUE; the column name is now allowlisted
     }
 
     static std::string jsonToSqlParam_(const nlohmann::json& v) {

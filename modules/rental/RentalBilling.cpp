@@ -203,26 +203,15 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             // Invoice number from ir.sequence inside this transaction —
             // never COUNT(*)+1, which P4 removed from three other places.
             //
-            // The sequence is per JOURNAL and created on first use, which
-            // is the convention AccountModule::handleActionPost already
-            // follows. Sharing it means a rental invoice and a manually
-            // posted one draw from the same series, as they must — two
-            // series in one journal is a numbering gap waiting to be
-            // explained to an auditor.
-            std::string jcode;
-            {
-                auto jr = txn.exec("SELECT COALESCE(code,'INV') FROM account_journal WHERE id=$1",
-                                   pqxx::params{journalId});
-                jcode = jr.empty() ? "INV" : jr[0][0].c_str();
-            }
-            const std::string seqCode = "account.move." + jcode;
-            txn.exec(
-                "INSERT INTO ir_sequence (code, name, prefix, padding, reset_policy) "
-                "VALUES ($1, $2, $3, 4, 'yearly') "
-                "ON CONFLICT (code) WHERE company_id IS NULL DO NOTHING",
-                pqxx::params{seqCode, "Invoice — " + jcode, jcode + "/%(year)s/"});
+            // A rental invoice is an out_invoice, so it draws from the SAME
+            // customer-invoice series as a hand-posted one:
+            // `account.move.INV` — prefix "INV", padding 6, seeded by
+            // migration 1020. A rental invoice and a manual invoice must
+            // share one continuous series; two series in the customer-
+            // invoice space is a numbering gap waiting to be explained to
+            // an auditor.
             const std::string invName =
-                IrSequence::instance().nextByCode(txn, seqCode);
+                IrSequence::instance().nextByCode(txn, "account.move.INV");
 
             // Origin, exactly as a sale-generated invoice carries it: the
             // contract name when there is one, else a label naming the

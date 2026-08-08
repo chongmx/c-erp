@@ -39,12 +39,22 @@ public:
     std::string name;
     int         parentId = 0;
     bool        active   = true;
+    // Costing GL config (P/064b): valuation accounts + stock journal. NULL here
+    // falls back to seeded defaults (1400 / STJ / 1410 / 5000) in the posting.
+    int         stockValuationAccountId = 0;
+    int         stockJournalId          = 0;
+    int         stockAccountInputId     = 0;
+    int         stockAccountOutputId    = 0;
 
     void registerFields() {
         fieldRegistry_.add({"name",      FieldType::Char,    "Name",    true});
         fieldRegistry_.add({"parent_id", FieldType::Many2one,"Parent Category",
                             false, false, true, true, "product.category"});
         fieldRegistry_.add({"active",    FieldType::Boolean, "Active"});
+        fieldRegistry_.add({"property_stock_valuation_account_id", FieldType::Many2one, "Stock Valuation Account",   false, false, true, false, "account.account"});
+        fieldRegistry_.add({"property_stock_journal_id",           FieldType::Many2one, "Stock Journal",             false, false, true, false, "account.journal"});
+        fieldRegistry_.add({"property_stock_account_input_id",     FieldType::Many2one, "Stock Input Account",       false, false, true, false, "account.account"});
+        fieldRegistry_.add({"property_stock_account_output_id",    FieldType::Many2one, "Stock Output (COGS) Account", false, false, true, false, "account.account"});
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -53,18 +63,25 @@ public:
         j["parent_id"] = parentId > 0
             ? nlohmann::json::array({parentId, ""})
             : nlohmann::json(false);
+        j["property_stock_valuation_account_id"] = stockValuationAccountId > 0 ? nlohmann::json(stockValuationAccountId) : nlohmann::json(false);
+        j["property_stock_journal_id"]           = stockJournalId          > 0 ? nlohmann::json(stockJournalId)          : nlohmann::json(false);
+        j["property_stock_account_input_id"]     = stockAccountInputId     > 0 ? nlohmann::json(stockAccountInputId)     : nlohmann::json(false);
+        j["property_stock_account_output_id"]    = stockAccountOutputId    > 0 ? nlohmann::json(stockAccountOutputId)    : nlohmann::json(false);
     }
 
     void deserializeFields(const nlohmann::json& j) override {
+        auto m2o = [](const nlohmann::json& v) -> int {
+            if (v.is_number_integer()) return v.get<int>();
+            if (v.is_array() && v.size() >= 1 && v[0].is_number_integer()) return v[0].get<int>();
+            return 0;
+        };
         if (j.contains("name")   && j["name"].is_string())   name   = j["name"].get<std::string>();
         if (j.contains("active") && j["active"].is_boolean()) active = j["active"].get<bool>();
-        if (j.contains("parent_id")) {
-            const auto& v = j["parent_id"];
-            if (v.is_number_integer())           parentId = v.get<int>();
-            else if (v.is_array() && v.size() >= 1 && v[0].is_number_integer())
-                                                 parentId = v[0].get<int>();
-            else                                 parentId = 0;
-        }
+        if (j.contains("parent_id")) parentId = m2o(j["parent_id"]);
+        if (j.contains("property_stock_valuation_account_id")) stockValuationAccountId = m2o(j["property_stock_valuation_account_id"]);
+        if (j.contains("property_stock_journal_id"))           stockJournalId          = m2o(j["property_stock_journal_id"]);
+        if (j.contains("property_stock_account_input_id"))     stockAccountInputId     = m2o(j["property_stock_account_input_id"]);
+        if (j.contains("property_stock_account_output_id"))    stockAccountOutputId    = m2o(j["property_stock_account_output_id"]);
     }
 
     nlohmann::json toJson() const override {
@@ -116,6 +133,11 @@ public:
     int         expenseAccountId= 0;
     double      listPrice     = 0.0;
     double      standardPrice = 0.0;
+    double      qtyAvailable  = 0.0;   // on-hand, denormalised from stock_quant
+    std::string costMethod    = "standard";  // standard | average | fifo
+    double      quantitySvl   = 0.0;   // valued quantity (valuation cache)
+    double      valueSvl      = 0.0;   // inventory value (valuation cache)
+    std::string tracking      = "none";      // none | lot | serial
     double      volume        = 0.0;
     double      weight        = 0.0;
     bool        saleOk     = true;
@@ -167,6 +189,18 @@ public:
         fieldRegistry_.setPrecision(core::DecimalPrecision::kProductPrice,
                                     {"list_price", "standard_price"});
         fieldRegistry_.markScaled({"list_price", "standard_price"});
+        // On-hand quantity, kept fresh by the quant engine (core/StockQuant).
+        // Read-only/computed — the client never writes it.
+        fieldRegistry_.add({"qty_available", FieldType::Float, "On Hand", false, true, true, true});
+        fieldRegistry_.markScaled({"qty_available"});
+        // Costing (P/064b): method + cached valued quantity/value, maintained by
+        // the valuation engine (core/StockQuant). value_svl is read-only.
+        fieldRegistry_.add({"cost_method",  FieldType::Char,     "Costing Method"});
+        fieldRegistry_.add({"quantity_svl", FieldType::Float,    "Valued Quantity", false, true, true, true});
+        fieldRegistry_.add({"value_svl",    FieldType::Monetary, "Inventory Value", false, true, true, true});
+        fieldRegistry_.markScaled({"quantity_svl", "value_svl"});
+        // Traceability: none / lot / serial.
+        fieldRegistry_.add({"tracking", FieldType::Char, "Tracking"});
     }
 
     void serializeFields(nlohmann::json& j) const override {
@@ -181,6 +215,11 @@ public:
         j["company_id"]     = companyId> 0 ? nlohmann::json::array({companyId,""}) : nlohmann::json(false);
         j["list_price"]     = listPrice;
         j["standard_price"] = standardPrice;
+        j["qty_available"]  = qtyAvailable;
+        j["cost_method"]    = costMethod.empty() ? "standard" : costMethod;
+        j["quantity_svl"]   = quantitySvl;
+        j["value_svl"]      = valueSvl;
+        j["tracking"]       = tracking.empty() ? "none" : tracking;
         j["volume"]         = volume;
         j["weight"]         = weight;
         j["sale_ok"]        = saleOk;
@@ -218,6 +257,11 @@ public:
         if (j.contains("company_id")) companyId = m2o(j["company_id"]);
         if (j.contains("list_price")     && j["list_price"].is_number())     listPrice     = j["list_price"].get<double>();
         if (j.contains("standard_price") && j["standard_price"].is_number()) standardPrice = j["standard_price"].get<double>();
+        if (j.contains("qty_available")  && j["qty_available"].is_number())  qtyAvailable  = j["qty_available"].get<double>();
+        if (j.contains("cost_method")    && j["cost_method"].is_string())    costMethod    = j["cost_method"].get<std::string>();
+        if (j.contains("quantity_svl")   && j["quantity_svl"].is_number())   quantitySvl   = j["quantity_svl"].get<double>();
+        if (j.contains("value_svl")      && j["value_svl"].is_number())      valueSvl      = j["value_svl"].get<double>();
+        if (j.contains("tracking")       && j["tracking"].is_string())       tracking      = j["tracking"].get<std::string>();
         if (j.contains("volume")         && j["volume"].is_number())         volume        = j["volume"].get<double>();
         if (j.contains("weight")         && j["weight"].is_number())         weight        = j["weight"].get<double>();
         if (j.contains("sale_ok")     && j["sale_ok"].is_boolean())     saleOk     = j["sale_ok"].get<bool>();
@@ -734,6 +778,11 @@ void ProductModule::ensureSchema_() {
             write_date  TIMESTAMP DEFAULT now()
         )
     )");
+    // Costing GL config on the category (optional overrides; NULL → seeded defaults).
+    txn.exec("ALTER TABLE product_category ADD COLUMN IF NOT EXISTS property_stock_valuation_account_id INTEGER REFERENCES account_account(id) ON DELETE SET NULL");
+    txn.exec("ALTER TABLE product_category ADD COLUMN IF NOT EXISTS property_stock_journal_id           INTEGER REFERENCES account_journal(id) ON DELETE SET NULL");
+    txn.exec("ALTER TABLE product_category ADD COLUMN IF NOT EXISTS property_stock_account_input_id     INTEGER REFERENCES account_account(id) ON DELETE SET NULL");
+    txn.exec("ALTER TABLE product_category ADD COLUMN IF NOT EXISTS property_stock_account_output_id    INTEGER REFERENCES account_account(id) ON DELETE SET NULL");
 
     txn.exec(R"(
         CREATE TABLE IF NOT EXISTS product_product (
@@ -760,6 +809,14 @@ void ProductModule::ensureSchema_() {
     )");
 
     // Migrations for new columns
+    // qty_available: on-hand cache (BIGINT micro-units), refreshed by the quant
+    // engine (core/StockQuant) whenever a validated move touches this product.
+    txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS qty_available BIGINT NOT NULL DEFAULT 0");
+    // Costing: method + cached valued quantity/value (BIGINT micro-units).
+    txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS cost_method VARCHAR NOT NULL DEFAULT 'standard'");
+    txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS quantity_svl BIGINT NOT NULL DEFAULT 0");
+    txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS value_svl BIGINT NOT NULL DEFAULT 0");
+    txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS tracking VARCHAR NOT NULL DEFAULT 'none'");
     txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS expense_ok BOOLEAN NOT NULL DEFAULT FALSE");
     txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS image_1920 TEXT");
     txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS description_sale TEXT");

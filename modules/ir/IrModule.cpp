@@ -20,6 +20,8 @@
 #include "CsvParser.hpp"
 #include "Errors.hpp"
 #include "SessionManager.hpp"
+#include "Filestore.hpp"
+#include "IrModelData.hpp"
 #include <drogon/drogon.h>
 #include <drogon/MultiPart.h>
 #include <nlohmann/json.hpp>
@@ -468,6 +470,126 @@ private:
 };
 
 // ----------------------------------------------------------------
+// IrModelDataModel — ir.model.data (external identifiers)
+// ----------------------------------------------------------------
+class IrModelDataModel : public core::BaseModel<IrModelDataModel> {
+public:
+    ODOO_MODEL("ir.model.data", "ir_model_data")
+
+    std::string module, name, model;
+    int         resId    = 0;
+    bool        noupdate = false;
+
+    explicit IrModelDataModel(std::shared_ptr<infrastructure::DbConnection> db)
+        : core::BaseModel<IrModelDataModel>(std::move(db)) {}
+
+    void registerFields() override {
+        fieldRegistry_.add({"module",   core::FieldType::Char,    "Module", true});
+        fieldRegistry_.add({"name",     core::FieldType::Char,    "External Name", true});
+        fieldRegistry_.add({"model",    core::FieldType::Char,    "Model", true});
+        fieldRegistry_.add({"res_id",   core::FieldType::Integer, "Record ID"});
+        fieldRegistry_.add({"noupdate", core::FieldType::Boolean, "Non Updatable"});
+    }
+    void serializeFields(nlohmann::json& j) const override {
+        j["module"] = module; j["name"] = name; j["model"] = model;
+        j["res_id"] = resId;  j["noupdate"] = noupdate;
+    }
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("module")   && j["module"].is_string())   module   = j["module"].get<std::string>();
+        if (j.contains("name")     && j["name"].is_string())     name     = j["name"].get<std::string>();
+        if (j.contains("model")    && j["model"].is_string())    model    = j["model"].get<std::string>();
+        if (j.contains("res_id")   && j["res_id"].is_number())   resId    = j["res_id"].get<int>();
+        if (j.contains("noupdate") && j["noupdate"].is_boolean())noupdate = j["noupdate"].get<bool>();
+    }
+    std::vector<std::string> validate() const override {
+        std::vector<std::string> e;
+        if (module.empty()) e.push_back("Module is required");
+        if (name.empty())   e.push_back("External name is required");
+        if (model.empty())  e.push_back("Model is required");
+        return e;
+    }
+};
+
+// ----------------------------------------------------------------
+// IrAttachmentModel — ir.attachment (file metadata)
+//
+// This model is the METADATA row only. The bytes are in the filestore,
+// and the binary crosses the wire through the dedicated
+// /web/attachment/upload and /web/content/{id} routes, never as a field
+// on this model — a base64 blob on every search_read would defeat the
+// point of storing it out of the row.
+// ----------------------------------------------------------------
+class IrAttachmentModel : public core::BaseModel<IrAttachmentModel> {
+public:
+    ODOO_MODEL("ir.attachment", "ir_attachment")
+
+    std::string name, description, resModel, resField, type = "binary",
+                url, mimetype = "application/octet-stream", checksum, storeFname;
+    int       resId = 0, companyId = 1, createUid = 0;
+    long long fileSize = 0;
+    bool      isPublic = false;
+
+    explicit IrAttachmentModel(std::shared_ptr<infrastructure::DbConnection> db)
+        : core::BaseModel<IrAttachmentModel>(std::move(db)) {}
+
+    void registerFields() override {
+        fieldRegistry_.add({"name",        core::FieldType::Char,    "Name", true});
+        fieldRegistry_.add({"description", core::FieldType::Text,    "Description"});
+        fieldRegistry_.add({"res_model",   core::FieldType::Char,    "Resource Model"});
+        fieldRegistry_.add({"res_id",      core::FieldType::Integer, "Resource ID"});
+        fieldRegistry_.add({"res_field",   core::FieldType::Char,    "Resource Field"});
+        fieldRegistry_.add({"type",        core::FieldType::Char,    "Type"});
+        fieldRegistry_.add({"url",         core::FieldType::Char,    "URL"});
+        fieldRegistry_.add({"mimetype",    core::FieldType::Char,    "Mime Type"});
+        fieldRegistry_.add({"file_size",   core::FieldType::Integer, "File Size"});
+        fieldRegistry_.add({"checksum",    core::FieldType::Char,    "Checksum"});
+        fieldRegistry_.add({"store_fname", core::FieldType::Char,    "Stored Filename"});
+        fieldRegistry_.add({"public",      core::FieldType::Boolean, "Is Public"});
+        fieldRegistry_.add({"company_id",  core::FieldType::Many2one,"Company", false, false, true, false, "res.company"});
+        fieldRegistry_.add({"create_uid",  core::FieldType::Integer, "Created By"});
+        // file_size is a genuine byte count, not money, so NOT markScaled.
+    }
+    void serializeFields(nlohmann::json& j) const override {
+        j["name"]        = name;
+        j["description"] = description;
+        j["res_model"]   = resModel.empty()  ? nlohmann::json(nullptr) : nlohmann::json(resModel);
+        j["res_id"]      = resId > 0 ? nlohmann::json(resId) : nlohmann::json(nullptr);
+        j["res_field"]   = resField.empty()   ? nlohmann::json(nullptr) : nlohmann::json(resField);
+        j["type"]        = type;
+        j["url"]         = url.empty() ? nlohmann::json(nullptr) : nlohmann::json(url);
+        j["mimetype"]    = mimetype;
+        j["file_size"]   = fileSize;
+        j["checksum"]    = checksum;
+        j["store_fname"] = storeFname;
+        j["public"]      = isPublic;
+        j["company_id"]  = companyId > 0 ? nlohmann::json(companyId) : nlohmann::json(false);
+        j["create_uid"]  = createUid;
+    }
+    void deserializeFields(const nlohmann::json& j) override {
+        auto s = [&](const char* k, std::string& v){ if (j.contains(k) && j[k].is_string()) v = j[k].get<std::string>(); };
+        s("name", name); s("description", description); s("res_model", resModel);
+        s("res_field", resField); s("type", type); s("url", url);
+        s("mimetype", mimetype); s("checksum", checksum); s("store_fname", storeFname);
+        if (j.contains("res_id")     && j["res_id"].is_number())     resId     = j["res_id"].get<int>();
+        if (j.contains("file_size")  && j["file_size"].is_number())  fileSize  = j["file_size"].get<long long>();
+        if (j.contains("public")     && j["public"].is_boolean())    isPublic  = j["public"].get<bool>();
+        if (j.contains("company_id"))                                companyId = m2oToId_(j["company_id"]);
+        if (j.contains("create_uid") && j["create_uid"].is_number()) createUid = j["create_uid"].get<int>();
+    }
+    std::vector<std::string> validate() const override {
+        std::vector<std::string> e;
+        if (name.empty()) e.push_back("Name is required");
+        return e;
+    }
+private:
+    static int m2oToId_(const nlohmann::json& v) {
+        if (v.is_number_integer()) return v.get<int>();
+        if (v.is_array() && !v.empty() && v[0].is_number_integer()) return v[0].get<int>();
+        return 0;
+    }
+};
+
+// ----------------------------------------------------------------
 // IrModelViewModel
 // ----------------------------------------------------------------
 class IrModelViewModel : public core::BaseViewModel {
@@ -618,6 +740,12 @@ void IrModule::registerModels() {
     });
     models_.registerCreator("decimal.precision", [db]{      // P2
         return std::make_shared<DecimalPrecisionModel>(db);
+    });
+    models_.registerCreator("ir.model.data", [db]{
+        return std::make_shared<IrModelDataModel>(db);
+    });
+    models_.registerCreator("ir.attachment", [db]{
+        return std::make_shared<IrAttachmentModel>(db);
     });
     models_.registerCreator("audit.log", [db]{
         return std::make_shared<AuditLog>(db);
@@ -961,6 +1089,208 @@ void IrModule::registerRoutes() {
         },
         {drogon::Post}
     );
+
+    // ── POST /web/attachment/upload ────────────────────────────
+    //
+    // multipart/form-data: one file, plus optional form fields res_model,
+    // res_id, name, description. Returns the new ir.attachment id.
+    //
+    // Storage is content-addressed (Filestore): the request filename never
+    // reaches a path, so there is no traversal surface. A size cap and a
+    // mime/extension allowlist bound what can be stored.
+    drogon::app().registerHandler(
+        "/web/attachment/upload",
+        [db, modelsPtr, getSession, devMode](
+            const drogon::HttpRequestPtr&                      req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb)
+        {
+            auto jsonResp = [&cb](int code, const nlohmann::json& body) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
+                r->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                r->setBody(body.dump());
+                cb(r);
+            };
+            const auto sess = getSession(req);
+            if (!sess) { jsonResp(401, {{"error", "Not authenticated"}}); return; }
+
+            try {
+                drogon::MultiPartParser parser;
+                if (parser.parse(req) != 0 || parser.getFiles().empty()) {
+                    jsonResp(400, {{"error", "No file in the upload"}});
+                    return;
+                }
+                const auto& file  = parser.getFiles()[0];
+                const std::string content(file.fileContent());
+
+                // Size cap: 25 MB. A datasheet is a few MB; this stops a
+                // single request filling the disk.
+                constexpr long long kMaxBytes = 25LL * 1024 * 1024;
+                if (static_cast<long long>(content.size()) > kMaxBytes) {
+                    jsonResp(413, {{"error", "File exceeds the 25 MB limit"}});
+                    return;
+                }
+                if (content.empty()) {
+                    jsonResp(400, {{"error", "Empty file"}});
+                    return;
+                }
+
+                // Basename only, then extension allowlist. SEC-16/SEC-19,
+                // the same guard the portal proof upload uses.
+                std::string base = file.getFileName();
+                if (auto p = base.find_last_of("/\\"); p != std::string::npos)
+                    base = base.substr(p + 1);
+                std::string lower = base;
+                for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                auto ends = [&](const char* ext){
+                    const std::string e(ext);
+                    return lower.size() > e.size() &&
+                           lower.compare(lower.size() - e.size(), e.size(), e) == 0;
+                };
+                // Datasheets and the usual attachments. Deliberately no
+                // executable/script types.
+                struct Ext { const char* e; const char* mime; };
+                static const std::vector<Ext> kAllowed = {
+                    {".pdf","application/pdf"}, {".png","image/png"},
+                    {".jpg","image/jpeg"}, {".jpeg","image/jpeg"},
+                    {".gif","image/gif"}, {".svg","image/svg+xml"},
+                    {".csv","text/csv"}, {".txt","text/plain"},
+                    {".xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+                    {".docx","application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+                    {".zip","application/zip"},
+                };
+                std::string mime;
+                for (const auto& a : kAllowed) if (ends(a.e)) { mime = a.mime; break; }
+                if (base.empty() || mime.empty()) {
+                    jsonResp(400, {{"error",
+                        "File type not allowed (pdf, png, jpg, gif, svg, csv, txt, xlsx, docx, zip)"}});
+                    return;
+                }
+
+                // res_model, if given, must be a real model — no filtering
+                // of arbitrary strings into the DB.
+                std::string resModel = parser.getParameter<std::string>("res_model");
+                int resId = 0;
+                if (auto s = parser.getParameter<std::string>("res_id"); !s.empty()) {
+                    try { resId = std::stoi(s); } catch (...) { resId = 0; }
+                }
+                std::string dispName = parser.getParameter<std::string>("name");
+                if (dispName.empty()) dispName = base;
+                std::string descr = parser.getParameter<std::string>("description");
+
+                const auto stored = core::Filestore::put(content);
+
+                // Validate res_model against the in-memory model registry,
+                // not a DB table — models are registered at boot, there is
+                // no ir_model table. An unknown model is dropped (the file
+                // is still stored) rather than persisted as a dangling link.
+                if (!resModel.empty() && !(modelsPtr && modelsPtr->has(resModel)))
+                    resModel.clear();
+
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+                pqxx::params p;
+                p.append(dispName); p.append(descr);
+                if (resModel.empty()) p.append(nullptr); else p.append(resModel);
+                if (resId > 0) p.append(resId); else p.append(nullptr);
+                p.append(mime);
+                p.append(stored.size);
+                p.append(stored.checksum);
+                p.append(stored.storeFname);
+                p.append(sess->uid);
+                auto ins = txn.exec(
+                    "INSERT INTO ir_attachment "
+                    "(name, description, res_model, res_id, type, mimetype, "
+                    " file_size, checksum, store_fname, create_uid) "
+                    "VALUES ($1,$2,$3,$4,'binary',$5,$6,$7,$8,$9) RETURNING id", p);
+                const int attId = ins[0][0].as<int>();
+                txn.commit();
+
+                jsonResp(200, {{"id", attId}, {"name", dispName},
+                               {"mimetype", mime}, {"file_size", stored.size},
+                               {"checksum", stored.checksum}});
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[ir/attachment] pool: " << e.what();
+                jsonResp(503, {{"error", "The server is temporarily overloaded. Please retry."}});
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[ir/attachment/upload] " << e.what();
+                jsonResp(500, {{"error", devMode ? e.what() : "Upload failed"}});
+            }
+        },
+        {drogon::Post}
+    );
+
+    // ── GET /web/content/{id} ──────────────────────────────────
+    //
+    // Streams the file. `?download=1` forces an attachment disposition;
+    // otherwise inline (so a PDF datasheet opens in the browser).
+    drogon::app().registerHandler(
+        "/web/content/{1}",
+        [db, getSession, devMode](
+            const drogon::HttpRequestPtr&                      req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb,
+            const std::string& idStr)
+        {
+            auto err = [&cb](int code, const std::string& msg) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
+                r->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+                r->setBody(msg);
+                cb(r);
+            };
+            const auto sess = getSession(req);
+            if (!sess) { err(401, "Not authenticated"); return; }
+
+            int attId = 0;
+            try { attId = std::stoi(idStr); } catch (...) { err(400, "Invalid id"); return; }
+
+            try {
+                std::string name, mime, storeFname;
+                {
+                    auto conn = db->acquire();
+                    pqxx::work txn{conn.get()};
+                    auto r = txn.exec(
+                        "SELECT name, mimetype, COALESCE(store_fname,'') "
+                        "  FROM ir_attachment WHERE id = $1 AND type = 'binary'",
+                        pqxx::params{attId});
+                    txn.commit();
+                    if (r.empty()) { err(404, "Not found"); return; }
+                    name       = r[0][0].c_str();
+                    mime       = r[0][1].c_str();
+                    storeFname = r[0][2].c_str();
+                }
+
+                const std::string bytes = core::Filestore::get(storeFname);
+                if (bytes.empty()) { err(404, "File missing from store"); return; }
+
+                auto resp = drogon::HttpResponse::newHttpResponse();
+                resp->setStatusCode(drogon::k200OK);
+                resp->setContentTypeString(mime);
+
+                // S-39: the stored name is DB data — a CR/LF or quote in it
+                // would break out of the header. Charset-restrict it.
+                std::string safe;
+                for (char c : name)
+                    if (std::isalnum(static_cast<unsigned char>(c)) ||
+                        c == '.' || c == '_' || c == '-' || c == ' ')
+                        safe += c;
+                if (safe.empty()) safe = "attachment";
+                const bool download = !req->getParameter("download").empty();
+                resp->addHeader("Content-Disposition",
+                    std::string(download ? "attachment" : "inline") +
+                    "; filename=\"" + safe + "\"");
+                resp->setBody(bytes);
+                cb(resp);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[ir/content] pool: " << e.what();
+                err(503, "The server is temporarily overloaded. Please retry.");
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[ir/content] " << e.what();
+                err(500, devMode ? e.what() : "An internal error occurred");
+            }
+        },
+        {drogon::Get}
+    );
 }
 
 void IrModule::registerViewModels() {
@@ -982,6 +1312,12 @@ void IrModule::registerViewModels() {
     });
     viewModels_.registerCreator("ir.config.parameter", [db]{
         return std::make_shared<core::GenericViewModel<IrConfigParameter>>(db);
+    });
+    viewModels_.registerCreator("ir.model.data", [db]{
+        return std::make_shared<core::GenericViewModel<IrModelDataModel>>(db);
+    });
+    viewModels_.registerCreator("ir.attachment", [db]{
+        return std::make_shared<core::GenericViewModel<IrAttachmentModel>>(db);
     });
     viewModels_.registerCreator("audit.log", [db]{
         return std::make_shared<AuditLogViewModel>(db);
@@ -1005,6 +1341,97 @@ void IrModule::registerMigrations(infrastructure::MigrationRunner& runner) {
             CREATE INDEX IF NOT EXISTS audit_log_created_idx   ON audit_log (created_at DESC);
         )"
     });
+
+    // --------------------------------------------------------
+    // 1020 — the customer-invoice sequence
+    //
+    // One continuous series for every out_invoice / out_refund, whatever
+    // journal posts it: INV000001, INV000002, … So prefix "INV", padding
+    // 6, reset 'never' (a global counter, not a per-year one). Both
+    // AccountModule::handleActionPost and RentalBilling draw from this
+    // code; neither creates it, so the definition lives in exactly one
+    // place.
+    //
+    // ON CONFLICT keeps a re-run and a hand-edited prefix from fighting:
+    // if an operator later changes the prefix or padding in the UI, this
+    // migration will not stamp it back.
+    runner.registerMigration({1020, "invoice_sequence_INV", R"SQL(
+        INSERT INTO ir_sequence (code, name, prefix, padding, reset_policy, number_next)
+        VALUES ('account.move.INV', 'Customer Invoice', 'INV', 6, 'never', 1)
+        ON CONFLICT (code) WHERE company_id IS NULL DO NOTHING;
+    )SQL"});
+
+    // --------------------------------------------------------
+    // 1030 — ir.model.data (external identifiers)
+    //
+    // Maps a stable "module.name" xml_id to a concrete (model, res_id).
+    // Lets seed data and cross-references survive id renumbering, and is
+    // the standard Odoo mechanism a lot of later features assume exists.
+    //
+    // noupdate: when true, a re-seed must NOT overwrite the row — the
+    // record has been edited by hand and the seed is only a starting
+    // point. IrModelData::ensure honours it.
+    runner.registerMigration({1030, "ir_model_data", R"SQL(
+        CREATE TABLE IF NOT EXISTS ir_model_data (
+            id          SERIAL PRIMARY KEY,
+            module      TEXT    NOT NULL,
+            name        TEXT    NOT NULL,
+            model       TEXT    NOT NULL,
+            res_id      INTEGER NOT NULL,
+            noupdate    BOOLEAN NOT NULL DEFAULT FALSE,
+            create_date TIMESTAMP NOT NULL DEFAULT now(),
+            write_date  TIMESTAMP NOT NULL DEFAULT now(),
+            CONSTRAINT ir_model_data_xmlid_uniq UNIQUE (module, name)
+        );
+        -- The reverse lookup "what is the xml_id of this record" must be
+        -- fast too, for export and for uninstall bookkeeping.
+        CREATE INDEX IF NOT EXISTS ir_model_data_record_idx
+            ON ir_model_data(model, res_id);
+    )SQL"});
+
+    // --------------------------------------------------------
+    // 1040 — ir.attachment (files: datasheets, receipts, exports)
+    //
+    // Metadata lives here; the BYTES live on the filesystem under the
+    // filestore, addressed by content hash. Same split Odoo uses, and the
+    // same one the existing payment_proof table follows — chosen over a
+    // DB bytea column so a 20 MB datasheet does not bloat every backup and
+    // every SELECT of the row.
+    //
+    //   store_fname  filestore-relative path, `<h[:2]>/<sha256>`
+    //   checksum     sha256 of the content — also the dedup key
+    //   file_size    bytes, so a list view need not stat the file
+    //   res_model/res_id  what this is attached to (nullable: a stray
+    //                     upload not yet linked is still a valid row)
+    //
+    // res_field is carried for parity with Odoo (an attachment that backs
+    // a specific binary field) but nothing writes it yet.
+    runner.registerMigration({1040, "ir_attachment", R"SQL(
+        CREATE TABLE IF NOT EXISTS ir_attachment (
+            id           SERIAL PRIMARY KEY,
+            name         TEXT    NOT NULL,
+            description  TEXT    NOT NULL DEFAULT '',
+            res_model    TEXT,
+            res_id       INTEGER,
+            res_field    TEXT,
+            type         TEXT    NOT NULL DEFAULT 'binary',
+            url          TEXT,
+            mimetype     TEXT    NOT NULL DEFAULT 'application/octet-stream',
+            file_size    BIGINT  NOT NULL DEFAULT 0,
+            checksum     TEXT,
+            store_fname  TEXT,
+            public       BOOLEAN NOT NULL DEFAULT FALSE,
+            company_id   INTEGER NOT NULL DEFAULT 1,
+            create_uid   INTEGER NOT NULL DEFAULT 0,
+            create_date  TIMESTAMP NOT NULL DEFAULT now(),
+            write_date   TIMESTAMP NOT NULL DEFAULT now(),
+            CONSTRAINT ir_attachment_type_chk CHECK (type IN ('binary','url'))
+        );
+        CREATE INDEX IF NOT EXISTS ir_attachment_res_idx
+            ON ir_attachment(res_model, res_id);
+        CREATE INDEX IF NOT EXISTS ir_attachment_checksum_idx
+            ON ir_attachment(checksum);
+    )SQL"});
 }
 
 void IrModule::initialize() {

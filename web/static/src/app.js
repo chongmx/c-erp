@@ -8990,6 +8990,7 @@ const CUSTOM_VIEWS = {
     // plus a matching isXxxModel getter.
     'rental.unit':        RentalUnitGrid,
     'rental.dashboard':   RentalDashboard,
+    'rental.demo.data':   RentalDemoData,
 };
 
 // ----------------------------------------------------------------

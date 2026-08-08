@@ -7,89 +7,97 @@
    normal-vision floor, contrast). Do not substitute a hue without
    re-running the validator.
 
-   Dark values are a SELECTED set of steps, not an automatic inversion,
-   and are declared under both prefers-color-scheme and
-   :root[data-theme="dark"] so the app's own theme toggle wins in both
-   directions.
+   The dark steps are a SELECTED set, not an automatic inversion of the
+   light ones. See the THEME block below for which set applies and why.
 
-   Light mode carries a known contrast WARN on the reserved (#1baf7a) and
-   maintenance (#eda100) fills. That is not dismissable — it obliges
-   relief, satisfied here by a glyph plus a text label on every cell and
-   by the list view being a full table alternative.
+   The contrast WARN on the reserved and maintenance fills is not
+   dismissable — it obliges relief, satisfied here by a glyph plus a text
+   label on every cell and by the list view being a full table
+   alternative.
    ============================================================= */
 
+/* ------------------------------------------------------------------
+   THEME
+   ------------------------------------------------------------------
+   The application shell is DARK — app.css sets --bg #1a1a2e,
+   --surface #16213e, --border #0f3460, --text #eaeaea — and it has no
+   theme toggle and no prefers-color-scheme rules. It is dark, always.
+
+   The first version of this file defaulted to a light palette and moved
+   to dark only under `prefers-color-scheme: dark`. So on any machine
+   whose OS prefers light — which is most of them — the rental panels
+   rendered white inside a dark navy application. The panels were not
+   wrong in isolation; they were wrong about the page they live in.
+
+   Surfaces and ink are now INHERITED from the shell's own variables, so
+   the dashboard tracks the app rather than carrying a second opinion
+   about what colour the product is. The literals are fallbacks for when
+   this stylesheet is used outside the shell — the preview renderers do
+   exactly that.
+   ------------------------------------------------------------------ */
 .viz-root {
-    /* Occupancy — 4 categorical slots, fixed order, never cycled. */
-    --u-occupied:    #2a78d6;
-    --u-available:   #eb6834;
-    --u-reserved:    #1baf7a;
-    --u-maintenance: #eda100;
-    --u-retired:     #8a8f98;
-
-    /* Series slots 1–2, for income vs expenses. Same validated pair as
-       the categorical ramp's first two slots (docs/046 §3). Colour
-       follows the ENTITY: income is always slot 1, expenses always
-       slot 2, whatever the filter does. */
-    --s-income:  #2a78d6;
-    --s-expense: #eb6834;
-
-    /* Status — RESERVED. Never reused as a series colour. */
-    --st-good:     #0ca30c;
-    --st-warning:  #fab219;
-    --st-serious:  #ec835a;
-    --st-critical: #d03b3b;
-
-    /* Surfaces and ink. */
-    --viz-surface:    #ffffff;
-    --viz-surface-2:  #f6f7f9;
-    --viz-border:     #d8dce2;
-    --ink-primary:    #1c1f23;
-    --ink-secondary:  #4a5058;
-    --ink-muted:      #767d87;
+    /* Surfaces and ink — from app.css.
+         --bg      the page behind everything
+         --surface the raised panel
+       so a panel reads as sitting ON the page, matching the app's cards. */
+    --viz-surface:    var(--bg,      #1a1a2e);
+    --viz-surface-2:  var(--surface, #16213e);
+    --viz-border:     var(--border,  #0f3460);
+    --ink-primary:    var(--text,    #eaeaea);
+    --ink-secondary:  #b6c2d4;
+    --ink-muted:      var(--muted,   #8899aa);
     --ink-on-fill:    #ffffff;
-}
 
-@media (prefers-color-scheme: dark) {
-    .viz-root {
-        --u-occupied:    #3987e5;
-        --u-available:   #d95926;
-        --u-reserved:    #199e70;
-        --u-maintenance: #c98500;
-        --u-retired:     #6b7079;
-
-        --s-income:  #3987e5;
-        --s-expense: #d95926;
-
-        --viz-surface:   #16191d;
-        --viz-surface-2: #1e2227;
-        --viz-border:    #333941;
-        --ink-primary:   #e8eaed;
-        --ink-secondary: #b0b6bf;
-        --ink-muted:     #858c96;
-        --ink-on-fill:   #ffffff;
-    }
-}
-
-/* The toggle must beat the media query in BOTH directions, so light is
-   restated explicitly rather than relying on the cascade. */
-:root[data-theme="dark"] .viz-root {
+    /* Occupancy — 4 categorical slots, fixed order, never cycled.
+       These are the DARK-validated steps from docs/046 §3, because the
+       surface they sit on is dark. Do not swap in the light steps
+       without re-running the validator against #1a1a2e. */
     --u-occupied:    #3987e5;
     --u-available:   #d95926;
     --u-reserved:    #199e70;
     --u-maintenance: #c98500;
     --u-retired:     #6b7079;
 
+    /* Series slots 1–2, income vs expenses. Colour follows the ENTITY:
+       income is always slot 1, expenses always slot 2, whatever a filter
+       does to the series count. */
     --s-income:  #3987e5;
     --s-expense: #d95926;
 
-    --viz-surface:   #16191d;
-    --viz-surface-2: #1e2227;
-    --viz-border:    #333941;
-    --ink-primary:   #e8eaed;
-    --ink-secondary: #b0b6bf;
-    --ink-muted:     #858c96;
+    /* Receivables ageing — an ordinal ramp, ONE hue, and on a dark
+       surface it must run dim -> BRIGHT as the debt ages.
+
+       docs/046 §3 specifies the dark ramp light-to-dark, mirroring the
+       light-mode direction. That is wrong against a dark background: the
+       90+ bucket, the one that needs acting on, would be the least
+       visible thing on the panel. Direction is inverted here so
+       prominence still tracks severity. Single hue and monotone
+       lightness are both preserved. */
+    --age-current: #1e3f6b;
+    --age-0-30:    #256abf;
+    --age-31-60:   #3987e5;
+    --age-61-90:   #7fb2ee;
+    --age-90-plus: #cde2fb;
+
+    /* Status — RESERVED. Never reused as a series colour. */
+    --st-good:     #4ec9b0;
+    --st-warning:  #fab219;
+    --st-serious:  #ec835a;
+    --st-critical: #f44747;
 }
-:root[data-theme="light"] .viz-root {
+
+/* A light variant, for the preview renderers and for any future light
+   theme. Applied only when something explicitly asks for it — never off
+   the OS preference, which is what broke this in the first place. */
+:root[data-theme="light"] .viz-root,
+.viz-root.viz-light {
+    --viz-surface:   #ffffff;
+    --viz-surface-2: #f6f7f9;
+    --viz-border:    #d8dce2;
+    --ink-primary:   #1c1f23;
+    --ink-secondary: #4a5058;
+    --ink-muted:     #767d87;
+
     --u-occupied:    #2a78d6;
     --u-available:   #eb6834;
     --u-reserved:    #1baf7a;
@@ -99,12 +107,16 @@
     --s-income:  #2a78d6;
     --s-expense: #eb6834;
 
-    --viz-surface:   #ffffff;
-    --viz-surface-2: #f6f7f9;
-    --viz-border:    #d8dce2;
-    --ink-primary:   #1c1f23;
-    --ink-secondary: #4a5058;
-    --ink-muted:     #767d87;
+    /* Light mode runs the ordinal ramp the other way: on white, DARKER
+       is more prominent. */
+    --age-current: #c9dcf5;
+    --age-0-30:    #86b6ef;
+    --age-31-60:   #3987e5;
+    --age-61-90:   #256abf;
+    --age-90-plus: #104281;
+
+    --st-good:     #0ca30c;
+    --st-critical: #d03b3b;
 }
 
 /* ------------------------------------------------------------------
@@ -224,13 +236,16 @@
     position: fixed;
     z-index: 900;
     pointer-events: none;
-    background: var(--viz-surface);
+    /* Elevated, not the page colour: a tooltip has to separate from
+       whatever it floats over, and on a dark surface a drop shadow alone
+       does almost nothing. The border carries the separation instead. */
+    background: var(--viz-surface-2);
     color: var(--ink-primary);
     border: 1px solid var(--viz-border);
     border-radius: 6px;
     padding: 8px 10px;
     font-size: 12px;
-    box-shadow: 0 4px 14px rgba(0,0,0,.16);
+    box-shadow: 0 6px 20px rgba(0,0,0,.45);
     max-width: 260px;
 }
 .rental-tip .t-code { font-weight: 600; margin-bottom: 3px; }
@@ -373,7 +388,7 @@
 .panel-tools button.on {
     background: var(--u-occupied);
     border-color: var(--u-occupied);
-    color: #fff;
+    color: var(--ink-on-fill);
 }
 
 /* Two panels side by side, stacking on narrow screens. */
@@ -467,3 +482,56 @@
 .feed li:last-child { border-bottom: none; }
 .feed-at  { color: var(--ink-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .feed-sum { color: var(--ink-primary); }
+
+/* ------------------------------------------------------------------
+   Settings -> Technical -> Demo Data
+
+   Uses the application shell variables directly rather than the viz-root
+   tokens: this is a settings screen, not a visualisation, so it should
+   look like the rest of Settings.
+   ------------------------------------------------------------------ */
+.demo-wrap { padding: 20px 24px 40px; max-width: 720px; color: var(--text); }
+.demo-head h2 { margin: 0 0 6px; font-size: 20px; font-weight: 600; }
+.demo-head p  { margin: 0 0 18px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+
+.demo-card { background: var(--surface); border: 1px solid var(--border);
+             border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; }
+.demo-card h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600;
+                text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.demo-card p  { font-size: 13px; line-height: 1.55; margin: 0 0 8px; }
+
+.demo-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.demo-table td { padding: 5px 0; border-bottom: 1px solid var(--border); }
+.demo-table td:last-child { text-align: right; font-variant-numeric: tabular-nums;
+                            font-weight: 600; }
+.demo-table tr:last-child td { border-bottom: none; }
+
+.demo-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+                margin-bottom: 20px; }
+.demo-hint { font-size: 12px; color: var(--muted); }
+
+.demo-btn { font: inherit; font-size: 13px; padding: 8px 16px; border-radius: 5px;
+            border: 1px solid var(--border); cursor: pointer;
+            background: var(--surface); color: var(--text); }
+.demo-btn:disabled { opacity: .5; cursor: not-allowed; }
+.demo-add { background: var(--ok, #4ec9b0); border-color: var(--ok, #4ec9b0);
+            color: #10231f; }
+
+/* Destructive, and it looks it — but the type-to-confirm beside it is
+   what actually prevents the accident. Colour alone never does. */
+.demo-del { background: var(--err, #f44747); border-color: var(--err, #f44747);
+            color: #fff; }
+
+.demo-danger { border-color: var(--err, #f44747); }
+.demo-confirm { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+                margin-top: 12px; }
+.demo-confirm label { font-size: 12px; color: var(--muted); }
+.demo-confirm code { background: var(--bg); padding: 1px 5px; border-radius: 3px;
+                     font-size: 12px; }
+.demo-confirm input { font: inherit; font-size: 13px; padding: 6px 10px; width: 130px;
+                      border: 1px solid var(--border); border-radius: 4px;
+                      background: var(--bg); color: var(--text); }
+
+.demo-note { font-size: 13px; padding: 9px 14px; border-radius: 5px; margin-bottom: 14px; }
+.demo-ok  { background: rgba(78,201,176,.12); border: 1px solid var(--ok, #4ec9b0); }
+.demo-err { background: rgba(244,71,71,.12);  border: 1px solid var(--err, #f44747); }

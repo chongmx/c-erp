@@ -736,7 +736,7 @@ private:
                                   pqxx::params{jid});
             std::string jcode = jrow.empty() ? "MISC" : std::string(jrow[0][0].c_str());
 
-            // P4: invoice numbering via ir.sequence, per journal.
+            // P4: invoice numbering via ir.sequence.
             //
             // What this replaces was genuinely unsafe: the number was
             // `COUNT(*) of posted moves for this journal+year + 1`, computed
@@ -749,18 +749,32 @@ private:
             // transaction, so concurrent posts serialise, and the allocation
             // rolls back with the post if it fails — gapless, which is what
             // tax-invoice numbering requires.
-            const std::string seqCode = "account.move." + jcode;
+            //
+            // Customer invoices and refunds use ONE dedicated sequence,
+            // `account.move.INV` — prefix "INV", padding 6, no reset — so
+            // they read INV000001, INV000002, … as a single continuous
+            // series regardless of which sale journal posted them (seeded
+            // by migration 1020). Everything else (vendor bills, journal
+            // entries, payments) keeps the per-journal sequence, created on
+            // first post.
+            const bool isCustomerInvoice =
+                (moveType == "out_invoice" || moveType == "out_refund");
+            const std::string seqCode =
+                isCustomerInvoice ? "account.move.INV" : "account.move." + jcode;
 
-            // Journals are user-defined, so the sequence is created on first
-            // post rather than guessed at migration time. ON CONFLICT DO
-            // NOTHING makes concurrent first-posts safe.
-            txn.exec(
-                "INSERT INTO ir_sequence (code, name, prefix, padding, reset_policy) "
-                "VALUES ($1, $2, $3, 4, 'yearly') "
-                "ON CONFLICT (code) WHERE company_id IS NULL DO NOTHING",
-                pqxx::params{seqCode,
-                             "Invoice — " + jcode,
-                             jcode + "/%(year)s/"});
+            if (!isCustomerInvoice) {
+                // Journals are user-defined, so a per-journal sequence is
+                // created on first post. ON CONFLICT DO NOTHING makes
+                // concurrent first-posts safe. The INV sequence is seeded
+                // in migration 1020, so it is never created here.
+                txn.exec(
+                    "INSERT INTO ir_sequence (code, name, prefix, padding, reset_policy) "
+                    "VALUES ($1, $2, $3, 4, 'yearly') "
+                    "ON CONFLICT (code) WHERE company_id IS NULL DO NOTHING",
+                    pqxx::params{seqCode,
+                                 "Journal — " + jcode,
+                                 jcode + "/%(year)s/"});
+            }
 
             std::ostringstream ss;
             ss << core::IrSequence::instance().nextByCode(txn, seqCode);
@@ -1545,6 +1559,7 @@ void AccountModule::initialize() {
     ensureSchema_();
     seedChartOfAccounts_();
     seedJournals_();
+    seedStockValuationAccounts_();
     seedTaxes_();
     seedPaymentTerms_();
     seedMenus_();
@@ -1741,6 +1756,29 @@ void AccountModule::seedChartOfAccounts_() {
         ON CONFLICT (code, company_id) DO NOTHING
     )");
     txn.exec("SELECT setval('account_account_id_seq', (SELECT MAX(id) FROM account_account), true)");
+    txn.commit();
+}
+
+// Stock-valuation accounts + the Inventory journal. Runs UNCONDITIONALLY every
+// boot (idempotent ON CONFLICT), unlike seedChartOfAccounts_/seedJournals_ which
+// only seed a fresh DB — so an existing database gains the costing accounts too.
+void AccountModule::seedStockValuationAccounts_() {
+    auto conn = services_.db()->acquire();
+    pqxx::work txn{conn.get()};
+    txn.exec(R"(
+        INSERT INTO account_account (code, name, account_type, internal_group, reconcile, company_id) VALUES
+            ('1400', 'Stock Valuation',           'asset_current', 'asset',   FALSE, 1),
+            ('1410', 'Stock Interim (Received)',  'asset_current', 'asset',   FALSE, 1),
+            ('1430', 'Stock Interim (Production)','asset_current', 'asset',   FALSE, 1),
+            ('5100', 'Inventory Adjustment',      'expense',       'expense', FALSE, 1),
+            ('5200', 'Landed Costs',              'expense',       'expense', FALSE, 1)
+        ON CONFLICT (code, company_id) DO NOTHING
+    )");
+    txn.exec("SELECT setval('account_account_id_seq', (SELECT MAX(id) FROM account_account), true)");
+    txn.exec("INSERT INTO account_journal (code, name, type, sequence, company_id) "
+             "VALUES ('STJ', 'Inventory', 'general', 50, 1) "
+             "ON CONFLICT (code, company_id) DO NOTHING");
+    txn.exec("SELECT setval('account_journal_id_seq', (SELECT MAX(id) FROM account_journal), true)");
     txn.commit();
 }
 

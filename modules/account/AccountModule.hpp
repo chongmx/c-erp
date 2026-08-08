@@ -53,6 +53,7 @@ private:
     void ensureSchema_();
     void seedChartOfAccounts_();
     void seedJournals_();
+    void seedStockValuationAccounts_();
     void seedTaxes_();
     void seedPaymentTerms_();
     void seedMenus_();
