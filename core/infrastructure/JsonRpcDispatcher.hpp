@@ -641,6 +641,10 @@ private:
             "product.product",       // products (sales/purchase/inventory all need this)
             "product.category",      // product categories
             "product.supplierinfo",  // vendor pricelist (viewed in product form)
+            "part.footprint",        // parts catalogue (PK2)
+            "part.unit",             // parametric units (PK3)
+            "part.parameter",        // product parametric specs (PK3)
+            "part.manufacturer.info",// manufacturer part numbers (PK4)
             "mail.message",          // chatter (gated by the parent document's access)
             "portal.partner",        // portal admin ViewModel (internal RPC only)
             "audit.log",
@@ -664,6 +668,10 @@ private:
             {"account.tax",           5},
             {"account.payment",       5},
             {"account.payment.term",  5},
+            {"account.analytic.account", 5},
+            {"account.analytic.line",    5},
+            {"account.bank.statement",       5},
+            {"account.bank.statement.line",  5},
             // HR — HR_EMPLOYEE (15)
             {"hr.employee",          15},
             {"hr.department",        15},

@@ -434,7 +434,13 @@ private:
         int lim = call.limit() > 0 ? call.limit() : 80;
         int off = call.offset();
 
-        auto [where, paramVec] = domainFromJson(call.domain()).toSql();
+        // S-49: a custom search_read bypasses BaseModel's allowlist, so restrict
+        // the domain columns to this model's stored fields explicitly.
+        static const std::set<std::string> kCols = {
+            "id","name","picking_type_id","state","partner_id","location_id",
+            "location_dest_id","scheduled_date","origin","company_id",
+            "sale_id","purchase_id","user_id"};
+        auto [where, paramVec] = domainFromJson(call.domain()).toSql(&kCols);
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
@@ -1018,7 +1024,12 @@ private:
         int lim = call.limit() > 0 ? call.limit() : 80;
         int off = call.offset();
 
-        auto [where, paramVec] = domainFromJson(call.domain()).toSql();
+        // S-49: restrict domain columns to this model's stored fields.
+        static const std::set<std::string> kCols = {
+            "id","picking_id","product_id","product_uom_id","name","product_uom_qty",
+            "quantity","state","location_id","location_dest_id","company_id",
+            "origin","reserved_qty","lot_id","production_id"};
+        auto [where, paramVec] = domainFromJson(call.domain()).toSql(&kCols);
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
@@ -2230,22 +2241,41 @@ static nlohmann::json runReorderScheduler(std::shared_ptr<DbConnection> db) {
                 pqxx::params{prod, toOrder, comp, origin});
             ++created;
         } else {  // buy
-            if (supp <= 0) continue;   // cannot raise a PO without a vendor
-            auto pr = txn.exec("SELECT name, standard_price, uom_po_id FROM product_product WHERE id=$1",
+            auto pr = txn.exec("SELECT name, standard_price FROM product_product WHERE id=$1",
                                pqxx::params{prod});
             if (pr.empty()) continue;
             const std::string pname = pr[0]["name"].is_null() ? "Product" : pr[0]["name"].c_str();
-            const long long   cost  = pr[0]["standard_price"].as<long long>(0);
-            const int         poId  = txn.exec(
+            long long price = pr[0]["standard_price"].as<long long>(0);
+            int       vendor = supp;
+            // Prefer product.supplierinfo for the vendor and price: use the rule's
+            // vendor if set (with that vendor's listed price), otherwise the
+            // product's first vendor line.
+            if (vendor > 0) {
+                auto si = txn.exec(
+                    "SELECT price FROM product_supplierinfo "
+                    "WHERE product_id=$1 AND partner_id=$2 ORDER BY sequence,id LIMIT 1",
+                    pqxx::params{prod, vendor});
+                if (!si.empty() && si[0][0].as<long long>(0) > 0) price = si[0][0].as<long long>(price);
+            } else {
+                auto si = txn.exec(
+                    "SELECT partner_id, price FROM product_supplierinfo "
+                    "WHERE product_id=$1 ORDER BY sequence,id LIMIT 1", pqxx::params{prod});
+                if (!si.empty()) {
+                    vendor = si[0]["partner_id"].as<int>();
+                    if (si[0]["price"].as<long long>(0) > 0) price = si[0]["price"].as<long long>(price);
+                }
+            }
+            if (vendor <= 0) continue;   // no vendor on the rule or in the vendor pricelist
+            const int poId = txn.exec(
                 "INSERT INTO purchase_order (name, state, partner_id, date_order, company_id, origin) "
                 "VALUES ('New','draft',$1,now(),$2,$3) RETURNING id",
-                pqxx::params{supp, comp, origin})[0][0].as<int>();
+                pqxx::params{vendor, comp, origin})[0][0].as<int>();
             txn.exec("UPDATE purchase_order SET name=$2 WHERE id=$1",
                      pqxx::params{poId, core::IrSequence::instance().nextByCode(txn, "purchase.order")});
             txn.exec(
                 "INSERT INTO purchase_order_line (order_id, product_id, name, product_qty, product_uom_id, price_unit) "
                 "VALUES ($1,$2,$3,$4,(SELECT uom_po_id FROM product_product WHERE id=$2),$5)",
-                pqxx::params{poId, prod, pname, toOrder, cost});
+                pqxx::params{poId, prod, pname, toOrder, price});
             ++created;
         }
     }
@@ -2829,7 +2859,8 @@ void StockModule::seedMenus_() {
             (28, 'Lots/Serial Numbers', 'stock.production.lot',  'list,form', '[]', '{}'),
             (29, 'Landed Costs',        'stock.landed.cost',     'list,form', '[]', '{}'),
             (30, 'Reordering Rules',    'stock.warehouse.orderpoint', 'list,form', '[]', '{}'),
-            (31, 'Putaway Rules',       'stock.putaway.rule',    'list,form', '[]', '{}')
+            (31, 'Putaway Rules',       'stock.putaway.rule',    'list,form', '[]', '{}'),
+            (47, 'Barcode',             'barcode.scan',          'list',      '[]', '{}')
         ON CONFLICT (id) DO UPDATE
             SET name = EXCLUDED.name, domain = EXCLUDED.domain
     )");
@@ -2856,7 +2887,8 @@ void StockModule::seedMenus_() {
             (202, 'Internal Transfers', 91, 30, 24),
             (95,  'All Transfers',      91, 40, 17),
             (207, 'Landed Costs',       91, 50, 29),
-            (208, 'Reordering Rules',   92, 30, 30)
+            (208, 'Reordering Rules',   92, 30, 30),
+            (210, 'Barcode',            91, 60, 47)
         ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
             sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
     )");

@@ -350,6 +350,56 @@ void AuthModule::ensureSchema_() {
     txn.exec("ALTER TABLE res_company ADD COLUMN IF NOT EXISTS "
              "currency_id INTEGER REFERENCES res_currency(id) ON DELETE SET NULL");
 
+    // ── ir_sequence + ir_cron — foundational infrastructure ───────────────
+    // Created HERE (auth, module #2, right after res_company which ir_sequence
+    // FKs) so both tables exist before any later module seeds into them
+    // (mrp 'mrp.production', account INV) AND before the rental migrations
+    // (v809 rental.contract sequence, v810 rental crons). Migrations 980/990
+    // keep the identical CREATE ... IF NOT EXISTS as their canonical home; on a
+    // fresh DB ensureSchema runs first (docs/070) so those become no-ops, and on
+    // an existing DB the migration already created these so this is the no-op.
+    // Keep the two definitions in sync.
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS ir_sequence (
+            id                SERIAL  PRIMARY KEY,
+            code              VARCHAR NOT NULL,
+            name              VARCHAR NOT NULL,
+            prefix            VARCHAR NOT NULL DEFAULT '',
+            suffix            VARCHAR NOT NULL DEFAULT '',
+            padding           INTEGER NOT NULL DEFAULT 5 CHECK (padding BETWEEN 0 AND 12),
+            number_next       BIGINT  NOT NULL DEFAULT 1 CHECK (number_next > 0),
+            number_increment  INTEGER NOT NULL DEFAULT 1 CHECK (number_increment > 0),
+            reset_policy      VARCHAR NOT NULL DEFAULT 'never'
+                              CHECK (reset_policy IN ('never','yearly','monthly')),
+            last_reset_period VARCHAR NOT NULL DEFAULT '',
+            company_id        INTEGER REFERENCES res_company(id) ON DELETE CASCADE,
+            active            BOOLEAN NOT NULL DEFAULT TRUE,
+            create_date       TIMESTAMP DEFAULT now(),
+            write_date        TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec("CREATE UNIQUE INDEX IF NOT EXISTS ir_sequence_code_company_idx "
+             "ON ir_sequence (code, company_id) WHERE company_id IS NOT NULL");
+    txn.exec("CREATE UNIQUE INDEX IF NOT EXISTS ir_sequence_code_global_idx "
+             "ON ir_sequence (code) WHERE company_id IS NULL");
+
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS ir_cron (
+            id               SERIAL   PRIMARY KEY,
+            code             VARCHAR  NOT NULL UNIQUE,
+            name             VARCHAR  NOT NULL,
+            interval_minutes INTEGER  NOT NULL DEFAULT 60 CHECK (interval_minutes > 0),
+            next_run         TIMESTAMP NOT NULL DEFAULT now(),
+            last_run         TIMESTAMP,
+            active           BOOLEAN  NOT NULL DEFAULT TRUE,
+            failure_count    INTEGER  NOT NULL DEFAULT 0,
+            last_error       TEXT,
+            create_date      TIMESTAMP DEFAULT now(),
+            write_date       TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec("CREATE INDEX IF NOT EXISTS ir_cron_due_idx ON ir_cron (next_run) WHERE active");
+
     // res_groups
     txn.exec(R"(
         CREATE TABLE IF NOT EXISTS res_groups (
@@ -544,10 +594,17 @@ void AuthModule::seedAdminUser_() {
         "RETURNING id");
     const int compPartnerId = compPartner[0][0].as<int>();
 
-    // Default company (currency_id=1 = USD seeded by base module)
+    // Default company. currency_id is left NULL here on purpose: the base
+    // currency (MYR) is created by migration 900-series 'money_reference_data'
+    // (901), which then sets res_company.currency_id = MYR for any company with
+    // a NULL currency. Since ensureSchema/seeding now runs BEFORE migrations
+    // (docs/070), MYR does not exist yet at this point — pinning USD (id=1) here
+    // would leave a fresh install with the wrong base currency, because 901 only
+    // fills a NULL. No module seed reads company currency during init, so the
+    // brief NULL window (until 901 runs, same boot) is safe.
     auto companyRes = txn.exec(
         "INSERT INTO res_company (id, name, partner_id, currency_id) "
-        "VALUES (1, 'My Company', $1, 1) "
+        "VALUES (1, 'My Company', $1, NULL) "
         "ON CONFLICT (id) DO NOTHING RETURNING id",
         pqxx::params{compPartnerId});
     txn.exec("SELECT setval('res_company_id_seq', 1, true)");

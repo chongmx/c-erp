@@ -784,6 +784,21 @@ private:
                 "SET state = 'posted', name = $1, write_date = now() "
                 "WHERE id = $2",
                 pqxx::params{ss.str(), id});
+
+            // Analytic accounting: for every posted journal item tagged to an
+            // analytic account, generate an analytic line. Amount uses the
+            // margin sign (credit − debit): revenue positive, cost negative.
+            // Idempotent — a re-post never duplicates (NOT EXISTS on move_line).
+            txn.exec(
+                "INSERT INTO account_analytic_line "
+                "(name, date, amount, account_id, general_account_id, move_line_id, company_id) "
+                "SELECT COALESCE(NULLIF(aml.name,''),'/'), $2::date, (aml.credit - aml.debit), "
+                "       aml.analytic_account_id, aml.account_id, aml.id, aml.company_id "
+                "FROM account_move_line aml "
+                "WHERE aml.move_id=$1 AND aml.analytic_account_id IS NOT NULL "
+                "AND NOT EXISTS (SELECT 1 FROM account_analytic_line al WHERE al.move_line_id=aml.id)",
+                pqxx::params{id, date});
+
             odoo::modules::mail::postLog(txn, "account.move", id, 0,
                 "Invoice posted.", "log_note");
         }
@@ -1481,6 +1496,476 @@ private:
 
 
 // ================================================================
+// Analytic accounting — cost centres
+// ================================================================
+class AccountAnalyticAccount : public core::BaseModel<AccountAnalyticAccount> {
+public:
+    ODOO_MODEL("account.analytic.account", "account_analytic_account")
+    std::string name, code;
+    int         partnerId = 0, companyId = 0;
+    bool        active = true;
+    explicit AccountAnalyticAccount(std::shared_ptr<infrastructure::DbConnection> db)
+        : core::BaseModel<AccountAnalyticAccount>(std::move(db)) {}
+    void registerFields() override {
+        fieldRegistry_.add({"name",       core::FieldType::Char,    "Analytic Account", true});
+        fieldRegistry_.add({"code",       core::FieldType::Char,    "Reference"});
+        fieldRegistry_.add({"partner_id", core::FieldType::Many2one,"Customer", false, false, true, true, "res.partner"});
+        fieldRegistry_.add({"company_id", core::FieldType::Many2one,"Company",  false, false, true, true, "res.company"});
+        fieldRegistry_.add({"active",     core::FieldType::Boolean, "Active"});
+    }
+    void serializeFields(nlohmann::json& j) const override {
+        j["name"]       = name;
+        j["code"]       = code.empty() ? nlohmann::json(false) : nlohmann::json(code);
+        j["partner_id"] = partnerId > 0 ? nlohmann::json(partnerId) : nlohmann::json(false);
+        j["company_id"] = companyId > 0 ? nlohmann::json(companyId) : nlohmann::json(false);
+        j["active"]     = active;
+    }
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("name")   && j["name"].is_string())   name   = j["name"].get<std::string>();
+        if (j.contains("code")   && j["code"].is_string())   code   = j["code"].get<std::string>();
+        if (j.contains("active") && j["active"].is_boolean()) active = j["active"].get<bool>();
+        if (j.contains("partner_id")) partnerId = m2oToId_(j["partner_id"]);
+        if (j.contains("company_id")) companyId = m2oToId_(j["company_id"]);
+    }
+    std::vector<std::string> validate() const override { std::vector<std::string> e; if (name.empty()) e.push_back("Name is required"); return e; }
+};
+
+class AccountAnalyticLine : public core::BaseModel<AccountAnalyticLine> {
+public:
+    ODOO_MODEL("account.analytic.line", "account_analytic_line")
+    std::string name, date;
+    double      amount = 0.0;
+    int         accountId = 0;          // the analytic account
+    int         generalAccountId = 0;   // the GL account
+    int         moveLineId = 0;
+    int         companyId = 0;
+    explicit AccountAnalyticLine(std::shared_ptr<infrastructure::DbConnection> db)
+        : core::BaseModel<AccountAnalyticLine>(std::move(db)) { date = currentDate_(); }
+    void registerFields() override {
+        fieldRegistry_.add({"name",               core::FieldType::Char,    "Description"});
+        fieldRegistry_.add({"date",               core::FieldType::Date,    "Date"});
+        fieldRegistry_.add({"amount",             core::FieldType::Monetary,"Amount"});
+        fieldRegistry_.add({"account_id",         core::FieldType::Many2one,"Analytic Account", true, false, true, true, "account.analytic.account"});
+        fieldRegistry_.add({"general_account_id", core::FieldType::Many2one,"Financial Account", false, false, true, true, "account.account"});
+        fieldRegistry_.add({"move_line_id",       core::FieldType::Many2one,"Journal Item", false, false, true, false, "account.move.line"});
+        fieldRegistry_.add({"company_id",         core::FieldType::Many2one,"Company", false, false, true, true, "res.company"});
+        fieldRegistry_.markScaled({"amount"});
+    }
+    void serializeFields(nlohmann::json& j) const override {
+        j["name"]               = name;
+        j["date"]               = date.empty() ? nlohmann::json(false) : nlohmann::json(date);
+        j["amount"]             = amount;
+        j["account_id"]         = accountId > 0 ? nlohmann::json(accountId) : nlohmann::json(false);
+        j["general_account_id"] = generalAccountId > 0 ? nlohmann::json(generalAccountId) : nlohmann::json(false);
+        j["move_line_id"]       = moveLineId > 0 ? nlohmann::json(moveLineId) : nlohmann::json(false);
+        j["company_id"]         = companyId > 0 ? nlohmann::json(companyId) : nlohmann::json(false);
+    }
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("name")   && j["name"].is_string())   name   = j["name"].get<std::string>();
+        if (j.contains("date")   && j["date"].is_string())   date   = j["date"].get<std::string>();
+        if (j.contains("amount") && j["amount"].is_number()) amount = j["amount"].get<double>();
+        if (j.contains("account_id"))         accountId        = m2oToId_(j["account_id"]);
+        if (j.contains("general_account_id")) generalAccountId = m2oToId_(j["general_account_id"]);
+        if (j.contains("move_line_id"))       moveLineId       = m2oToId_(j["move_line_id"]);
+        if (j.contains("company_id"))         companyId        = m2oToId_(j["company_id"]);
+    }
+    std::vector<std::string> validate() const override { std::vector<std::string> e; if (accountId <= 0) e.push_back("Analytic account is required"); return e; }
+};
+
+// Analytic account list with a computed balance (Σ of its lines' amounts).
+class AccountAnalyticAccountViewModel : public core::BaseViewModel {
+public:
+    explicit AccountAnalyticAccountViewModel(std::shared_ptr<infrastructure::DbConnection> db) : db_(std::move(db)) {
+        REGISTER_METHOD("search_read",     handleSearchRead)
+        REGISTER_METHOD("web_search_read", handleSearchRead)
+        REGISTER_METHOD("read",            handleRead)
+        REGISTER_MUTATOR("create",          handleCreate)
+        REGISTER_MUTATOR("write",           handleWrite)
+        REGISTER_MUTATOR("unlink",          handleUnlink)
+        REGISTER_METHOD("fields_get",      handleFieldsGet)
+        REGISTER_METHOD("search_count",    handleSearchCount)
+    }
+    std::string modelName() const override { return "account.analytic.account"; }
+private:
+    std::shared_ptr<infrastructure::DbConnection> db_;
+    nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
+        const int lim = call.limit() > 0 ? call.limit() : 80;
+        const int off = call.offset();
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        std::string sql = R"(
+            SELECT a.id, a.name, a.code, a.partner_id, rp.name AS partner_name,
+                   COALESCE((SELECT SUM(amount) FROM account_analytic_line WHERE account_id=a.id),0) AS balance
+            FROM account_analytic_account a
+            LEFT JOIN res_partner rp ON rp.id = a.partner_id
+            WHERE a.active = TRUE ORDER BY a.id DESC)";
+        sql += " LIMIT " + std::to_string(lim);
+        if (off > 0) sql += " OFFSET " + std::to_string(off);
+        auto res = txn.exec(sql);
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& row : res) {
+            nlohmann::json j;
+            j["id"]         = row["id"].as<int>();
+            j["name"]       = row["name"].is_null() ? "" : row["name"].c_str();
+            j["code"]       = row["code"].is_null() ? nlohmann::json(false) : nlohmann::json(row["code"].c_str());
+            j["partner_id"] = row["partner_id"].is_null() ? nlohmann::json(false)
+                : nlohmann::json::array({row["partner_id"].as<int>(), row["partner_name"].is_null()?"":std::string(row["partner_name"].c_str())});
+            j["balance"]    = core::Money::fromMicros(row["balance"].as<long long>(0)).toJson();
+            arr.push_back(std::move(j));
+        }
+        return arr;
+    }
+    nlohmann::json handleRead(const core::CallKwArgs& call)        { AccountAnalyticAccount p(db_); p.setUserContext(extractContext_(call)); return p.read(call.ids(), call.fields()); }
+    nlohmann::json handleCreate(const core::CallKwArgs& call)      { AccountAnalyticAccount p(db_); p.setUserContext(extractContext_(call)); return p.create(call.arg(0)); }
+    nlohmann::json handleWrite(const core::CallKwArgs& call)       { AccountAnalyticAccount p(db_); p.setUserContext(extractContext_(call)); return p.write(call.ids(), call.arg(1)); }
+    nlohmann::json handleUnlink(const core::CallKwArgs& call)      { AccountAnalyticAccount p(db_); p.setUserContext(extractContext_(call)); return p.unlink(call.ids()); }
+    nlohmann::json handleFieldsGet(const core::CallKwArgs& call)   { AccountAnalyticAccount p(db_); return p.fieldsGet(call.fields()); }
+    nlohmann::json handleSearchCount(const core::CallKwArgs& call) { AccountAnalyticAccount p(db_); p.setUserContext(extractContext_(call)); return p.searchCount(call.domain()); }
+};
+
+// Analytic lines (Items) — join the analytic account name; filter by account_id.
+class AccountAnalyticLineViewModel : public core::BaseViewModel {
+public:
+    explicit AccountAnalyticLineViewModel(std::shared_ptr<infrastructure::DbConnection> db) : db_(std::move(db)) {
+        REGISTER_METHOD("search_read",     handleSearchRead)
+        REGISTER_METHOD("web_search_read", handleSearchRead)
+        REGISTER_METHOD("read",            handleRead)
+        REGISTER_MUTATOR("create",          handleCreate)
+        REGISTER_MUTATOR("unlink",          handleUnlink)
+        REGISTER_METHOD("fields_get",      handleFieldsGet)
+        REGISTER_METHOD("search_count",    handleSearchCount)
+    }
+    std::string modelName() const override { return "account.analytic.line"; }
+private:
+    std::shared_ptr<infrastructure::DbConnection> db_;
+    nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
+        int acctFilter = 0;
+        { auto d = call.domain(); if (d.is_array()) for (const auto& c : d)
+            if (c.is_array() && c.size()==3 && c[0].is_string() && c[0].get<std::string>()=="account_id" && c[2].is_number_integer())
+                acctFilter = c[2].get<int>(); }
+        const int lim = call.limit() > 0 ? call.limit() : 80;
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        std::string sql = R"(
+            SELECT l.id, l.name, l.date, l.amount, l.account_id, a.name AS account_name
+            FROM account_analytic_line l LEFT JOIN account_analytic_account a ON a.id = l.account_id )";
+        pqxx::params p;
+        if (acctFilter > 0) { sql += " WHERE l.account_id=$1"; p.append(acctFilter); }
+        sql += " ORDER BY l.date DESC, l.id DESC LIMIT " + std::to_string(lim);
+        auto res = acctFilter > 0 ? txn.exec(sql, p) : txn.exec(sql);
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& row : res) {
+            nlohmann::json j;
+            j["id"]         = row["id"].as<int>();
+            j["name"]       = row["name"].is_null() ? nlohmann::json(false) : nlohmann::json(row["name"].c_str());
+            j["date"]       = row["date"].is_null() ? nlohmann::json(false) : nlohmann::json(row["date"].c_str());
+            j["amount"]     = core::Money::fromMicros(row["amount"].as<long long>(0)).toJson();
+            j["account_id"] = row["account_id"].is_null() ? nlohmann::json(false)
+                : nlohmann::json::array({row["account_id"].as<int>(), row["account_name"].is_null()?"":std::string(row["account_name"].c_str())});
+            arr.push_back(std::move(j));
+        }
+        return arr;
+    }
+    nlohmann::json handleRead(const core::CallKwArgs& call)        { AccountAnalyticLine p(db_); p.setUserContext(extractContext_(call)); return p.read(call.ids(), call.fields()); }
+    nlohmann::json handleCreate(const core::CallKwArgs& call)      { AccountAnalyticLine p(db_); p.setUserContext(extractContext_(call)); return p.create(call.arg(0)); }
+    nlohmann::json handleUnlink(const core::CallKwArgs& call)      { AccountAnalyticLine p(db_); p.setUserContext(extractContext_(call)); return p.unlink(call.ids()); }
+    nlohmann::json handleFieldsGet(const core::CallKwArgs& call)   { AccountAnalyticLine p(db_); return p.fieldsGet(call.fields()); }
+    nlohmann::json handleSearchCount(const core::CallKwArgs& call) { AccountAnalyticLine p(db_); p.setUserContext(extractContext_(call)); return p.searchCount(call.domain()); }
+};
+
+class AnalyticListView : public core::BaseView {
+    std::string model_, name_, label_; bool isLine_;
+public:
+    AnalyticListView(std::string model, std::string name, std::string label, bool isLine)
+        : model_(std::move(model)), name_(std::move(name)), label_(std::move(label)), isLine_(isLine) {}
+    std::string viewName()  const override { return name_; }
+    std::string modelName() const override { return model_; }
+    std::string viewType()  const override { return "list"; }
+    std::string arch() const override {
+        if (isLine_)
+            return "<list string=\"" + label_ + "\"><field name=\"date\"/><field name=\"name\"/>"
+                   "<field name=\"account_id\"/><field name=\"amount\"/></list>";
+        return "<list string=\"" + label_ + "\"><field name=\"name\"/><field name=\"code\"/>"
+               "<field name=\"partner_id\"/><field name=\"balance\"/></list>";
+    }
+    nlohmann::json fields() const override {
+        if (isLine_) return {
+            {"date",       {{"type","date"},     {"string","Date"}}},
+            {"name",       {{"type","char"},     {"string","Description"}}},
+            {"account_id", {{"type","many2one"}, {"string","Analytic Account"}, {"relation","account.analytic.account"}}},
+            {"amount",     {{"type","monetary"}, {"string","Amount"}}},
+        };
+        return {
+            {"name",       {{"type","char"},     {"string","Analytic Account"}}},
+            {"code",       {{"type","char"},     {"string","Reference"}}},
+            {"partner_id", {{"type","many2one"}, {"string","Customer"}, {"relation","res.partner"}}},
+            {"balance",    {{"type","monetary"}, {"string","Balance"}}},
+        };
+    }
+    nlohmann::json render(const nlohmann::json&) const override { return {}; }
+};
+
+// ================================================================
+// Bank reconciliation
+// ================================================================
+class AccountBankStatement : public core::BaseModel<AccountBankStatement> {
+public:
+    ODOO_MODEL("account.bank.statement", "account_bank_statement")
+    std::string name, date, state = "open";
+    int         journalId = 0, companyId = 0;
+    double      balanceStart = 0.0, balanceEnd = 0.0;
+    explicit AccountBankStatement(std::shared_ptr<infrastructure::DbConnection> db)
+        : core::BaseModel<AccountBankStatement>(std::move(db)) { date = currentDate_(); }
+    void registerFields() override {
+        fieldRegistry_.add({"name",          core::FieldType::Char,    "Reference"});
+        fieldRegistry_.add({"date",          core::FieldType::Date,    "Date"});
+        fieldRegistry_.add({"journal_id",    core::FieldType::Many2one,"Bank Journal", true, false, true, true, "account.journal"});
+        fieldRegistry_.add({"balance_start", core::FieldType::Monetary,"Starting Balance"});
+        fieldRegistry_.add({"balance_end",   core::FieldType::Monetary,"Ending Balance"});
+        fieldRegistry_.add({"state",         core::FieldType::Char,    "Status"});
+        fieldRegistry_.add({"company_id",    core::FieldType::Many2one,"Company", false, false, true, true, "res.company"});
+        fieldRegistry_.markScaled({"balance_start", "balance_end"});
+    }
+    void serializeFields(nlohmann::json& j) const override {
+        j["name"]          = name.empty() ? nlohmann::json(false) : nlohmann::json(name);
+        j["date"]          = date.empty() ? nlohmann::json(false) : nlohmann::json(date);
+        j["journal_id"]    = journalId > 0 ? nlohmann::json(journalId) : nlohmann::json(false);
+        j["balance_start"] = balanceStart;
+        j["balance_end"]   = balanceEnd;
+        j["state"]         = state;
+        j["company_id"]    = companyId > 0 ? nlohmann::json(companyId) : nlohmann::json(false);
+    }
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("name")  && j["name"].is_string())  name  = j["name"].get<std::string>();
+        if (j.contains("date")  && j["date"].is_string())  date  = j["date"].get<std::string>();
+        if (j.contains("state") && j["state"].is_string()) state = j["state"].get<std::string>();
+        if (j.contains("balance_start") && j["balance_start"].is_number()) balanceStart = j["balance_start"].get<double>();
+        if (j.contains("balance_end")   && j["balance_end"].is_number())   balanceEnd   = j["balance_end"].get<double>();
+        if (j.contains("journal_id")) journalId = m2oToId_(j["journal_id"]);
+        if (j.contains("company_id")) companyId = m2oToId_(j["company_id"]);
+    }
+};
+
+class AccountBankStatementLine : public core::BaseModel<AccountBankStatementLine> {
+public:
+    ODOO_MODEL("account.bank.statement.line", "account_bank_statement_line")
+    int         statementId = 0, partnerId = 0, reconciledMoveId = 0, companyId = 0;
+    std::string date, name, paymentRef;
+    double      amount = 0.0;
+    bool        isReconciled = false;
+    explicit AccountBankStatementLine(std::shared_ptr<infrastructure::DbConnection> db)
+        : core::BaseModel<AccountBankStatementLine>(std::move(db)) { date = currentDate_(); }
+    void registerFields() override {
+        fieldRegistry_.add({"statement_id",  core::FieldType::Many2one,"Statement", true, false, true, false, "account.bank.statement"});
+        fieldRegistry_.add({"date",          core::FieldType::Date,    "Date"});
+        fieldRegistry_.add({"name",          core::FieldType::Char,    "Label"});
+        fieldRegistry_.add({"payment_ref",   core::FieldType::Char,    "Reference"});
+        fieldRegistry_.add({"partner_id",    core::FieldType::Many2one,"Partner", false, false, true, true, "res.partner"});
+        fieldRegistry_.add({"amount",        core::FieldType::Monetary,"Amount"});
+        fieldRegistry_.add({"is_reconciled", core::FieldType::Boolean, "Reconciled"});
+        fieldRegistry_.add({"company_id",    core::FieldType::Many2one,"Company", false, false, true, true, "res.company"});
+        fieldRegistry_.markScaled({"amount"});
+    }
+    void serializeFields(nlohmann::json& j) const override {
+        j["statement_id"]  = statementId > 0 ? nlohmann::json(statementId) : nlohmann::json(false);
+        j["date"]          = date.empty() ? nlohmann::json(false) : nlohmann::json(date);
+        j["name"]          = name.empty() ? nlohmann::json(false) : nlohmann::json(name);
+        j["payment_ref"]   = paymentRef.empty() ? nlohmann::json(false) : nlohmann::json(paymentRef);
+        j["partner_id"]    = partnerId > 0 ? nlohmann::json(partnerId) : nlohmann::json(false);
+        j["amount"]        = amount;
+        j["is_reconciled"] = isReconciled;
+        j["company_id"]    = companyId > 0 ? nlohmann::json(companyId) : nlohmann::json(false);
+    }
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("date")        && j["date"].is_string())        date       = j["date"].get<std::string>();
+        if (j.contains("name")        && j["name"].is_string())        name       = j["name"].get<std::string>();
+        if (j.contains("payment_ref") && j["payment_ref"].is_string()) paymentRef = j["payment_ref"].get<std::string>();
+        if (j.contains("amount")      && j["amount"].is_number())      amount     = j["amount"].get<double>();
+        if (j.contains("statement_id")) statementId = m2oToId_(j["statement_id"]);
+        if (j.contains("partner_id"))   partnerId   = m2oToId_(j["partner_id"]);
+        if (j.contains("company_id"))   companyId   = m2oToId_(j["company_id"]);
+    }
+};
+
+// Statement lines viewmodel: list by statement, suggest matches, reconcile.
+class AccountBankStatementLineViewModel : public core::BaseViewModel {
+public:
+    explicit AccountBankStatementLineViewModel(std::shared_ptr<infrastructure::DbConnection> db) : db_(std::move(db)) {
+        REGISTER_METHOD("search_read",    handleSearchRead)
+        REGISTER_METHOD("read",           handleRead)
+        REGISTER_MUTATOR("create",         handleCreate)
+        REGISTER_MUTATOR("write",          handleWrite)
+        REGISTER_MUTATOR("unlink",         handleUnlink)
+        REGISTER_METHOD("fields_get",     handleFieldsGet)
+        REGISTER_METHOD("suggest_matches",handleSuggestMatches)
+        REGISTER_METHOD("reconcile",      handleReconcile)
+    }
+    std::string modelName() const override { return "account.bank.statement.line"; }
+private:
+    std::shared_ptr<infrastructure::DbConnection> db_;
+
+    nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
+        int stmtFilter = 0;
+        { auto d = call.domain(); if (d.is_array()) for (const auto& c : d)
+            if (c.is_array() && c.size()==3 && c[0].is_string() && c[0].get<std::string>()=="statement_id" && c[2].is_number_integer())
+                stmtFilter = c[2].get<int>(); }
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        std::string sql = R"(
+            SELECT l.id, l.statement_id, l.date, l.name, l.payment_ref, l.amount,
+                   l.is_reconciled, l.partner_id, rp.name AS partner_name, l.reconciled_move_id
+            FROM account_bank_statement_line l LEFT JOIN res_partner rp ON rp.id = l.partner_id )";
+        pqxx::params p;
+        if (stmtFilter > 0) { sql += " WHERE l.statement_id=$1"; p.append(stmtFilter); }
+        sql += " ORDER BY l.date, l.id";
+        auto res = stmtFilter > 0 ? txn.exec(sql, p) : txn.exec(sql);
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& row : res) {
+            nlohmann::json j;
+            j["id"]            = row["id"].as<int>();
+            j["statement_id"]  = row["statement_id"].is_null() ? nlohmann::json(false) : nlohmann::json(row["statement_id"].as<int>());
+            j["date"]          = row["date"].is_null() ? nlohmann::json(false) : nlohmann::json(row["date"].c_str());
+            j["name"]          = row["name"].is_null() ? nlohmann::json(false) : nlohmann::json(row["name"].c_str());
+            j["payment_ref"]   = row["payment_ref"].is_null() ? nlohmann::json(false) : nlohmann::json(row["payment_ref"].c_str());
+            j["amount"]        = core::Money::fromMicros(row["amount"].as<long long>(0)).toJson();
+            j["is_reconciled"] = row["is_reconciled"].as<bool>(false);
+            j["partner_id"]    = row["partner_id"].is_null() ? nlohmann::json(false)
+                : nlohmann::json::array({row["partner_id"].as<int>(), row["partner_name"].is_null()?"":std::string(row["partner_name"].c_str())});
+            arr.push_back(std::move(j));
+        }
+        return arr;
+    }
+    nlohmann::json handleRead(const core::CallKwArgs& call)      { AccountBankStatementLine p(db_); p.setUserContext(extractContext_(call)); return p.read(call.ids(), call.fields()); }
+    nlohmann::json handleCreate(const core::CallKwArgs& call)    { AccountBankStatementLine p(db_); p.setUserContext(extractContext_(call)); return p.create(call.arg(0)); }
+    nlohmann::json handleWrite(const core::CallKwArgs& call)     { AccountBankStatementLine p(db_); p.setUserContext(extractContext_(call)); return p.write(call.ids(), call.arg(1)); }
+    nlohmann::json handleUnlink(const core::CallKwArgs& call)    { AccountBankStatementLine p(db_); p.setUserContext(extractContext_(call)); return p.unlink(call.ids()); }
+    nlohmann::json handleFieldsGet(const core::CallKwArgs& call) { AccountBankStatementLine p(db_); return p.fieldsGet(call.fields()); }
+
+    // For the UI: open invoices/bills that could clear this line (best matches
+    // — equal residual, then same partner — first).
+    nlohmann::json handleSuggestMatches(const core::CallKwArgs& call) {
+        int lineId = 0;
+        { const auto v = call.arg(0);
+          if (v.is_object() && v.contains("line_id")) lineId = m2oToId_(v["line_id"]);
+          else if (!call.ids().empty()) lineId = call.ids().front(); }
+        if (lineId <= 0) throw std::runtime_error("suggest_matches: line_id required");
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        auto ln = txn.exec("SELECT amount, partner_id FROM account_bank_statement_line WHERE id=$1", pqxx::params{lineId});
+        if (ln.empty()) throw std::runtime_error("statement line not found");
+        const long long amt = ln[0]["amount"].as<long long>(0);
+        const long long a   = amt < 0 ? -amt : amt;
+        const int partner   = ln[0]["partner_id"].is_null() ? 0 : ln[0]["partner_id"].as<int>();
+        auto res = txn.exec(
+            "SELECT id, name, partner_id, amount_residual, move_type FROM account_move "
+            "WHERE state='posted' AND amount_residual > 0 "
+            "AND move_type IN ('out_invoice','in_invoice','out_refund','in_refund') "
+            "ORDER BY (amount_residual = $1) DESC, (partner_id = $2) DESC, date LIMIT 20",
+            pqxx::params{a, partner});
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& r : res)
+            arr.push_back({{"id", r["id"].as<int>()},
+                           {"name", r["name"].is_null()?"":r["name"].c_str()},
+                           {"move_type", r["move_type"].is_null()?"":r["move_type"].c_str()},
+                           {"amount_residual", core::Money::fromMicros(r["amount_residual"].as<long long>(0)).toJson()}});
+        return arr;
+    }
+
+    // Reconcile a statement line against an invoice/bill: post the bank entry
+    // (Dr Bank / Cr Receivable on an inflow), clear the invoice residual, and
+    // mark the line reconciled.
+    nlohmann::json handleReconcile(const core::CallKwArgs& call) {
+        int lineId = 0, moveId = 0;
+        const auto v = call.arg(0);
+        if (v.is_object()) { lineId = m2oToId_(v.contains("line_id")?v["line_id"]:nlohmann::json(0)); moveId = m2oToId_(v.contains("move_id")?v["move_id"]:nlohmann::json(0)); }
+        else if (v.is_number_integer()) { lineId = v.get<int>(); moveId = m2oToId_(call.arg(1)); }
+        if (lineId <= 0 || moveId <= 0) throw std::runtime_error("reconcile: line_id and move_id required");
+
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        auto ln = txn.exec(
+            "SELECT bsl.amount, bsl.company_id, bs.journal_id, bsl.is_reconciled "
+            "FROM account_bank_statement_line bsl JOIN account_bank_statement bs ON bs.id=bsl.statement_id "
+            "WHERE bsl.id=$1", pqxx::params{lineId});
+        if (ln.empty()) throw std::runtime_error("statement line not found");
+        if (ln[0]["is_reconciled"].as<bool>(false)) throw std::runtime_error("line already reconciled");
+        const long long amount = ln[0]["amount"].as<long long>(0);
+        const int comp = ln[0]["company_id"].is_null() ? 1 : ln[0]["company_id"].as<int>();
+        const int jid  = ln[0]["journal_id"].as<int>();
+
+        // Bank account = journal default, else code 1100.
+        int bankAcct = 0;
+        { auto r = txn.exec("SELECT default_account_id FROM account_journal WHERE id=$1", pqxx::params{jid});
+          if (!r.empty() && !r[0][0].is_null()) bankAcct = r[0][0].as<int>(); }
+        if (bankAcct <= 0) { auto r = txn.exec("SELECT id FROM account_account WHERE code='1100' AND company_id=$1 LIMIT 1", pqxx::params{comp}); bankAcct = r.empty()?0:r[0][0].as<int>(); }
+        // Counterpart = the invoice's receivable/payable account, else 1200.
+        int cpAcct = 0;
+        { auto r = txn.exec(
+            "SELECT aml.account_id FROM account_move_line aml JOIN account_account a ON a.id=aml.account_id "
+            "WHERE aml.move_id=$1 AND a.account_type IN ('asset_receivable','liability_payable') LIMIT 1",
+            pqxx::params{moveId}); if (!r.empty()) cpAcct = r[0][0].as<int>(); }
+        if (cpAcct <= 0) { auto r = txn.exec("SELECT id FROM account_account WHERE code='1200' AND company_id=$1 LIMIT 1", pqxx::params{comp}); cpAcct = r.empty()?0:r[0][0].as<int>(); }
+        if (bankAcct <= 0 || cpAcct <= 0) throw std::runtime_error("bank or counterpart account not configured");
+
+        // Post the bank entry.
+        const bool     inflow = amount >= 0;
+        const long long a = amount < 0 ? -amount : amount;
+        const int moveJe = txn.exec(
+            "INSERT INTO account_move (name, move_type, state, date, journal_id, company_id) "
+            "VALUES ('/','entry','posted',CURRENT_DATE,$1,$2) RETURNING id", pqxx::params{jid, comp})[0][0].as<int>();
+        txn.exec("UPDATE account_move SET name=$2 WHERE id=$1", pqxx::params{moveJe, std::string("BNK/") + std::to_string(moveJe)});
+        auto jeLine = [&](int acct, long long dr, long long cr) {
+            txn.exec("INSERT INTO account_move_line (move_id, account_id, journal_id, company_id, date, name, debit, credit) "
+                     "VALUES ($1,$2,$3,$4,CURRENT_DATE,'Bank reconciliation',$5,$6)",
+                     pqxx::params{moveJe, acct, jid, comp, dr, cr});
+        };
+        jeLine(bankAcct, inflow ? a : 0, inflow ? 0 : a);
+        jeLine(cpAcct,   inflow ? 0 : a, inflow ? a : 0);
+
+        // Clear the invoice residual + payment_state.
+        txn.exec(
+            "UPDATE account_move SET "
+            "  amount_residual = GREATEST(amount_residual - $2, 0), "
+            "  payment_state = CASE WHEN amount_residual - $2 <= 0 THEN 'paid' ELSE 'partial' END, "
+            "  write_date=now() WHERE id=$1", pqxx::params{moveId, a});
+        // Mark the line reconciled.
+        txn.exec("UPDATE account_bank_statement_line SET is_reconciled=TRUE, reconciled_move_id=$2, write_date=now() WHERE id=$1",
+                 pqxx::params{lineId, moveJe});
+        txn.commit();
+        nlohmann::json out; out["bank_move_id"] = moveJe; out["invoice_id"] = moveId; return out;
+    }
+};
+
+class BankStatementListView : public core::BaseView {
+    std::string model_, name_, label_; bool isLine_;
+public:
+    BankStatementListView(std::string model, std::string name, std::string label, bool isLine)
+        : model_(std::move(model)), name_(std::move(name)), label_(std::move(label)), isLine_(isLine) {}
+    std::string viewName()  const override { return name_; }
+    std::string modelName() const override { return model_; }
+    std::string viewType()  const override { return "list"; }
+    std::string arch() const override {
+        if (isLine_)
+            return "<list string=\"" + label_ + "\"><field name=\"date\"/><field name=\"name\"/>"
+                   "<field name=\"partner_id\"/><field name=\"amount\"/><field name=\"is_reconciled\"/></list>";
+        return "<list string=\"" + label_ + "\"><field name=\"name\"/><field name=\"date\"/>"
+               "<field name=\"journal_id\"/><field name=\"balance_end\"/><field name=\"state\"/></list>";
+    }
+    nlohmann::json fields() const override {
+        if (isLine_) return {
+            {"date",          {{"type","date"},     {"string","Date"}}},
+            {"name",          {{"type","char"},     {"string","Label"}}},
+            {"partner_id",    {{"type","many2one"}, {"string","Partner"}, {"relation","res.partner"}}},
+            {"amount",        {{"type","monetary"}, {"string","Amount"}}},
+            {"is_reconciled", {{"type","boolean"},  {"string","Reconciled"}}},
+        };
+        return {
+            {"name",        {{"type","char"},      {"string","Reference"}}},
+            {"date",        {{"type","date"},      {"string","Date"}}},
+            {"journal_id",  {{"type","many2one"},  {"string","Bank Journal"}, {"relation","account.journal"}}},
+            {"balance_end", {{"type","monetary"},  {"string","Ending Balance"}}},
+            {"state",       {{"type","selection"}, {"string","Status"}}},
+        };
+    }
+    nlohmann::json render(const nlohmann::json&) const override { return {}; }
+};
+
+// ================================================================
 // 3. MODULE — method implementations
 // ================================================================
 
@@ -1507,6 +1992,10 @@ void AccountModule::registerModels() {
     models_.registerCreator("account.move.line",    [db]{ return std::make_shared<AccountMoveLine>(db); });
     models_.registerCreator("account.payment",      [db]{ return std::make_shared<AccountPayment>(db); });
     models_.registerCreator("account.payment.term", [db]{ return std::make_shared<AccountPaymentTerm>(db); });
+    models_.registerCreator("account.analytic.account", [db]{ return std::make_shared<AccountAnalyticAccount>(db); });
+    models_.registerCreator("account.analytic.line",    [db]{ return std::make_shared<AccountAnalyticLine>(db); });
+    models_.registerCreator("account.bank.statement",      [db]{ return std::make_shared<AccountBankStatement>(db); });
+    models_.registerCreator("account.bank.statement.line", [db]{ return std::make_shared<AccountBankStatementLine>(db); });
 }
 
 void AccountModule::registerServices() {}
@@ -1527,6 +2016,10 @@ void AccountModule::registerViews() {
     views_.registerView<AccountPaymentFormView>  ("account.payment.form");
     views_.registerView<AccountPaymentTermListView>("account.payment.term.list");
     views_.registerView<AccountPaymentTermFormView>("account.payment.term.form");
+    views_.registerCreator("account.analytic.account.list", []{ return std::make_shared<AnalyticListView>("account.analytic.account","account.analytic.account.list","Analytic Accounts",false); });
+    views_.registerCreator("account.analytic.line.list",    []{ return std::make_shared<AnalyticListView>("account.analytic.line","account.analytic.line.list","Analytic Items",true); });
+    views_.registerCreator("account.bank.statement.list",      []{ return std::make_shared<BankStatementListView>("account.bank.statement","account.bank.statement.list","Bank Statements",false); });
+    views_.registerCreator("account.bank.statement.line.list", []{ return std::make_shared<BankStatementListView>("account.bank.statement.line","account.bank.statement.line.list","Statement Lines",true); });
 }
 
 void AccountModule::registerViewModels() {
@@ -1553,6 +2046,18 @@ void AccountModule::registerViewModels() {
     viewModels_.registerCreator("account.payment.term", [db]{
         return std::make_shared<AccountViewModel<AccountPaymentTerm>>(db);
     });
+    viewModels_.registerCreator("account.analytic.account", [db]{
+        return std::make_shared<AccountAnalyticAccountViewModel>(db);
+    });
+    viewModels_.registerCreator("account.analytic.line", [db]{
+        return std::make_shared<AccountAnalyticLineViewModel>(db);
+    });
+    viewModels_.registerCreator("account.bank.statement", [db]{
+        return std::make_shared<AccountViewModel<AccountBankStatement>>(db);
+    });
+    viewModels_.registerCreator("account.bank.statement.line", [db]{
+        return std::make_shared<AccountBankStatementLineViewModel>(db);
+    });
 }
 
 void AccountModule::initialize() {
@@ -1561,6 +2066,7 @@ void AccountModule::initialize() {
     seedJournals_();
     seedStockValuationAccounts_();
     seedTaxes_();
+    seedAnalyticSchema_();
     seedPaymentTerms_();
     seedMenus_();
 }
@@ -1762,6 +2268,72 @@ void AccountModule::seedChartOfAccounts_() {
 // Stock-valuation accounts + the Inventory journal. Runs UNCONDITIONALLY every
 // boot (idempotent ON CONFLICT), unlike seedChartOfAccounts_/seedJournals_ which
 // only seed a fresh DB — so an existing database gains the costing accounts too.
+void AccountModule::seedAnalyticSchema_() {
+    auto conn = services_.db()->acquire();
+    pqxx::work txn{conn.get()};
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS account_analytic_account (
+            id          SERIAL PRIMARY KEY,
+            name        VARCHAR NOT NULL,
+            code        VARCHAR,
+            partner_id  INTEGER REFERENCES res_partner(id) ON DELETE SET NULL,
+            company_id  INTEGER REFERENCES res_company(id) ON DELETE SET NULL,
+            active      BOOLEAN NOT NULL DEFAULT TRUE,
+            create_date TIMESTAMP DEFAULT now(), write_date TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS account_analytic_line (
+            id                 SERIAL PRIMARY KEY,
+            name               VARCHAR,
+            date               DATE NOT NULL DEFAULT CURRENT_DATE,
+            amount             BIGINT NOT NULL DEFAULT 0,
+            account_id         INTEGER NOT NULL REFERENCES account_analytic_account(id) ON DELETE CASCADE,
+            general_account_id INTEGER REFERENCES account_account(id) ON DELETE SET NULL,
+            move_line_id       INTEGER REFERENCES account_move_line(id) ON DELETE SET NULL,
+            company_id         INTEGER REFERENCES res_company(id) ON DELETE SET NULL,
+            create_date        TIMESTAMP DEFAULT now(), write_date TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec("CREATE INDEX IF NOT EXISTS idx_analytic_line_account ON account_analytic_line(account_id)");
+    // Journal items can be tagged to an analytic account.
+    txn.exec("ALTER TABLE account_move_line ADD COLUMN IF NOT EXISTS analytic_account_id INTEGER "
+             "REFERENCES account_analytic_account(id) ON DELETE SET NULL");
+
+    // Bank reconciliation: statements + lines.
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS account_bank_statement (
+            id            SERIAL PRIMARY KEY,
+            name          VARCHAR,
+            date          DATE NOT NULL DEFAULT CURRENT_DATE,
+            journal_id    INTEGER REFERENCES account_journal(id) ON DELETE SET NULL,
+            balance_start BIGINT NOT NULL DEFAULT 0,
+            balance_end   BIGINT NOT NULL DEFAULT 0,
+            state         VARCHAR NOT NULL DEFAULT 'open',
+            company_id    INTEGER REFERENCES res_company(id) ON DELETE SET NULL,
+            create_date   TIMESTAMP DEFAULT now(), write_date TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS account_bank_statement_line (
+            id                 SERIAL PRIMARY KEY,
+            statement_id       INTEGER NOT NULL REFERENCES account_bank_statement(id) ON DELETE CASCADE,
+            date               DATE NOT NULL DEFAULT CURRENT_DATE,
+            name               VARCHAR,
+            payment_ref        VARCHAR,
+            partner_id         INTEGER REFERENCES res_partner(id) ON DELETE SET NULL,
+            amount             BIGINT NOT NULL DEFAULT 0,
+            is_reconciled      BOOLEAN NOT NULL DEFAULT FALSE,
+            reconciled_move_id INTEGER REFERENCES account_move(id) ON DELETE SET NULL,
+            company_id         INTEGER REFERENCES res_company(id) ON DELETE SET NULL,
+            create_date        TIMESTAMP DEFAULT now(), write_date TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec("CREATE INDEX IF NOT EXISTS idx_bsl_statement ON account_bank_statement_line(statement_id)");
+
+    txn.commit();
+}
+
 void AccountModule::seedStockValuationAccounts_() {
     auto conn = services_.db()->acquire();
     pqxx::work txn{conn.get()};
@@ -1861,7 +2433,11 @@ void AccountModule::seedMenus_() {
             (6,  'Journal Entries',    'account.move',    'list,form', 'moves',           '{}', NULL),
             (7,  'Payments',           'account.payment', 'list,form', 'payments',        '{}', NULL),
             (32, 'Customer Invoices',  'account.move',    'list,form', 'out-invoices',    '{}', '[["move_type","=","out_invoice"]]'),
-            (33, 'Vendor Bills',       'account.move',    'list,form', 'in-invoices',     '{}', '[["move_type","=","in_invoice"]]')
+            (33, 'Vendor Bills',       'account.move',    'list,form', 'in-invoices',     '{}', '[["move_type","=","in_invoice"]]'),
+            (60, 'Analytic Accounts',  'account.analytic.account', 'list,form', 'analytic-accounts', '{}', NULL),
+            (61, 'Analytic Items',     'account.analytic.line',    'list',      'analytic-items',    '{}', NULL),
+            (62, 'Bank Statements',    'account.bank.statement',   'list,form', 'bank-statements',   '{}', NULL),
+            (63, 'Bank Reconciliation','bank.reconcile',           'list',      'bank-reconcile',    '{}', NULL)
         ON CONFLICT (id) DO UPDATE
             SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
                 view_mode=EXCLUDED.view_mode, path=EXCLUDED.path, domain=EXCLUDED.domain
@@ -1871,10 +2447,11 @@ void AccountModule::seedMenus_() {
     // Level 1: Accounting app — direct links + section header
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-            (11, 'Journal Entries', 10, 10, 6),
-            (12, 'Customers',       10, 20, NULL),
-            (13, 'Vendors',         10, 30, NULL),
-            (14, 'Configuration',   10, 40, NULL)
+            (11, 'Journal Entries',    10, 10, 6),
+            (12, 'Customers',          10, 20, NULL),
+            (13, 'Vendors',            10, 30, NULL),
+            (23, 'Bank Reconciliation',10, 35, 63),
+            (14, 'Configuration',      10, 40, NULL)
         ON CONFLICT (id) DO NOTHING
     )");
 
@@ -1901,7 +2478,10 @@ void AccountModule::seedMenus_() {
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
             (18, 'Chart of Accounts', 14, 10, 4),
-            (19, 'Journals',          14, 20, 5)
+            (19, 'Journals',          14, 20, 5),
+            (20, 'Analytic Accounts', 14, 30, 60),
+            (21, 'Analytic Items',    14, 40, 61),
+            (22, 'Bank Statements',   14, 50, 62)
         ON CONFLICT (id) DO UPDATE
             SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
                 sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id

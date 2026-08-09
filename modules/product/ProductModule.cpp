@@ -7,6 +7,7 @@
 #include "BaseView.hpp"
 #include "GenericViewModel.hpp"
 #include "BaseViewModel.hpp"
+#include "Money.hpp"
 #include "DbConnection.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
@@ -126,6 +127,7 @@ public:
     std::string purchaseLineWarnMsg;
     double      purchaseLeadTime = 0.0;
     int         categId         = 0;
+    int         footprintId     = 0;
     int         uomId           = 1;
     int         uomPoId         = 1;
     int         companyId       = 0;
@@ -154,6 +156,8 @@ public:
         fieldRegistry_.add({"type",           FieldType::Char,    "Product Type"});
         fieldRegistry_.add({"categ_id",       FieldType::Many2one,"Category",
                             false, false, true, true, "product.category"});
+        fieldRegistry_.add({"footprint_id",   FieldType::Many2one,"Footprint",
+                            false, false, true, true, "part.footprint"});
         fieldRegistry_.add({"uom_id",         FieldType::Many2one,"Unit of Measure",
                             true, false, true, true, "uom.uom"});
         fieldRegistry_.add({"uom_po_id",      FieldType::Many2one,"Purchase UoM",
@@ -210,6 +214,7 @@ public:
         j["description"]    = description.empty()   ? nlohmann::json(false) : nlohmann::json(description);
         j["type"]           = type.empty() ? "consu" : type;
         j["categ_id"]       = categId  > 0 ? nlohmann::json::array({categId,  ""}) : nlohmann::json(false);
+        j["footprint_id"]   = footprintId > 0 ? nlohmann::json::array({footprintId, ""}) : nlohmann::json(false);
         j["uom_id"]         = uomId    > 0 ? nlohmann::json::array({uomId,    ""}) : nlohmann::json(false);
         j["uom_po_id"]      = uomPoId  > 0 ? nlohmann::json::array({uomPoId,  ""}) : nlohmann::json(false);
         j["company_id"]     = companyId> 0 ? nlohmann::json::array({companyId,""}) : nlohmann::json(false);
@@ -251,8 +256,9 @@ public:
         if (j.contains("barcode")        && j["barcode"].is_string())   barcode        = j["barcode"].get<std::string>();
         if (j.contains("description")    && j["description"].is_string()) description  = j["description"].get<std::string>();
         if (j.contains("type")           && j["type"].is_string())      type           = j["type"].get<std::string>();
-        if (j.contains("categ_id"))   categId   = m2o(j["categ_id"]);
-        if (j.contains("uom_id"))     uomId     = m2o(j["uom_id"]);
+        if (j.contains("categ_id"))     categId     = m2o(j["categ_id"]);
+        if (j.contains("footprint_id")) footprintId = m2o(j["footprint_id"]);
+        if (j.contains("uom_id"))       uomId       = m2o(j["uom_id"]);
         if (j.contains("uom_po_id"))  uomPoId   = m2o(j["uom_po_id"]);
         if (j.contains("company_id")) companyId = m2o(j["company_id"]);
         if (j.contains("list_price")     && j["list_price"].is_number())     listPrice     = j["list_price"].get<double>();
@@ -716,6 +722,439 @@ private:
 };
 
 
+// ----------------------------------------------------------------
+// ProductSupplierInfo — product.supplierinfo (a vendor pricelist line)
+// ----------------------------------------------------------------
+class ProductSupplierInfo : public BaseModel<ProductSupplierInfo> {
+public:
+    static constexpr const char* MODEL_NAME = "product.supplierinfo";
+    static constexpr const char* TABLE_NAME = "product_supplierinfo";
+
+    int         productId = 0;
+    int         partnerId = 0;   // the vendor
+    std::string productName;     // the vendor's name for this product
+    std::string productCode;     // the vendor's reference
+    double      minQty  = 0.0;
+    double      price   = 0.0;
+    int         delay   = 1;      // delivery lead time, days
+    int         sequence = 10;
+    int         companyId = 0;
+
+    explicit ProductSupplierInfo(std::shared_ptr<DbConnection> db)
+        : BaseModel(std::move(db)) {}
+
+    static int m2o(const nlohmann::json& v) {
+        if (v.is_number_integer()) return v.get<int>();
+        if (v.is_array() && v.size() >= 1 && v[0].is_number_integer()) return v[0].get<int>();
+        return 0;
+    }
+
+    void registerFields() {
+        fieldRegistry_.add({"product_id",   FieldType::Many2one,"Product",             false, false, true, true, "product.product"});
+        fieldRegistry_.add({"partner_id",   FieldType::Many2one,"Vendor",              true,  false, true, true, "res.partner"});
+        fieldRegistry_.add({"product_name", FieldType::Char,    "Vendor Product Name"});
+        fieldRegistry_.add({"product_code", FieldType::Char,    "Vendor Product Code"});
+        fieldRegistry_.add({"min_qty",      FieldType::Float,   "Min Quantity"});
+        fieldRegistry_.add({"price",        FieldType::Monetary,"Price"});
+        fieldRegistry_.add({"delay",        FieldType::Integer, "Delivery Lead Time"});
+        fieldRegistry_.add({"sequence",     FieldType::Integer, "Sequence"});
+        fieldRegistry_.add({"company_id",   FieldType::Many2one,"Company",             false, false, true, true, "res.company"});
+        fieldRegistry_.markScaled({"min_qty", "price"});
+    }
+    void serializeFields(nlohmann::json& j) const override {
+        j["product_id"]   = productId > 0 ? nlohmann::json(productId) : nlohmann::json(false);
+        j["partner_id"]   = partnerId > 0 ? nlohmann::json(partnerId) : nlohmann::json(false);
+        j["product_name"] = productName.empty() ? nlohmann::json(false) : nlohmann::json(productName);
+        j["product_code"] = productCode.empty() ? nlohmann::json(false) : nlohmann::json(productCode);
+        j["min_qty"]      = minQty;
+        j["price"]        = price;
+        j["delay"]        = delay;
+        j["sequence"]     = sequence;
+        j["company_id"]   = companyId > 0 ? nlohmann::json(companyId) : nlohmann::json(false);
+    }
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("product_name") && j["product_name"].is_string()) productName = j["product_name"].get<std::string>();
+        if (j.contains("product_code") && j["product_code"].is_string()) productCode = j["product_code"].get<std::string>();
+        if (j.contains("min_qty")  && j["min_qty"].is_number())  minQty   = j["min_qty"].get<double>();
+        if (j.contains("price")    && j["price"].is_number())    price    = j["price"].get<double>();
+        if (j.contains("delay")    && j["delay"].is_number())    delay    = j["delay"].get<int>();
+        if (j.contains("sequence") && j["sequence"].is_number()) sequence = j["sequence"].get<int>();
+        if (j.contains("product_id")) productId = m2o(j["product_id"]);
+        if (j.contains("partner_id")) partnerId = m2o(j["partner_id"]);
+        if (j.contains("company_id")) companyId = m2o(j["company_id"]);
+    }
+    std::vector<std::string> validate() const override {
+        std::vector<std::string> e;
+        if (partnerId <= 0) e.push_back("Vendor is required");
+        return e;
+    }
+};
+
+// ----------------------------------------------------------------
+// ProductSupplierInfoViewModel — vendor lines, filtered by product_id
+// ----------------------------------------------------------------
+class ProductSupplierInfoViewModel : public core::BaseViewModel {
+public:
+    explicit ProductSupplierInfoViewModel(std::shared_ptr<DbConnection> db) : db_(std::move(db)) {
+        REGISTER_METHOD("search_read",     handleSearchRead)
+        REGISTER_METHOD("web_search_read", handleSearchRead)
+        REGISTER_METHOD("read",            handleRead)
+        REGISTER_MUTATOR("create",          handleCreate)
+        REGISTER_MUTATOR("write",           handleWrite)
+        REGISTER_MUTATOR("unlink",          handleUnlink)
+        REGISTER_METHOD("fields_get",      handleFieldsGet)
+        REGISTER_METHOD("search_count",    handleSearchCount)
+    }
+    std::string modelName() const override { return "product.supplierinfo"; }
+private:
+    std::shared_ptr<DbConnection> db_;
+
+    nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
+        const int lim = call.limit() > 0 ? call.limit() : 80;
+        const int off = call.offset();
+        int prodFilter = 0, partnerFilter = 0;
+        { auto d = call.domain(); if (d.is_array()) for (const auto& c : d)
+            if (c.is_array() && c.size() == 3 && c[0].is_string() && c[2].is_number_integer()) {
+                if (c[0].get<std::string>() == "product_id") prodFilter    = c[2].get<int>();
+                if (c[0].get<std::string>() == "partner_id") partnerFilter = c[2].get<int>();
+            } }
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        std::string sql = R"(
+            SELECT s.id, s.product_id, pp.name AS product_name_,
+                   s.partner_id, rp.name AS partner_name,
+                   s.product_name, s.product_code, s.min_qty, s.price, s.delay, s.sequence
+            FROM product_supplierinfo s
+            LEFT JOIN product_product pp ON pp.id = s.product_id
+            LEFT JOIN res_partner     rp ON rp.id = s.partner_id
+        )";
+        pqxx::params p; int n = 0; std::string w;
+        if (prodFilter > 0)    { w += (n?" AND ":" WHERE ") + std::string("s.product_id=$") + std::to_string(++n); p.append(prodFilter); }
+        if (partnerFilter > 0) { w += (n?" AND ":" WHERE ") + std::string("s.partner_id=$") + std::to_string(++n); p.append(partnerFilter); }
+        sql += w + " ORDER BY s.sequence, s.id";
+        sql += " LIMIT " + std::to_string(lim);
+        if (off > 0) sql += " OFFSET " + std::to_string(off);
+        auto res = n ? txn.exec(sql, p) : txn.exec(sql);
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& row : res) {
+            nlohmann::json j;
+            j["id"]           = row["id"].as<int>();
+            j["product_id"]   = row["product_id"].is_null() ? nlohmann::json(false)
+                : nlohmann::json::array({row["product_id"].as<int>(), row["product_name_"].is_null()?"":std::string(row["product_name_"].c_str())});
+            j["partner_id"]   = row["partner_id"].is_null() ? nlohmann::json(false)
+                : nlohmann::json::array({row["partner_id"].as<int>(), row["partner_name"].is_null()?"":std::string(row["partner_name"].c_str())});
+            j["product_name"] = row["product_name"].is_null() ? nlohmann::json(false) : nlohmann::json(row["product_name"].c_str());
+            j["product_code"] = row["product_code"].is_null() ? nlohmann::json(false) : nlohmann::json(row["product_code"].c_str());
+            j["min_qty"]      = core::Money::fromMicros(row["min_qty"].as<long long>(0)).toJson();
+            j["price"]        = core::Money::fromMicros(row["price"].as<long long>(0)).toJson();
+            j["delay"]        = row["delay"].as<int>(1);
+            j["sequence"]     = row["sequence"].as<int>(10);
+            arr.push_back(std::move(j));
+        }
+        return arr;
+    }
+    nlohmann::json handleRead(const core::CallKwArgs& call)        { ProductSupplierInfo p(db_); p.setUserContext(extractContext_(call)); return p.read(call.ids(), call.fields()); }
+    nlohmann::json handleCreate(const core::CallKwArgs& call)      { ProductSupplierInfo p(db_); p.setUserContext(extractContext_(call)); return p.create(call.arg(0)); }
+    nlohmann::json handleWrite(const core::CallKwArgs& call)       { ProductSupplierInfo p(db_); p.setUserContext(extractContext_(call)); return p.write(call.ids(), call.arg(1)); }
+    nlohmann::json handleUnlink(const core::CallKwArgs& call)      { ProductSupplierInfo p(db_); p.setUserContext(extractContext_(call)); return p.unlink(call.ids()); }
+    nlohmann::json handleFieldsGet(const core::CallKwArgs& call)   { ProductSupplierInfo p(db_); return p.fieldsGet(call.fields()); }
+    nlohmann::json handleSearchCount(const core::CallKwArgs& call) { ProductSupplierInfo p(db_); p.setUserContext(extractContext_(call)); return p.searchCount(call.domain()); }
+};
+
+class ProductSupplierInfoListView : public core::BaseView {
+public:
+    std::string viewName()  const override { return "product.supplierinfo.list"; }
+    std::string modelName() const override { return "product.supplierinfo"; }
+    std::string viewType()  const override { return "list"; }
+    std::string arch() const override {
+        return "<list string=\"Vendor Pricelists\">"
+               "<field name=\"partner_id\"/>"
+               "<field name=\"product_id\"/>"
+               "<field name=\"product_code\"/>"
+               "<field name=\"min_qty\"/>"
+               "<field name=\"price\"/>"
+               "<field name=\"delay\"/>"
+               "</list>";
+    }
+    nlohmann::json fields() const override {
+        return {
+            {"partner_id",   {{"type","many2one"}, {"string","Vendor"},  {"relation","res.partner"}}},
+            {"product_id",   {{"type","many2one"}, {"string","Product"}, {"relation","product.product"}}},
+            {"product_code", {{"type","char"},     {"string","Vendor Code"}}},
+            {"min_qty",      {{"type","float"},    {"string","Min Qty"}}},
+            {"price",        {{"type","monetary"}, {"string","Price"}}},
+            {"delay",        {{"type","integer"},  {"string","Lead Time"}}},
+        };
+    }
+    nlohmann::json render(const nlohmann::json&) const override { return {}; }
+};
+
+// ================================================================
+// PartKeepr PK2–PK4 — footprints, parameters + SI units, manufacturer parts
+// ================================================================
+static int partM2o(const nlohmann::json& v) {
+    if (v.is_number_integer()) return v.get<int>();
+    if (v.is_array() && v.size() >= 1 && v[0].is_number_integer()) return v[0].get<int>();
+    return 0;
+}
+
+// PK2 — part.footprint (a physical package/mounting pattern, e.g. SOIC-8, 0805)
+class PartFootprint : public BaseModel<PartFootprint> {
+public:
+    static constexpr const char* MODEL_NAME = "part.footprint";
+    static constexpr const char* TABLE_NAME = "part_footprint";
+    std::string name, description;
+    explicit PartFootprint(std::shared_ptr<DbConnection> db) : BaseModel(std::move(db)) {}
+    void registerFields() {
+        fieldRegistry_.add({"name",        FieldType::Char, "Name", true});
+        fieldRegistry_.add({"description", FieldType::Text, "Description"});
+    }
+    void serializeFields(nlohmann::json& j) const override {
+        j["name"] = name; j["description"] = description.empty() ? nlohmann::json(false) : nlohmann::json(description);
+    }
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("name")        && j["name"].is_string())        name        = j["name"].get<std::string>();
+        if (j.contains("description") && j["description"].is_string()) description = j["description"].get<std::string>();
+    }
+    std::vector<std::string> validate() const override { std::vector<std::string> e; if (name.empty()) e.push_back("Name is required"); return e; }
+};
+
+// PK3 — part.unit (an SI unit, e.g. Ohm/Ω, Farad/F, Volt/V)
+class PartUnit : public BaseModel<PartUnit> {
+public:
+    static constexpr const char* MODEL_NAME = "part.unit";
+    static constexpr const char* TABLE_NAME = "part_unit";
+    std::string name, symbol;
+    explicit PartUnit(std::shared_ptr<DbConnection> db) : BaseModel(std::move(db)) {}
+    void registerFields() {
+        fieldRegistry_.add({"name",   FieldType::Char, "Unit", true});
+        fieldRegistry_.add({"symbol", FieldType::Char, "Symbol"});
+    }
+    void serializeFields(nlohmann::json& j) const override {
+        j["name"] = name; j["symbol"] = symbol.empty() ? nlohmann::json(false) : nlohmann::json(symbol);
+    }
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("name")   && j["name"].is_string())   name   = j["name"].get<std::string>();
+        if (j.contains("symbol") && j["symbol"].is_string()) symbol = j["symbol"].get<std::string>();
+    }
+    std::vector<std::string> validate() const override { std::vector<std::string> e; if (name.empty()) e.push_back("Name is required"); return e; }
+};
+
+// PK3 — part.parameter (a product's parametric spec: name + numeric value + unit).
+// value_numeric stays NUMERIC (scientific range), NOT micro-fixed-point.
+class PartParameter : public BaseModel<PartParameter> {
+public:
+    static constexpr const char* MODEL_NAME = "part.parameter";
+    static constexpr const char* TABLE_NAME = "part_parameter";
+    int         productId = 0;
+    std::string name;
+    double      valueNumeric = 0.0;
+    int         unitId = 0;
+    std::string valueText;
+    explicit PartParameter(std::shared_ptr<DbConnection> db) : BaseModel(std::move(db)) {}
+    void registerFields() {
+        fieldRegistry_.add({"product_id",    FieldType::Many2one,"Product", false, false, true, true, "product.product"});
+        fieldRegistry_.add({"name",          FieldType::Char,    "Parameter", true});
+        fieldRegistry_.add({"value_numeric", FieldType::Float,   "Value"});
+        fieldRegistry_.add({"unit_id",       FieldType::Many2one,"Unit", false, false, true, true, "part.unit"});
+        fieldRegistry_.add({"value_text",    FieldType::Char,    "Text Value"});
+    }
+    void serializeFields(nlohmann::json& j) const override {
+        j["product_id"]    = productId > 0 ? nlohmann::json(productId) : nlohmann::json(false);
+        j["name"]          = name;
+        j["value_numeric"] = valueNumeric;
+        j["unit_id"]       = unitId > 0 ? nlohmann::json(unitId) : nlohmann::json(false);
+        j["value_text"]    = valueText.empty() ? nlohmann::json(false) : nlohmann::json(valueText);
+    }
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("name")          && j["name"].is_string())          name         = j["name"].get<std::string>();
+        if (j.contains("value_numeric") && j["value_numeric"].is_number()) valueNumeric = j["value_numeric"].get<double>();
+        if (j.contains("value_text")    && j["value_text"].is_string())    valueText    = j["value_text"].get<std::string>();
+        if (j.contains("product_id")) productId = partM2o(j["product_id"]);
+        if (j.contains("unit_id"))    unitId    = partM2o(j["unit_id"]);
+    }
+    std::vector<std::string> validate() const override { std::vector<std::string> e; if (name.empty()) e.push_back("Parameter name is required"); return e; }
+};
+
+// PK4 — part.manufacturer.info (manufacturer part numbers / MPN)
+class PartManufacturerInfo : public BaseModel<PartManufacturerInfo> {
+public:
+    static constexpr const char* MODEL_NAME = "part.manufacturer.info";
+    static constexpr const char* TABLE_NAME = "part_manufacturer_info";
+    int         productId = 0;
+    int         manufacturerId = 0;
+    std::string partNumber, notes;
+    explicit PartManufacturerInfo(std::shared_ptr<DbConnection> db) : BaseModel(std::move(db)) {}
+    void registerFields() {
+        fieldRegistry_.add({"product_id",      FieldType::Many2one,"Product", false, false, true, true, "product.product"});
+        fieldRegistry_.add({"manufacturer_id", FieldType::Many2one,"Manufacturer", true, false, true, true, "res.partner"});
+        fieldRegistry_.add({"part_number",     FieldType::Char,    "Manufacturer Part Number", true});
+        fieldRegistry_.add({"notes",           FieldType::Text,    "Notes"});
+    }
+    void serializeFields(nlohmann::json& j) const override {
+        j["product_id"]      = productId > 0 ? nlohmann::json(productId) : nlohmann::json(false);
+        j["manufacturer_id"] = manufacturerId > 0 ? nlohmann::json(manufacturerId) : nlohmann::json(false);
+        j["part_number"]     = partNumber;
+        j["notes"]           = notes.empty() ? nlohmann::json(false) : nlohmann::json(notes);
+    }
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("part_number") && j["part_number"].is_string()) partNumber = j["part_number"].get<std::string>();
+        if (j.contains("notes")       && j["notes"].is_string())       notes      = j["notes"].get<std::string>();
+        if (j.contains("product_id"))      productId      = partM2o(j["product_id"]);
+        if (j.contains("manufacturer_id")) manufacturerId = partM2o(j["manufacturer_id"]);
+    }
+    std::vector<std::string> validate() const override {
+        std::vector<std::string> e;
+        if (manufacturerId <= 0) e.push_back("Manufacturer is required");
+        if (partNumber.empty())  e.push_back("Part number is required");
+        return e;
+    }
+};
+
+// part.parameter viewmodel — filtered by product_id, plus the parametric
+// search that IS the electronics-catalogue differentiator (find parts by a
+// parameter's numeric range, e.g. resistance between 1k and 10k).
+class PartParameterViewModel : public core::BaseViewModel {
+public:
+    explicit PartParameterViewModel(std::shared_ptr<DbConnection> db) : db_(std::move(db)) {
+        REGISTER_METHOD("search_read",  handleSearchRead)
+        REGISTER_METHOD("read",         handleRead)
+        REGISTER_MUTATOR("create",       handleCreate)
+        REGISTER_MUTATOR("write",        handleWrite)
+        REGISTER_MUTATOR("unlink",       handleUnlink)
+        REGISTER_METHOD("fields_get",   handleFieldsGet)
+        REGISTER_METHOD("search_parts", handleSearchParts)
+    }
+    std::string modelName() const override { return "part.parameter"; }
+private:
+    std::shared_ptr<DbConnection> db_;
+    nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
+        int prodFilter = 0;
+        { auto d = call.domain(); if (d.is_array()) for (const auto& c : d)
+            if (c.is_array() && c.size()==3 && c[0].is_string() && c[0].get<std::string>()=="product_id" && c[2].is_number_integer())
+                prodFilter = c[2].get<int>(); }
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        std::string sql = R"(
+            SELECT pa.id, pa.product_id, pa.name, pa.value_numeric, pa.value_text,
+                   pa.unit_id, u.name AS unit_name, u.symbol AS unit_symbol
+            FROM part_parameter pa LEFT JOIN part_unit u ON u.id = pa.unit_id )";
+        pqxx::params p;
+        if (prodFilter > 0) { sql += " WHERE pa.product_id=$1"; p.append(prodFilter); }
+        sql += " ORDER BY pa.name, pa.id";
+        auto res = prodFilter > 0 ? txn.exec(sql, p) : txn.exec(sql);
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& row : res) {
+            nlohmann::json j;
+            j["id"]            = row["id"].as<int>();
+            j["product_id"]    = row["product_id"].is_null() ? nlohmann::json(false) : nlohmann::json(row["product_id"].as<int>());
+            j["name"]          = row["name"].is_null() ? "" : row["name"].c_str();
+            j["value_numeric"] = row["value_numeric"].as<double>(0.0);
+            j["value_text"]    = row["value_text"].is_null() ? nlohmann::json(false) : nlohmann::json(row["value_text"].c_str());
+            j["unit_id"]       = row["unit_id"].is_null() ? nlohmann::json(false)
+                : nlohmann::json::array({row["unit_id"].as<int>(), row["unit_symbol"].is_null() ? (row["unit_name"].is_null()?"":std::string(row["unit_name"].c_str())) : std::string(row["unit_symbol"].c_str())});
+            arr.push_back(std::move(j));
+        }
+        return arr;
+    }
+    nlohmann::json handleRead(const core::CallKwArgs& call)      { PartParameter p(db_); p.setUserContext(extractContext_(call)); return p.read(call.ids(), call.fields()); }
+    nlohmann::json handleCreate(const core::CallKwArgs& call)    { PartParameter p(db_); p.setUserContext(extractContext_(call)); return p.create(call.arg(0)); }
+    nlohmann::json handleWrite(const core::CallKwArgs& call)     { PartParameter p(db_); p.setUserContext(extractContext_(call)); return p.write(call.ids(), call.arg(1)); }
+    nlohmann::json handleUnlink(const core::CallKwArgs& call)    { PartParameter p(db_); p.setUserContext(extractContext_(call)); return p.unlink(call.ids()); }
+    nlohmann::json handleFieldsGet(const core::CallKwArgs& call) { PartParameter p(db_); return p.fieldsGet(call.fields()); }
+
+    // Parametric search: find products whose parameter `name` has a numeric
+    // value within [min, max] (either bound optional).
+    nlohmann::json handleSearchParts(const core::CallKwArgs& call) {
+        const auto v = call.arg(0);
+        const std::string pname = (v.is_object() && v.contains("name") && v["name"].is_string()) ? v["name"].get<std::string>() : "";
+        const bool hasMin = v.is_object() && v.contains("min") && v["min"].is_number();
+        const bool hasMax = v.is_object() && v.contains("max") && v["max"].is_number();
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        std::string sql = R"(
+            SELECT DISTINCT pp.id, pp.name, pa.value_numeric
+            FROM part_parameter pa JOIN product_product pp ON pp.id = pa.product_id WHERE 1=1 )";
+        pqxx::params p; int n = 0;
+        if (!pname.empty()) { sql += " AND pa.name=$" + std::to_string(++n); p.append(pname); }
+        if (hasMin)         { sql += " AND pa.value_numeric >= $" + std::to_string(++n); p.append(v["min"].get<double>()); }
+        if (hasMax)         { sql += " AND pa.value_numeric <= $" + std::to_string(++n); p.append(v["max"].get<double>()); }
+        sql += " ORDER BY pa.value_numeric, pp.name LIMIT 500";
+        auto res = n ? txn.exec(sql, p) : txn.exec(sql);
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& row : res)
+            arr.push_back({{"id", row["id"].as<int>()},
+                           {"name", row["name"].is_null()?"":row["name"].c_str()},
+                           {"value", row["value_numeric"].as<double>(0.0)}});
+        return arr;
+    }
+};
+
+// part.manufacturer.info viewmodel — MPN lines, filtered by product_id.
+class PartManufacturerInfoViewModel : public core::BaseViewModel {
+public:
+    explicit PartManufacturerInfoViewModel(std::shared_ptr<DbConnection> db) : db_(std::move(db)) {
+        REGISTER_METHOD("search_read", handleSearchRead)
+        REGISTER_METHOD("read",        handleRead)
+        REGISTER_MUTATOR("create",      handleCreate)
+        REGISTER_MUTATOR("write",       handleWrite)
+        REGISTER_MUTATOR("unlink",      handleUnlink)
+        REGISTER_METHOD("fields_get",  handleFieldsGet)
+    }
+    std::string modelName() const override { return "part.manufacturer.info"; }
+private:
+    std::shared_ptr<DbConnection> db_;
+    nlohmann::json handleSearchRead(const core::CallKwArgs& call) {
+        int prodFilter = 0;
+        { auto d = call.domain(); if (d.is_array()) for (const auto& c : d)
+            if (c.is_array() && c.size()==3 && c[0].is_string() && c[0].get<std::string>()=="product_id" && c[2].is_number_integer())
+                prodFilter = c[2].get<int>(); }
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        std::string sql = R"(
+            SELECT m.id, m.product_id, m.manufacturer_id, rp.name AS manufacturer_name,
+                   m.part_number, m.notes
+            FROM part_manufacturer_info m LEFT JOIN res_partner rp ON rp.id = m.manufacturer_id )";
+        pqxx::params p;
+        if (prodFilter > 0) { sql += " WHERE m.product_id=$1"; p.append(prodFilter); }
+        sql += " ORDER BY m.id";
+        auto res = prodFilter > 0 ? txn.exec(sql, p) : txn.exec(sql);
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& row : res) {
+            nlohmann::json j;
+            j["id"]              = row["id"].as<int>();
+            j["product_id"]      = row["product_id"].is_null() ? nlohmann::json(false) : nlohmann::json(row["product_id"].as<int>());
+            j["manufacturer_id"] = row["manufacturer_id"].is_null() ? nlohmann::json(false)
+                : nlohmann::json::array({row["manufacturer_id"].as<int>(), row["manufacturer_name"].is_null()?"":std::string(row["manufacturer_name"].c_str())});
+            j["part_number"]     = row["part_number"].is_null() ? "" : row["part_number"].c_str();
+            j["notes"]           = row["notes"].is_null() ? nlohmann::json(false) : nlohmann::json(row["notes"].c_str());
+            arr.push_back(std::move(j));
+        }
+        return arr;
+    }
+    nlohmann::json handleRead(const core::CallKwArgs& call)      { PartManufacturerInfo p(db_); p.setUserContext(extractContext_(call)); return p.read(call.ids(), call.fields()); }
+    nlohmann::json handleCreate(const core::CallKwArgs& call)    { PartManufacturerInfo p(db_); p.setUserContext(extractContext_(call)); return p.create(call.arg(0)); }
+    nlohmann::json handleWrite(const core::CallKwArgs& call)     { PartManufacturerInfo p(db_); p.setUserContext(extractContext_(call)); return p.write(call.ids(), call.arg(1)); }
+    nlohmann::json handleUnlink(const core::CallKwArgs& call)    { PartManufacturerInfo p(db_); p.setUserContext(extractContext_(call)); return p.unlink(call.ids()); }
+    nlohmann::json handleFieldsGet(const core::CallKwArgs& call) { PartManufacturerInfo p(db_); return p.fieldsGet(call.fields()); }
+};
+
+class PartCatalogListView : public core::BaseView {
+    std::string model_, name_, label_, extra_;
+public:
+    PartCatalogListView(std::string model, std::string name, std::string label, std::string extra)
+        : model_(std::move(model)), name_(std::move(name)), label_(std::move(label)), extra_(std::move(extra)) {}
+    std::string viewName()  const override { return name_; }
+    std::string modelName() const override { return model_; }
+    std::string viewType()  const override { return "list"; }
+    std::string arch() const override {
+        return "<list string=\"" + label_ + "\"><field name=\"name\"/>" + extra_ + "</list>";
+    }
+    nlohmann::json fields() const override {
+        nlohmann::json f = {{"name", {{"type","char"},{"string","Name"}}}};
+        if (model_ == "part.unit") f["symbol"] = {{"type","char"},{"string","Symbol"}};
+        else f["description"] = {{"type","text"},{"string","Description"}};
+        return f;
+    }
+    nlohmann::json render(const nlohmann::json&) const override { return {}; }
+};
+
 // ================================================================
 // 4. MODULE — method implementations
 // ================================================================
@@ -734,6 +1173,11 @@ void ProductModule::registerModels() {
     auto db = services_.db();
     models_.registerCreator("product.category", [db]{ return std::make_shared<ProductCategory>(db); });
     models_.registerCreator("product.product",  [db]{ return std::make_shared<ProductProduct>(db); });
+    models_.registerCreator("product.supplierinfo", [db]{ return std::make_shared<ProductSupplierInfo>(db); });
+    models_.registerCreator("part.footprint",          [db]{ return std::make_shared<PartFootprint>(db); });
+    models_.registerCreator("part.unit",               [db]{ return std::make_shared<PartUnit>(db); });
+    models_.registerCreator("part.parameter",          [db]{ return std::make_shared<PartParameter>(db); });
+    models_.registerCreator("part.manufacturer.info",  [db]{ return std::make_shared<PartManufacturerInfo>(db); });
 }
 
 void ProductModule::registerServices() {}
@@ -747,6 +1191,13 @@ void ProductModule::registerViewModels() {
     viewModels_.registerCreator("product.product", [db]{
         return std::make_shared<GenericViewModel<ProductProduct>>(db);
     });
+    viewModels_.registerCreator("product.supplierinfo", [db]{
+        return std::make_shared<ProductSupplierInfoViewModel>(db);
+    });
+    viewModels_.registerCreator("part.footprint", [db]{ return std::make_shared<GenericViewModel<PartFootprint>>(db); });
+    viewModels_.registerCreator("part.unit",      [db]{ return std::make_shared<GenericViewModel<PartUnit>>(db); });
+    viewModels_.registerCreator("part.parameter", [db]{ return std::make_shared<PartParameterViewModel>(db); });
+    viewModels_.registerCreator("part.manufacturer.info", [db]{ return std::make_shared<PartManufacturerInfoViewModel>(db); });
 }
 
 void ProductModule::registerViews() {
@@ -754,6 +1205,9 @@ void ProductModule::registerViews() {
     views_.registerCreator("product.category.form", []{ return std::make_shared<ProductCategoryFormView>(); });
     views_.registerCreator("product.product.list",  []{ return std::make_shared<ProductProductListView>(); });
     views_.registerCreator("product.product.form",  []{ return std::make_shared<ProductProductFormView>(); });
+    views_.registerCreator("product.supplierinfo.list", []{ return std::make_shared<ProductSupplierInfoListView>(); });
+    views_.registerCreator("part.footprint.list", []{ return std::make_shared<PartCatalogListView>("part.footprint","part.footprint.list","Footprints","<field name=\"description\"/>"); });
+    views_.registerCreator("part.unit.list",      []{ return std::make_shared<PartCatalogListView>("part.unit","part.unit.list","Units of Measure","<field name=\"symbol\"/>"); });
 }
 
 void ProductModule::registerRoutes() {}
@@ -832,6 +1286,66 @@ void ProductModule::ensureSchema_() {
     txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS purchase_lead_time    NUMERIC(8,2) NOT NULL DEFAULT 0");
     txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS purchase_line_warn    VARCHAR NOT NULL DEFAULT 'no-message'");
     txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS purchase_line_warn_msg TEXT");
+
+    // Vendor pricelists (product.supplierinfo): which vendors sell a product,
+    // at what price / MOQ / lead time. price/min_qty are BIGINT micro-units.
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS product_supplierinfo (
+            id           SERIAL PRIMARY KEY,
+            product_id   INTEGER REFERENCES product_product(id) ON DELETE CASCADE,
+            partner_id   INTEGER NOT NULL REFERENCES res_partner(id) ON DELETE CASCADE,
+            product_name VARCHAR,
+            product_code VARCHAR,
+            min_qty      BIGINT  NOT NULL DEFAULT 0,
+            price        BIGINT  NOT NULL DEFAULT 0,
+            delay        INTEGER NOT NULL DEFAULT 1,
+            sequence     INTEGER NOT NULL DEFAULT 10,
+            company_id   INTEGER REFERENCES res_company(id) ON DELETE SET NULL,
+            create_date  TIMESTAMP DEFAULT now(),
+            write_date   TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec("CREATE INDEX IF NOT EXISTS idx_supplierinfo_product ON product_supplierinfo(product_id)");
+
+    // PartKeepr PK2-PK4 — parts catalogue.
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS part_footprint (
+            id SERIAL PRIMARY KEY, name VARCHAR NOT NULL, description TEXT,
+            create_date TIMESTAMP DEFAULT now(), write_date TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS part_unit (
+            id SERIAL PRIMARY KEY, name VARCHAR NOT NULL, symbol VARCHAR,
+            create_date TIMESTAMP DEFAULT now(), write_date TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS part_parameter (
+            id            SERIAL PRIMARY KEY,
+            product_id    INTEGER NOT NULL REFERENCES product_product(id) ON DELETE CASCADE,
+            name          VARCHAR NOT NULL,
+            value_numeric NUMERIC(24,9) NOT NULL DEFAULT 0,
+            unit_id       INTEGER REFERENCES part_unit(id) ON DELETE SET NULL,
+            value_text    VARCHAR,
+            create_date   TIMESTAMP DEFAULT now(), write_date TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec("CREATE INDEX IF NOT EXISTS idx_part_parameter_product ON part_parameter(product_id)");
+    txn.exec("CREATE INDEX IF NOT EXISTS idx_part_parameter_name ON part_parameter(name)");
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS part_manufacturer_info (
+            id              SERIAL PRIMARY KEY,
+            product_id      INTEGER NOT NULL REFERENCES product_product(id) ON DELETE CASCADE,
+            manufacturer_id INTEGER NOT NULL REFERENCES res_partner(id) ON DELETE CASCADE,
+            part_number     VARCHAR NOT NULL,
+            notes           TEXT,
+            create_date     TIMESTAMP DEFAULT now(), write_date TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec("CREATE INDEX IF NOT EXISTS idx_part_mfg_product ON part_manufacturer_info(product_id)");
+    // A product's footprint (PK2).
+    txn.exec("ALTER TABLE product_product ADD COLUMN IF NOT EXISTS footprint_id INTEGER REFERENCES part_footprint(id) ON DELETE SET NULL");
 
     txn.commit();
 }
@@ -1015,8 +1529,12 @@ void ProductModule::seedCategories_() {
     // ir_act_window entries — IDs 9/10 are owned by product; account uses 32/33 for invoices/bills
     txn.exec(R"(
         INSERT INTO ir_act_window (id, name, res_model, view_mode, path, context) VALUES
-            (9,  'Products',           'product.product',  'list,form', 'products',            '{}'),
-            (10, 'Product Categories', 'product.category', 'list,form', 'product-categories',  '{}')
+            (9,  'Products',           'product.product',      'list,form', 'products',            '{}'),
+            (10, 'Product Categories', 'product.category',     'list,form', 'product-categories',  '{}'),
+            (11, 'Vendor Pricelists',  'product.supplierinfo', 'list,form', 'vendor-pricelists',   '{}'),
+            (12, 'Footprints',         'part.footprint',       'list,form', 'footprints',          '{}'),
+            (13, 'Part Units',         'part.unit',            'list,form', 'part-units',          '{}'),
+            (15, 'Parametric Search',  'part.search',          'list',      'parametric-search',   '{}')
         ON CONFLICT (id) DO UPDATE
             SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
                 view_mode=EXCLUDED.view_mode, path=EXCLUDED.path, domain=NULL
@@ -1036,6 +1554,13 @@ void ProductModule::seedMenus_() {
         ON CONFLICT (id) DO UPDATE
             SET action_id=EXCLUDED.action_id
     )");
+    txn.exec(R"(
+        INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
+            (58, 'Parametric Search', 50, 15, 15)
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
+    )");
 
     // Level 2: Categories under Configuration section (id=52, created by UomModule)
     txn.exec(R"(
@@ -1043,6 +1568,15 @@ void ProductModule::seedMenus_() {
             (54, 'Categories', 52, 20, 10)
         ON CONFLICT (id) DO UPDATE
             SET action_id=EXCLUDED.action_id
+    )");
+    txn.exec(R"(
+        INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
+            (55, 'Vendor Pricelists', 52, 30, 11),
+            (56, 'Footprints',        52, 40, 12),
+            (57, 'Part Units',        52, 50, 13)
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
     )");
 
     txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");

@@ -8,6 +8,7 @@
     <script src="/lib/owl.iife.js"></script>
     <link rel="stylesheet" href="/src/app.css">
     <link rel="stylesheet" href="/src/components/rental/rental.css">
+    <link rel="stylesheet" href="/src/components/partkeepr.css">
 </head>
 <body>
 <div id="app"></div>
@@ -20,6 +21,11 @@
 <script src="/src/components/rental/RentalUnitGrid.js"></script>
 <script src="/src/components/rental/RentalDashboard.js"></script>
 <script src="/src/components/rental/RentalDemoData.js"></script>
+<!-- Custom screens for the new modules — load before app.js so its
+     CUSTOM_VIEWS map can reference them at definition time. -->
+<script src="/src/components/BarcodeScan.js"></script>
+<script src="/src/components/PartSearch.js"></script>
+<script src="/src/components/BankReconcile.js"></script>
 <script src="/src/app.js"></script>
 </body>
 </html>

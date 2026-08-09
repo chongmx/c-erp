@@ -242,13 +242,20 @@ public:
         // Stage 2a — service post-init (cross-module wiring, warm-up)
         initializeServices_();
 
-        // Stage 2b — versioned schema migrations (before DDL in initialize())
-        runMigrations_();
-
-        // Stage 2c — module initialize() hooks (DDL, seeding)
-        //            Runs after services and migrations so DB schema is ready,
-        //            and in registration order so dependencies are satisfied.
+        // Stage 2b — module initialize() hooks (DDL + seeding).
+        //            MUST run before migrations: the versioned migrations are
+        //            written as ALTERs on the tables ensureSchema_() creates
+        //            (e.g. 200 alters sale_order, 901 alters res_company, 940
+        //            alters stock_move) and as seeds that READ them (980 reads
+        //            sale_order_seq). On a fresh database those tables must
+        //            therefore exist first. Registration order (base, auth, …)
+        //            satisfies inter-module dependencies. See docs/070.
         initializeModules_();
+
+        // Stage 2c — versioned schema migrations: ALTER / type-convert / seed on
+        //            top of the base schema built in 2b. Skipped rows (already in
+        //            schema_migrations) make this a no-op on an existing DB.
+        runMigrations_();
 
         // Stage 3 — HTTP: JSON-RPC dispatcher routes
         rpc->registerRoutes(*http);
@@ -349,7 +356,8 @@ private:
      * @brief Collect migrations from all modules and apply pending ones.
      *
      * Called after initializeServices_() so DB connections are available,
-     * and before initializeModules_() so migrations run before DDL/seeding.
+     * and after initializeModules_() so the ensureSchema_() tables the
+     * migrations ALTER/read already exist on a fresh database (docs/070).
      */
     /**
      * @brief Periodically drop expired sessions. (S-43)

@@ -8991,6 +8991,10 @@ const CUSTOM_VIEWS = {
     'rental.unit':        RentalUnitGrid,
     'rental.dashboard':   RentalDashboard,
     'rental.demo.data':   RentalDemoData,
+    // Custom screens for the new modules (components loaded by index.html).
+    'barcode.scan':       BarcodeScan,
+    'part.search':        PartSearch,
+    'bank.reconcile':     BankReconcile,
 };
 
 // ----------------------------------------------------------------

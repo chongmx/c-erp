@@ -1,0 +1,86 @@
+/* Styling for the custom screens: BarcodeScan, PartSearch, BankReconcile.
+   Inherits the app's CSS variables (--bg, --panel, --border, --text, --accent). */
+
+.bc-wrap, .ps-wrap, .br-wrap {
+    padding: 24px;
+    max-width: 1000px;
+    margin: 0 auto;
+    color: var(--text, #e6e6e6);
+}
+.bc-head h2, .ps-head h2, .br-head h2 { margin: 0 0 4px; font-size: 22px; }
+.bc-head p, .ps-head p { margin: 0 0 18px; color: var(--muted, #9aa0aa); }
+
+/* ---- shared cards / notes / tables ---- */
+.bc-card, .ps-card {
+    background: var(--panel, #23233a);
+    border: 1px solid var(--border, #33334d);
+    border-radius: 10px;
+    padding: 16px;
+    margin-top: 16px;
+}
+.bc-note, .ps-note, .br-note { padding: 10px 12px; border-radius: 8px; margin: 12px 0; }
+.bc-err, .ps-err, .br-err { background: rgba(220,60,60,.15); color: #ff9a9a; }
+.br-ok  { background: rgba(60,180,100,.15); color: #8fe6ad; }
+.bc-table, .ps-table {
+    width: 100%; border-collapse: collapse; margin-top: 8px;
+}
+.bc-table td, .ps-table td, .ps-table th {
+    padding: 8px 10px; border-bottom: 1px solid var(--border, #33334d); text-align: left;
+}
+.ps-table th { color: var(--muted, #9aa0aa); font-weight: 600; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---- barcode scan ---- */
+.bc-scanbar { display: flex; gap: 10px; margin-bottom: 8px; }
+.bc-input {
+    flex: 1; padding: 12px 14px; font-size: 18px; letter-spacing: .5px;
+    background: var(--panel, #23233a); color: var(--text, #e6e6e6);
+    border: 2px solid var(--accent, #6c8cff); border-radius: 10px;
+}
+.bc-result {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 16px; border-radius: 10px; margin: 14px 0; font-size: 16px;
+    background: var(--panel, #23233a); border: 1px solid var(--border, #33334d);
+}
+.bc-type {
+    text-transform: uppercase; font-size: 11px; font-weight: 700; letter-spacing: 1px;
+    padding: 3px 8px; border-radius: 6px; background: var(--accent, #6c8cff); color: #fff;
+}
+.bc-unknown .bc-type { background: #8a8a8a; }
+.bc-name { font-weight: 600; } .bc-id, .bc-code { color: var(--muted, #9aa0aa); }
+
+/* ---- parametric search ---- */
+.ps-form { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; }
+.ps-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted, #9aa0aa); }
+.ps-in {
+    padding: 9px 11px; background: var(--panel, #23233a); color: var(--text, #e6e6e6);
+    border: 1px solid var(--border, #33334d); border-radius: 8px; min-width: 180px;
+}
+.ps-num { min-width: 100px; }
+.ps-row { cursor: pointer; }
+.ps-row:hover { background: rgba(108,140,255,.12); }
+.ps-empty { color: var(--muted, #9aa0aa); text-align: center; padding: 16px; }
+
+/* ---- bank reconciliation ---- */
+.br-pick { margin-top: 8px; }
+.br-sel { padding: 8px 10px; background: var(--panel, #23233a); color: var(--text, #e6e6e6);
+          border: 1px solid var(--border, #33334d); border-radius: 8px; }
+.br-line {
+    display: flex; justify-content: space-between; align-items: center; gap: 16px;
+    padding: 14px 16px; margin-top: 10px; border-radius: 10px;
+    background: var(--panel, #23233a); border: 1px solid var(--border, #33334d);
+}
+.br-line-info { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.br-date { color: var(--muted, #9aa0aa); font-variant-numeric: tabular-nums; }
+.br-label { font-weight: 600; }
+.br-partner { color: var(--muted, #9aa0aa); }
+.br-pos { color: #8fe6ad; font-weight: 700; } .br-neg { color: #ff9a9a; font-weight: 700; }
+.br-matches { display: flex; gap: 8px; flex-wrap: wrap; }
+.br-match {
+    display: flex; gap: 8px; align-items: center; padding: 8px 12px; cursor: pointer;
+    background: var(--accent, #6c8cff); color: #fff; border: none; border-radius: 8px; font-size: 13px;
+}
+.br-match:hover { filter: brightness(1.08); }
+.br-match[disabled] { opacity: .5; cursor: default; }
+.br-match-amt { font-variant-numeric: tabular-nums; opacity: .85; }
+.br-nomatch { color: var(--muted, #9aa0aa); font-size: 13px; }
