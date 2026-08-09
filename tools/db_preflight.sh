@@ -120,8 +120,12 @@ APPLIED="$(Q "SELECT version FROM schema_migrations ORDER BY version")"
 
 exp_n=$(printf '%s\n' "$EXPECTED" | grep -c . || true)
 app_n=$(printf '%s\n' "$APPLIED"  | grep -c . || true)
-# Versions the code knows about that the DB has NOT applied.
-PENDING="$(comm -23 <(printf '%s\n' "$EXPECTED") <(printf '%s\n' "$APPLIED"))"
+# Versions the code knows about that the DB has NOT applied. awk set-difference
+# (not comm): version numbers sort numerically, not lexically, and comm demands
+# a matching collation — feeding it numeric-sorted input prints spurious
+# "not in sorted order" warnings. Display numerically sorted.
+PENDING="$(awk 'NR==FNR { seen[$1]; next } !($1 in seen)' \
+             <(printf '%s\n' "$APPLIED") <(printf '%s\n' "$EXPECTED") | sort -n)"
 pend_n=$(printf '%s\n' "$PENDING" | grep -c . || true)
 
 echo "     code declares $exp_n migrations; database has applied $app_n"
