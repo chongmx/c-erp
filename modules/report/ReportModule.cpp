@@ -1824,6 +1824,19 @@ void ReportModule::seedMenuEntries_() {
         "(103, 'ERP Settings', 30, 25, 31) "
         "ON CONFLICT (id) DO UPDATE SET parent_id=30, sequence=25");
 
+    // Multi-company (docs/072): control-plane admin under Settings (id=30).
+    // Renders the CompanyAdmin custom view; admin-gated server-side.
+    txn.exec(
+        "INSERT INTO ir_act_window (id, name, res_model, view_mode, path) VALUES "
+        "(71, 'Companies & Access', 'company.admin', 'list', 'company-admin') "
+        "ON CONFLICT (id) DO UPDATE SET name='Companies & Access', "
+        "res_model='company.admin', view_mode='list', path='company-admin'");
+    txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
+    txn.exec(
+        "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
+        "(131, 'Companies & Access', 30, 40, 71) "
+        "ON CONFLICT (id) DO UPDATE SET parent_id=30, sequence=40, action_id=71");
+
     txn.commit();
 }
 

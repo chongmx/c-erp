@@ -144,8 +144,74 @@ const RpcService = (() => {
         return data.result ?? data;
     }
 
+    // --------------------------------------------------------
+    // Multi-company (docs/072): the companies this identity can reach, and
+    // cross-tenant SSO switching between them (top-bar switcher).
+    // --------------------------------------------------------
+    async function listCompanies() {
+        try {
+            const res = await fetch('/web/session/companies', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ jsonrpc: '2.0', method: 'call', id: _id++,
+                    params: { context: { session_id: _session.sessionId } } }),
+            });
+            const data = await res.json();
+            return (data.result ?? data) || [];
+        } catch (_) { return []; }
+    }
+
+    async function switchCompany(db) {
+        const res = await fetch('/web/session/switch_company', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', method: 'call', id: _id++,
+                params: { company: db, context: { session_id: _session.sessionId } } }),
+        });
+        const data = await res.json();
+        const info = data.result ?? data;
+        if (!info || info.error) throw new Error((info && info.error) || 'switch failed');
+        Object.assign(_session, {
+            uid:       info.uid,
+            login:     info.login,
+            sessionId: info.session_id || '',
+            db:        info.db || db,
+            context:   info.context || {},
+        });
+        return info;
+    }
+
+    // Pre-login chooser: the companies an email/login can reach.
+    async function lookupCompanies(login) {
+        try {
+            const res = await fetch('/web/session/lookup_companies', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ jsonrpc: '2.0', method: 'call', id: _id++,
+                    params: { login } }),
+            });
+            const data = await res.json();
+            return (data.result ?? data) || [];
+        } catch (_) { return []; }
+    }
+
+    // Control-plane admin (identity memberships + shared catalogue). Admin only.
+    async function controlAdmin(op, args = {}) {
+        const res = await fetch('/web/control/admin', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', method: 'call', id: _id++,
+                params: Object.assign({ op, context: { session_id: _session.sessionId } }, args) }),
+        });
+        const data = await res.json();
+        const info = data.result ?? data;
+        if (info && info.error) throw new Error(info.error);
+        return info;
+    }
+
     return { call, authenticate, logout, restoreSession,
              isAuthenticated, getSession,
              loadMenus, loadAction, getViews,
-             health, sessionInfo };
+             health, sessionInfo,
+             listCompanies, switchCompany, lookupCompanies, controlAdmin };
 })();

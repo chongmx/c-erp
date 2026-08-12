@@ -29,7 +29,18 @@ void handleSignal(int sig) {
     if (g_container) g_container->shutdown();
 }
 
-int main(int, char**) {
+int main(int argc, char** argv) {
+    // --provision / --migrate: boot (which provisions + migrates EVERY tenant
+    // database — the cross-tenant migration runner in docs/072) then exit
+    // without serving. Used by tools/provision_tenant.sh and deploy migrations.
+    bool provisionOnly = false;
+    std::string configPath = "config/system.cfg";
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--provision" || a == "--migrate") provisionOnly = true;
+        else if (a == "--config" && i + 1 < argc)   configPath = argv[++i];
+    }
+
     std::set_terminate([]() {
         fprintf(stderr, "\n=== TERMINATE (pure virtual / unhandled exception) ===\n");
         void* frames[64];
@@ -42,7 +53,7 @@ int main(int, char**) {
     std::signal(SIGINT,  handleSignal);
     std::signal(SIGTERM, handleSignal);
 
-    auto cfg = odoo::infrastructure::AppConfig::fromFileOrEnv("config/system.cfg");
+    auto cfg = odoo::infrastructure::AppConfig::fromFileOrEnv(configPath);
 
     g_container = std::make_shared<odoo::infrastructure::Container>(cfg);
 
@@ -67,6 +78,11 @@ int main(int, char**) {
     try {
         std::cout << "[odoo-cpp] Booting modules...\n";
         g_container->boot();
+        if (provisionOnly) {
+            std::cout << "[odoo-cpp] Provisioning + migration complete for all "
+                         "tenants. Exiting (--provision).\n";
+            return 0;
+        }
         std::cout << "[odoo-cpp] Listening on http://"
                   << cfg.http.host << ":" << cfg.http.port << "\n";
         g_container->run();

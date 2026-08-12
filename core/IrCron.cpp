@@ -53,6 +53,18 @@ void IrCron::start(double tickSeconds) {
 // ── the tick ──────────────────────────────────────────────────
 
 void IrCron::tick_() {
+    // Multi-company (docs/072): every tenant has its own ir_cron table, so tick
+    // each tenant database with the DB router pinned to it. Single-tenant
+    // deployments have exactly one tenant, so this is the old behaviour.
+    std::vector<std::string> tenants;
+    if (db_) tenants = db_->tenantDbs();
+    if (tenants.empty()) tenants.push_back(std::string{});
+    for (const auto& t : tenants) tickTenant_(t);
+    if (db_) db_->clearCurrentTenant();
+}
+
+void IrCron::tickTenant_(const std::string& tenant) {
+    if (db_ && !tenant.empty()) db_->setCurrentTenant(tenant);
     std::vector<std::pair<int, std::string>> due;
     try {
         auto conn = db_->acquire();
@@ -67,23 +79,29 @@ void IrCron::tick_() {
         for (const auto& r : rows)
             due.emplace_back(r["id"].as<int>(), r["code"].c_str());
     } catch (const std::exception& ex) {
-        LOG_ERROR << "[cron] cannot read schedule: " << ex.what();
+        LOG_ERROR << "[cron] cannot read schedule for tenant '" << tenant << "': " << ex.what();
         return;   // transient DB problem — try again next tick
     }
 
-    for (const auto& [id, code] : due) executeJob_(id, code);
+    for (const auto& [id, code] : due) executeJob_(tenant, id, code);
 }
 
-void IrCron::executeJob_(int id, const std::string& code) {
+void IrCron::executeJob_(const std::string& tenant, int id, const std::string& code) {
+    // Pin the router to this tenant for the whole job — the lookup below, the
+    // job body, and markSuccess_/markFailure_ all hit the right database.
+    if (db_ && !tenant.empty()) db_->setCurrentTenant(tenant);
+    const std::string guardKey = tenant + "|" + code;   // overlap guard is per-tenant
     JobFn fn;
     {
         std::lock_guard lk{mutex_};
 
         // Overlap guard. A job still running from a previous tick is skipped
         // rather than started again — this is what stops a 90 s billing run on
-        // a 60 s interval from double-billing.
-        if (running_.count(code)) {
-            LOG_WARN << "[cron] '" << code << "' still running — skipping this tick";
+        // a 60 s interval from double-billing. Keyed per-tenant so company A's
+        // slow billing does not block company B's.
+        if (running_.count(guardKey)) {
+            LOG_WARN << "[cron] '" << code << "' (tenant " << tenant
+                     << ") still running — skipping this tick";
             return;
         }
         auto it = jobs_.find(code);
@@ -96,7 +114,7 @@ void IrCron::executeJob_(int id, const std::string& code) {
             return;
         }
         fn = it->second;
-        running_.insert(code);
+        running_.insert(guardKey);
     }
 
     int intervalMinutes = 60;
@@ -129,7 +147,7 @@ void IrCron::executeJob_(int id, const std::string& code) {
     }
 
     std::lock_guard lk{mutex_};
-    running_.erase(code);
+    running_.erase(guardKey);
 }
 
 void IrCron::markSuccess_(int id, int intervalMinutes) {
@@ -175,10 +193,12 @@ void IrCron::markFailure_(int id, const std::string& error, int failures) {
 }
 
 bool IrCron::runNow(const std::string& code) {
+    // Runs in the caller's current tenant (the dispatcher pins it per request).
+    const std::string tenant = db_ ? db_->currentTenant() : std::string{};
     {
         std::lock_guard lk{mutex_};
-        if (running_.count(code)) return false;
-        if (!jobs_.count(code))   return false;
+        if (running_.count(tenant + "|" + code)) return false;
+        if (!jobs_.count(code))                  return false;
     }
     int id = 0;
     try {
@@ -190,7 +210,7 @@ bool IrCron::runNow(const std::string& code) {
         id = r[0][0].as<int>();
     } catch (const std::exception&) { return false; }
 
-    executeJob_(id, code);
+    executeJob_(tenant, id, code);
     return true;
 }
 

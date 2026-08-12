@@ -4,6 +4,7 @@
 #include "infrastructure/HttpServer.hpp"
 #include "infrastructure/JsonRpcDispatcher.hpp"
 #include "CacheInvalidation.hpp"
+#include "ControlPlane.hpp"
 #include "IrCron.hpp"
 #include "infrastructure/MigrationRunner.hpp"
 #include "infrastructure/SessionManager.hpp"
@@ -34,9 +35,24 @@ namespace odoo::infrastructure {
  *   auto container = std::make_shared<Container>(cfg);
  * @endcode
  */
+// A tenant company database (docs/072). Connection details inherit from the
+// primary `db` config unless overridden; `name` is the database (the tenant key).
+struct TenantConfig {
+    std::string              name;          ///< database name = tenant key
+    std::string              subdomain;     ///< Host acme.* → this tenant (optional)
+    std::vector<std::string> emailDomains;  ///< login @acme.com → this tenant (optional)
+    bool                     active = true;
+    // optional connection overrides (empty/0 = inherit from primary db)
+    std::string              host, user, password;
+    int                      port = 0;
+    int                      poolSize = 0;
+};
+
 struct AppConfig {
-    DbConfig   db;
-    HttpConfig http;
+    DbConfig                  db;
+    HttpConfig                http;
+    std::vector<TenantConfig> tenants;   ///< multi-company data planes (docs/072)
+    std::string               controlDb; ///< control-plane identity DB (docs/072 Phase 2); "" = off
 
     /**
      * @brief Build AppConfig from an INI-style config file (Odoo format).
@@ -134,6 +150,42 @@ public:
     explicit Container(const AppConfig& cfg) {
         // --- Infrastructure ---
         db       = std::make_shared<DbConnection>(cfg.db);
+        // Multi-company (docs/072): register each additional tenant database.
+        // Connection details inherit from the primary db unless overridden.
+        for (const auto& t : cfg.tenants) {
+            if (!t.active) continue;
+            DbConfig tc = cfg.db;
+            tc.name     = t.name;
+            if (!t.host.empty())     tc.host     = t.host;
+            if (!t.user.empty())     tc.user     = t.user;
+            if (!t.password.empty()) tc.password = t.password;
+            if (t.port > 0)          tc.port     = t.port;
+            if (t.poolSize > 0)      tc.poolSize = t.poolSize;
+            try {
+                db->registerTenant(tc, t.subdomain, t.emailDomains);
+            } catch (const std::exception& ex) {
+                // A tenant whose database does not exist yet must not stop the
+                // whole server from starting. Warn and skip; run
+                // tools/provision_tenant.sh to create it.
+                std::cerr << "[odoo-cpp] WARNING: tenant '" << t.name
+                          << "' could not be opened (" << ex.what()
+                          << ") — skipping. Run tools/provision_tenant.sh first.\n";
+            }
+        }
+        // Control plane (docs/072 Phase 2): cross-tenant identity directory that
+        // backs the login company-chooser and the top-bar company switcher.
+        if (!cfg.controlDb.empty()) {
+            DbConfig cc = cfg.db;
+            cc.name = cfg.controlDb;
+            try {
+                core::ControlPlane::initialize(cc);
+                std::cout << "[odoo-cpp] Control plane ready (db '" << cfg.controlDb << "')\n";
+            } catch (const std::exception& ex) {
+                std::cerr << "[odoo-cpp] WARNING: control-plane db '" << cfg.controlDb
+                          << "' unavailable (" << ex.what()
+                          << ") — company switcher disabled.\n";
+            }
+        }
         http     = std::make_shared<HttpServer>(cfg.http);
         sessions = std::make_shared<SessionManager>(
             std::chrono::seconds{std::max(1, cfg.http.sessionTtlMinutes) * 60});
@@ -153,7 +205,8 @@ public:
         rpc = std::make_shared<JsonRpcDispatcher>(viewModels, sessions, views,
                                                    cfg.http.secureCookies,
                                                    cfg.http.devMode,
-                                                   cfg.http.trustedProxies);
+                                                   cfg.http.trustedProxies,
+                                                   db);   // multi-tenant router (docs/072)
 
         // P2: give ViewModels a way to drop the dispatcher's caches after a
         // write. Without this the fields_get cache (300 s) keeps serving stale
@@ -250,12 +303,25 @@ public:
         //            sale_order_seq). On a fresh database those tables must
         //            therefore exist first. Registration order (base, auth, …)
         //            satisfies inter-module dependencies. See docs/070.
-        initializeModules_();
+        //
+        // Multi-company (docs/072): provision + migrate EVERY tenant database.
+        // A single-tenant deployment has exactly one tenant (the default), so
+        // this is identical to before. This loop IS the cross-tenant migration
+        // runner: each tenant gets ensureSchema_ (2b) then migrations (2c),
+        // routed by the thread-local tenant. In-memory singletons (RuleEngine,
+        // IrCron) are guarded (call_once / if-not-set), so re-entry is safe.
+        for (const auto& tenant : db->tenantDbs()) {
+            db->setCurrentTenant(tenant);
+            LOG_INFO << "[boot] tenant '" << tenant << "': ensureSchema + migrations";
+            initializeModules_();
 
-        // Stage 2c — versioned schema migrations: ALTER / type-convert / seed on
-        //            top of the base schema built in 2b. Skipped rows (already in
-        //            schema_migrations) make this a no-op on an existing DB.
-        runMigrations_();
+            // Stage 2c — versioned schema migrations: ALTER / type-convert / seed
+            //            on top of the base schema built in 2b. Skipped rows
+            //            (already in schema_migrations) make this a no-op on an
+            //            existing DB.
+            runMigrations_();
+        }
+        db->clearCurrentTenant();
 
         // Stage 3 — HTTP: JSON-RPC dispatcher routes
         rpc->registerRoutes(*http);
@@ -579,6 +645,7 @@ inline AppConfig AppConfig::fromFile(const std::string& path) {
     cfg.db.user     = get("db_user",     "odoo");
     cfg.db.password = get("db_password", "");
     cfg.db.poolSize = getInt("db_maxconn", 10);
+    cfg.controlDb   = get("control_db", "");   // multi-company control plane (docs/072)
 
     cfg.http.host          = get("http_interface", "0.0.0.0");
     cfg.http.port          = getInt("http_port",   8069);
@@ -605,6 +672,44 @@ inline AppConfig AppConfig::fromFile(const std::string& path) {
         std::string lvl = get("log_level", "warn");
         for (auto& c : lvl) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         cfg.http.logLevel = lvl;
+    }
+
+    // Multi-company (docs/072): load tenant databases from a `tenants.json`
+    // sibling of the main config. Absent → single-tenant, unchanged. Each entry
+    // inherits the primary db's host/port/user/password unless it overrides them.
+    {
+        std::string dir;
+        auto slash = path.find_last_of("/\\");
+        if (slash != std::string::npos) dir = path.substr(0, slash + 1);
+        const std::string tpath = dir + "tenants.json";
+        std::ifstream tf(tpath);
+        if (tf.is_open()) {
+            try {
+                nlohmann::json j; tf >> j;
+                const nlohmann::json& arr = j.contains("tenants") ? j["tenants"] : j;
+                if (arr.is_array()) for (const auto& e : arr) {
+                    TenantConfig tc;
+                    tc.name = e.value("name", std::string{});
+                    if (tc.name.empty()) continue;
+                    tc.subdomain = e.value("subdomain", std::string{});
+                    tc.active    = e.value("active", true);
+                    tc.host      = e.value("host", std::string{});
+                    tc.user      = e.value("user", std::string{});
+                    tc.password  = e.value("password", std::string{});
+                    tc.port      = e.value("port", 0);
+                    tc.poolSize  = e.value("pool_size", 0);
+                    if (e.contains("email_domains") && e["email_domains"].is_array())
+                        for (const auto& d : e["email_domains"])
+                            if (d.is_string()) tc.emailDomains.push_back(d.get<std::string>());
+                    cfg.tenants.push_back(std::move(tc));
+                }
+                std::cout << "[odoo-cpp] Loaded " << cfg.tenants.size()
+                          << " tenant(s) from " << tpath << "\n";
+            } catch (const std::exception& ex) {
+                std::cerr << "[odoo-cpp] WARNING: could not parse " << tpath
+                          << ": " << ex.what() << "\n";
+            }
+        }
     }
 
     return cfg;

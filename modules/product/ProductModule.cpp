@@ -3,6 +3,7 @@
 // =============================================================
 #include "ProductModule.hpp"
 #include "BaseModel.hpp"
+#include "RecordRuleSql.hpp"
 #include "DecimalPrecision.hpp"
 #include "BaseView.hpp"
 #include "GenericViewModel.hpp"
@@ -827,13 +828,17 @@ private:
             LEFT JOIN product_product pp ON pp.id = s.product_id
             LEFT JOIN res_partner     rp ON rp.id = s.partner_id
         )";
-        pqxx::params p; int n = 0; std::string w;
-        if (prodFilter > 0)    { w += (n?" AND ":" WHERE ") + std::string("s.product_id=$") + std::to_string(++n); p.append(prodFilter); }
-        if (partnerFilter > 0) { w += (n?" AND ":" WHERE ") + std::string("s.partner_id=$") + std::to_string(++n); p.append(partnerFilter); }
-        sql += w + " ORDER BY s.sequence, s.id";
+        pqxx::params p; int n = 0;
+        sql += " WHERE TRUE";
+        if (prodFilter > 0)    { sql += " AND s.product_id=$" + std::to_string(++n); p.append(prodFilter); }
+        if (partnerFilter > 0) { sql += " AND s.partner_id=$" + std::to_string(++n); p.append(partnerFilter); }
+        // S-30: enforce ir.rule on this custom read (record-rule bypass fix, 071 §1.2).
+        core::appendRecordRuleSubquery(sql, p, "product.supplierinfo", core::RuleOp::Read,
+                                       extractContext_(call), "product_supplierinfo", "s.id", n);
+        sql += " ORDER BY s.sequence, s.id";
         sql += " LIMIT " + std::to_string(lim);
         if (off > 0) sql += " OFFSET " + std::to_string(off);
-        auto res = n ? txn.exec(sql, p) : txn.exec(sql);
+        auto res = txn.exec(sql, p);
         nlohmann::json arr = nlohmann::json::array();
         for (const auto& row : res) {
             nlohmann::json j;

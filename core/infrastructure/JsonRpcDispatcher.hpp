@@ -5,10 +5,13 @@
 #include "Errors.hpp"
 #include "TtlCache.hpp"
 #include "../../core/factories/Factories.hpp"
+#include "../../core/ControlPlane.hpp"
 #include "../../core/interfaces/IViewModel.hpp"
 #include "../../core/interfaces/IView.hpp"
 #include <drogon/Cookie.h>
 #include <nlohmann/json.hpp>
+#include <pqxx/pqxx>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -127,13 +130,15 @@ public:
                       std::shared_ptr<core::ViewFactory>      viewFactory = nullptr,
                       bool                                    secureCookies = false,
                       bool                                    devMode = false,
-                      const std::string& trustedProxies = "127.0.0.1,::1")
+                      const std::string& trustedProxies = "127.0.0.1,::1",
+                      std::shared_ptr<DbConnection>           db = nullptr)
         : vmFactory_    (std::move(vmFactory))
         , sessions_     (std::move(sessions))
         , viewFactory_  (std::move(viewFactory))
         , secureCookies_(secureCookies)
         , devMode_      (devMode)
         , clientIp_     (trustedProxies)
+        , db_           (std::move(db))
     {}
 
     /**
@@ -214,6 +219,274 @@ public:
                 return handleActionLoadBreadcrumbs_(req, body);
             });
         http.addCorsOptions("/web/action/load_breadcrumbs");
+
+        // Multi-company (docs/072 Phase 2): the companies the current identity can
+        // reach, and cross-tenant SSO switching between them (the top-bar switcher).
+        http.addJsonPost("/web/session/companies",
+            [this](const HttpRequestPtr& req, const nlohmann::json& body) {
+                return handleListCompanies_(req, body);
+            });
+        http.addCorsOptions("/web/session/companies");
+        http.addJsonPostWithResponse("/web/session/switch_company",
+            [this](const HttpRequestPtr& req, const nlohmann::json& body, HttpResponsePtr& res) {
+                return handleSwitchCompany_(req, body, res);
+            });
+        http.addCorsOptions("/web/session/switch_company");
+
+        // Phase 3 (docs/072): pull the shared catalogue into this tenant, and a
+        // consolidated cross-company report over the identity's companies.
+        http.addJsonPost("/web/session/import_shared_products",
+            [this](const HttpRequestPtr& req, const nlohmann::json& body) {
+                return handleImportSharedProducts_(req, body);
+            });
+        http.addCorsOptions("/web/session/import_shared_products");
+        http.addJsonPost("/web/session/consolidated",
+            [this](const HttpRequestPtr& req, const nlohmann::json& body) {
+                return handleConsolidated_(req, body);
+            });
+        http.addCorsOptions("/web/session/consolidated");
+
+        // Pre-login company chooser: the companies an email/login can reach.
+        http.addJsonPost("/web/session/lookup_companies",
+            [this](const HttpRequestPtr& req, const nlohmann::json& body) {
+                return handleLookupCompanies_(req, body);
+            });
+        http.addCorsOptions("/web/session/lookup_companies");
+        // Control-plane admin (identity memberships + shared catalogue), admin-gated.
+        http.addJsonPost("/web/control/admin",
+            [this](const HttpRequestPtr& req, const nlohmann::json& body) {
+                return handleControlAdmin_(req, body);
+            });
+        http.addCorsOptions("/web/control/admin");
+    }
+
+    // ── Multi-company: company chooser + cross-tenant switch (docs/072) ──────
+
+    // Load a tenant user's session fields (uid/name/company/groups) WITHOUT a
+    // password — used for cross-tenant SSO, where the control plane has already
+    // vouched that the caller's identity owns this login in `tenantDb`.
+    bool loadTenantUser_(const std::string& tenantDb, const std::string& login, Session& out) {
+        if (!db_) return false;
+        struct Scope { DbConnection* d; ~Scope(){ if (d) d->clearCurrentTenant(); } } scope{db_.get()};
+        db_->setCurrentTenant(tenantDb);
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        auto r = txn.exec(
+            "SELECT u.id, u.login, u.partner_id, u.company_id, COALESCE(p.name,u.login) AS name "
+            "FROM res_users u LEFT JOIN res_partner p ON p.id=u.partner_id "
+            "WHERE u.login=$1 AND u.active=TRUE LIMIT 1", pqxx::params{login});
+        if (r.empty()) return false;
+        out.uid       = r[0]["id"].as<int>();
+        out.login     = r[0]["login"].c_str();
+        out.partnerId = r[0]["partner_id"].is_null() ? 0 : r[0]["partner_id"].as<int>();
+        out.companyId = r[0]["company_id"].is_null() ? 0 : r[0]["company_id"].as<int>();
+        out.name      = r[0]["name"].c_str();
+        auto g = txn.exec("SELECT gid FROM res_groups_users_rel WHERE uid=$1", pqxx::params{out.uid});
+        for (const auto& row : g) out.groupIds.push_back(row["gid"].as<int>());
+        out.isAdmin = std::find(out.groupIds.begin(), out.groupIds.end(), 3) != out.groupIds.end();
+        if (out.companyId > 0) {
+            auto cn = txn.exec("SELECT name FROM res_company WHERE id=$1", pqxx::params{out.companyId});
+            if (!cn.empty() && !cn[0][0].is_null()) out.companyName = cn[0][0].c_str();
+        }
+        return true;
+    }
+
+    nlohmann::json handleListCompanies_(const HttpRequestPtr& req, const nlohmann::json& body) {
+        core::CallKwArgs call;
+        if (body.contains("params") && body["params"].is_object()) call.kwargs = body["params"];
+        const std::string sid = resolveSessionId_(req, call);
+        const Session s = sessions_->get(sid).value_or(Session{});
+        nlohmann::json out = nlohmann::json::array();
+        if (!s.isAuthenticated() || !core::ControlPlane::ready()) return out;
+        const std::string identity = s.identity.empty() ? s.login : s.identity;
+        for (const auto& m : core::ControlPlane::instance().membershipsFor(identity)) {
+            std::string label = m.tenantDb;
+            if (db_) {
+                try {
+                    db_->setCurrentTenant(m.tenantDb);
+                    auto conn = db_->acquire();
+                    pqxx::work txn{conn.get()};
+                    auto r = txn.exec("SELECT name FROM res_company ORDER BY id LIMIT 1");
+                    if (!r.empty() && !r[0][0].is_null()) label = r[0][0].c_str();
+                    db_->clearCurrentTenant();
+                } catch (...) { db_->clearCurrentTenant(); }
+            }
+            out.push_back({{"db", m.tenantDb}, {"name", label}, {"current", m.tenantDb == s.db}});
+        }
+        return out;
+    }
+
+    nlohmann::json handleSwitchCompany_(const HttpRequestPtr& req, const nlohmann::json& body,
+                                        HttpResponsePtr& res) {
+        core::CallKwArgs call;
+        const nlohmann::json& p = body.contains("params") ? body["params"] : body;
+        if (p.is_object()) call.kwargs = p;
+        const std::string sid = resolveSessionId_(req, call);
+        const Session cur = sessions_->get(sid).value_or(Session{});
+        if (!cur.isAuthenticated())        return {{"error", "not authenticated"}};
+        if (!core::ControlPlane::ready())  return {{"error", "company switching is not enabled"}};
+        const std::string target = p.is_object() ? p.value("company", std::string{}) : std::string{};
+        if (target.empty())                return {{"error", "company required"}};
+        const std::string identity  = cur.identity.empty() ? cur.login : cur.identity;
+        const std::string localLogin = core::ControlPlane::instance().loginFor(identity, target);
+        if (localLogin.empty())            return {{"error", "you are not a member of that company"}};
+
+        Session ns;
+        if (!loadTenantUser_(target, localLogin, ns))
+            return {{"error", "your account was not found in that company"}};
+        ns.identity = identity;
+        ns.db       = target;
+
+        const std::string newSid = sessions_->create();
+        sessions_->update(newSid, [&ns](Session& s) {
+            s.uid = ns.uid; s.login = ns.login; s.db = ns.db; s.identity = ns.identity;
+            s.name = ns.name; s.partnerId = ns.partnerId; s.companyId = ns.companyId;
+            s.companyName = ns.companyName; s.isAdmin = ns.isAdmin; s.groupIds = ns.groupIds;
+            s.context = {{"uid", s.uid}, {"lang", "en_US"}, {"tz", "UTC"}};
+        });
+        drogon::Cookie c(SessionManager::cookieName(), newSid);
+        c.setHttpOnly(true);
+        c.setPath("/");
+        if (secureCookies_) c.setSecure(true);
+        res->addCookie(std::move(c));
+        LOG_INFO << "[switch_company] identity=" << identity << " -> db=" << target
+                 << " uid=" << ns.uid;
+        nlohmann::json out = sessions_->get(newSid).value_or(Session{}).toJson();
+        out["session_id"] = newSid;
+        return out;
+    }
+
+    // Phase 3: pull the shared catalogue into the CURRENT tenant (opt-in). Each
+    // shared product is copied once (deduped by default_code) — tenants stay
+    // independent; sharing is a one-time import, not a live link.
+    nlohmann::json handleImportSharedProducts_(const HttpRequestPtr& req, const nlohmann::json& body) {
+        core::CallKwArgs call;
+        if (body.contains("params") && body["params"].is_object()) call.kwargs = body["params"];
+        const std::string sid = resolveSessionId_(req, call);
+        const Session s = sessions_->get(sid).value_or(Session{});
+        if (!s.isAuthenticated())         return {{"error", "not authenticated"}};
+        if (!core::ControlPlane::ready())  return {{"error", "no shared catalogue configured"}};
+        const auto shared = core::ControlPlane::instance().sharedProducts();
+        int imported = 0;
+        if (db_) {
+            TenantScope scope(db_.get(), s.db);
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            for (const auto& sp : shared) {
+                auto r = txn.exec(
+                    "INSERT INTO product_product (name, default_code, list_price) "
+                    "SELECT $1::text, $2::text, $3::bigint WHERE NOT EXISTS "
+                    "(SELECT 1 FROM product_product WHERE default_code = $2::text)",
+                    pqxx::params{sp.name, sp.code, sp.listPrice});
+                imported += static_cast<int>(r.affected_rows());
+            }
+            txn.commit();
+        }
+        return {{"imported", imported}, {"available", static_cast<int>(shared.size())}};
+    }
+
+    // Phase 3: consolidated cross-company figures over the identity's companies
+    // (each queried in its own database). One row per company.
+    nlohmann::json handleConsolidated_(const HttpRequestPtr& req, const nlohmann::json& body) {
+        core::CallKwArgs call;
+        if (body.contains("params") && body["params"].is_object()) call.kwargs = body["params"];
+        const std::string sid = resolveSessionId_(req, call);
+        const Session s = sessions_->get(sid).value_or(Session{});
+        nlohmann::json out = nlohmann::json::array();
+        if (!s.isAuthenticated() || !core::ControlPlane::ready() || !db_) return out;
+        const std::string identity = s.identity.empty() ? s.login : s.identity;
+        for (const auto& m : core::ControlPlane::instance().membershipsFor(identity)) {
+            nlohmann::json row = {{"db", m.tenantDb}, {"name", m.tenantDb}};
+            try {
+                TenantScope scope(db_.get(), m.tenantDb);
+                auto conn = db_->acquire();
+                pqxx::work txn{conn.get()};
+                auto cn = txn.exec("SELECT name FROM res_company ORDER BY id LIMIT 1");
+                if (!cn.empty() && !cn[0][0].is_null()) row["name"] = cn[0][0].c_str();
+                row["partners"] = txn.exec("SELECT count(*) FROM res_partner")[0][0].as<long long>(0);
+                row["invoiced"] = txn.exec(
+                    "SELECT COALESCE(SUM(amount_total),0) FROM account_move "
+                    "WHERE move_type='out_invoice' AND state='posted'")[0][0].as<long long>(0);
+            } catch (const std::exception&) {
+                row["error"] = "unavailable";
+            }
+            out.push_back(std::move(row));
+        }
+        return out;
+    }
+
+    // Pre-login chooser: the companies an email/login can reach (control plane).
+    // Pre-auth by design (login page). Returns [] when the control plane is off.
+    nlohmann::json handleLookupCompanies_(const HttpRequestPtr&, const nlohmann::json& body) {
+        const nlohmann::json& p = body.contains("params") ? body["params"] : body;
+        const std::string login = p.is_object() ? p.value("login", std::string{}) : std::string{};
+        nlohmann::json out = nlohmann::json::array();
+        if (login.empty() || !core::ControlPlane::ready() || !db_) return out;
+        for (const auto& m : core::ControlPlane::instance().membershipsFor(login)) {
+            std::string label = m.tenantDb;
+            try {
+                db_->setCurrentTenant(m.tenantDb);
+                auto conn = db_->acquire();
+                pqxx::work txn{conn.get()};
+                auto r = txn.exec("SELECT name FROM res_company ORDER BY id LIMIT 1");
+                if (!r.empty() && !r[0][0].is_null()) label = r[0][0].c_str();
+                db_->clearCurrentTenant();
+            } catch (...) { db_->clearCurrentTenant(); }
+            out.push_back({{"db", m.tenantDb}, {"name", label}, {"login", m.localLogin}});
+        }
+        return out;
+    }
+
+    // Control-plane admin: manage identity memberships + the shared catalogue.
+    // Admin-gated (any tenant admin — a super-admin role is a future refinement).
+    nlohmann::json handleControlAdmin_(const HttpRequestPtr& req, const nlohmann::json& body) {
+        core::CallKwArgs call;
+        const nlohmann::json& p = body.contains("params") ? body["params"] : body;
+        if (p.is_object()) call.kwargs = p;
+        const std::string sid = resolveSessionId_(req, call);
+        const Session s = sessions_->get(sid).value_or(Session{});
+        if (!s.isAuthenticated() || !s.isAdmin) return {{"error", "administrator access required"}};
+        if (!core::ControlPlane::ready())        return {{"error", "control plane is not enabled"}};
+        auto& cp = core::ControlPlane::instance();
+        const std::string op = p.is_object() ? p.value("op", std::string{}) : std::string{};
+        auto S = [&](const char* k){ return p.is_object() ? p.value(k, std::string{}) : std::string{}; };
+
+        if (op == "list_memberships") {
+            nlohmann::json arr = nlohmann::json::array();
+            for (const auto& m : cp.allMemberships())
+                arr.push_back({{"identity", m.identity}, {"tenant_db", m.tenantDb},
+                               {"local_login", m.localLogin}, {"active", m.active}});
+            return {{"memberships", arr}};
+        }
+        if (op == "add_membership") {
+            if (S("identity").empty() || S("tenant_db").empty() || S("local_login").empty())
+                return {{"error", "identity, tenant_db and local_login are required"}};
+            cp.upsertMembership(S("identity"), S("tenant_db"), S("local_login"));
+            return {{"ok", true}};
+        }
+        if (op == "remove_membership") {
+            cp.removeMembership(S("identity"), S("tenant_db"));
+            return {{"ok", true}};
+        }
+        if (op == "list_shared") {
+            nlohmann::json arr = nlohmann::json::array();
+            for (const auto& sp : cp.sharedProducts())
+                arr.push_back({{"code", sp.code}, {"name", sp.name}, {"list_price", sp.listPrice}});
+            return {{"shared_products", arr}};
+        }
+        if (op == "add_shared") {
+            if (S("code").empty()) return {{"error", "code is required"}};
+            long long price = 0;
+            if (p.is_object() && p.contains("list_price") && p["list_price"].is_number())
+                price = static_cast<long long>(p["list_price"].get<double>());
+            cp.upsertSharedProduct(S("code"), S("name"), price);
+            return {{"ok", true}};
+        }
+        if (op == "remove_shared") {
+            cp.removeSharedProduct(S("code"));
+            return {{"ok", true}};
+        }
+        return {{"error", "unknown op"}};
     }
 
 private:
@@ -254,6 +527,17 @@ private:
             const std::string sid = resolveSessionId_(req, call);
             auto sessionOpt = sessions_->get(sid);
             Session session  = sessionOpt.value_or(Session{});
+
+            // Multi-company (docs/072): route this request's DB connections to
+            // its tenant database for the request's duration. No-op single-tenant.
+            const std::string reqTenant = resolveTenant_(req, call, session);
+            TenantScope tenantScope(db_.get(), reqTenant);
+            // If authenticating with no explicit db (Host/email routing), bind the
+            // new session to the resolved tenant so session.db is correct for every
+            // later call. The auth VM echoes args[0] (db) back as result["db"].
+            if (call.method == "authenticate" && call.args.is_array() && !call.args.empty()
+                && (!call.args[0].is_string() || call.args[0].get<std::string>().empty()))
+                call.args[0] = reqTenant;
 
             const std::string bodySidDbg = call.kwargs.contains("context")
                 ? call.kwargs["context"].value("session_id", std::string{"(none)"})
@@ -365,10 +649,23 @@ private:
                 // log the user straight back out.
                 result["session_id"] = cookieSid;
 
-                const bool updated = sessions_->update(cookieSid, [&result](Session& s) {
+                // Cross-tenant identity (docs/072 Phase 2): if the control plane
+                // knows this (tenant, login), record the global identity so the
+                // company switcher can find the user's other companies.
+                std::string sessionIdentity;
+                if (core::ControlPlane::ready())
+                    sessionIdentity = core::ControlPlane::instance()
+                        .identityFor(reqTenant, result.value("login", std::string{}));
+                if (sessionIdentity.empty()) sessionIdentity = result.value("login", std::string{});
+
+                const bool updated = sessions_->update(cookieSid, [&result, &reqTenant, &sessionIdentity](Session& s) {
                     s.uid     = result["uid"].get<int>();
                     s.login   = result.value("login", std::string{});
-                    s.db      = result.value("db",    std::string{});
+                    // Multi-company: bind the session to the RESOLVED tenant (the
+                    // database this request was actually routed to), not just the
+                    // echoed arg — so Host/email routing sticks for later calls.
+                    s.db      = reqTenant.empty() ? result.value("db", std::string{}) : reqTenant;
+                    s.identity = sessionIdentity;
                     s.name    = result.value("name",  std::string{});
                     s.isAdmin = result.value("is_admin", false);
                     if (result.contains("partner_id") && result["partner_id"].is_number_integer())
@@ -896,6 +1193,51 @@ private:
     ClientIpResolver                        clientIp_;      // S-40
     bool                                    secureCookies_ = false;
     bool                                    devMode_       = false;
+    std::shared_ptr<DbConnection>           db_;            // multi-tenant router (docs/072)
+
+    // RAII: route this request's DB connections to `tenant` for the request's
+    // duration, then restore. Drogon runs the handler on one worker thread, so
+    // the thread-local selected tenant is scoped correctly to this request.
+    struct TenantScope {
+        DbConnection* db;
+        explicit TenantScope(DbConnection* d, const std::string& tenant) : db(d) {
+            if (db) db->setCurrentTenant(tenant);
+        }
+        ~TenantScope() { if (db) db->clearCurrentTenant(); }
+        TenantScope(const TenantScope&) = delete;
+        TenantScope& operator=(const TenantScope&) = delete;
+    };
+
+    // Resolve the tenant database for this request:
+    //   authenticate → the db arg (args[0]); else Host subdomain; else default
+    //   any other call → the authenticated session's db
+    // Unknown/empty → the default tenant, so single-tenant deployments and
+    // background work are unaffected.
+    std::string resolveTenant_(const HttpRequestPtr& req,
+                               const core::CallKwArgs& call,
+                               const Session& session) const {
+        if (!db_) return {};
+        std::string t;
+        if (call.method == "authenticate") {
+            // args = [db, login, password] (rewritten from the authenticate body)
+            if (call.args.is_array() && !call.args.empty() && call.args[0].is_string())
+                t = call.args[0].get<std::string>();
+            // (1) explicit db → (2) Host subdomain → (3) login email-domain
+            if ((t.empty() || !db_->hasTenant(t)) && req) {
+                const std::string byHost = db_->resolveHost(req->getHeader("host"));
+                if (!byHost.empty()) t = byHost;
+            }
+            if ((t.empty() || !db_->hasTenant(t)) &&
+                call.args.is_array() && call.args.size() >= 2 && call.args[1].is_string()) {
+                const std::string byEmail = db_->resolveEmailDomain(call.args[1].get<std::string>());
+                if (!byEmail.empty()) t = byEmail;
+            }
+        } else if (session.isAuthenticated()) {
+            t = session.db;
+        }
+        if (t.empty() || !db_->hasTenant(t)) t = db_->defaultTenant();
+        return t;
+    }
 
     // PERF-D: TTL caches for quasi-static data
     TtlCache<std::string, nlohmann::json>   currencyCache_;   // 60 s TTL — res.currency rows

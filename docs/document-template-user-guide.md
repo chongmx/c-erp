@@ -24,8 +24,8 @@ to bottom. Each row shows the block's icon, name, and two action buttons.
 
 | Block | What it renders |
 |-------|----------------|
-| Document Header | Company name, document title, and accent line |
-| Company Logo | Logo image |
+| Document Header | Company name and accent line |
+| Company Logo | Logo image (hidden until you set a Logo URL) |
 | Company Address | Your company's address |
 | Recipient Address | Customer / partner address |
 | Document Details | Invoice/order number, date, due date |
@@ -43,7 +43,7 @@ to bottom. Each row shows the block's icon, name, and two action buttons.
 
 | Block | Purpose |
 |-------|---------|
-| Row Start | Begin a side-by-side column group |
+| Row Start | Begin a side-by-side column group (3+ columns; for two, use **Column Layout** on the blocks themselves) |
 | Column Break | Divide columns inside a row |
 | Row End | Close a column group |
 | Spacer / Gap | Fixed vertical whitespace |
@@ -95,6 +95,69 @@ expand or collapse it.
 **Background & Border**
 - **Background** — fill color behind the block
 - **Border Width** (pt) / **Border Color** / **Border Style** — outline
+
+**Column Layout** — see the next section.
+
+---
+
+## Column Layout — putting blocks side by side
+
+By default every block spans the full page width and blocks stack top to
+bottom. **Column Layout** lets any two blocks share a horizontal band, so you
+can use the space on the right of the page instead of pushing everything down.
+
+| Property | What it does |
+|----------|--------------|
+| **Placement** | `Full width` (default), `Left column`, or `Right column` |
+| **Column Size** | Width of the **left** column, in % — the right column takes the rest |
+| **Column Gap** | Space between the two columns (mm) |
+| **Vertical Align** | Top / Middle / Bottom alignment of the two columns |
+
+### How a band is formed
+
+A band opens at the first block set to Left or Right, and swallows the blocks
+that follow it in the list until a **Left** block appears after a **Right** one
+— that Left block starts the next band. So:
+
+```
+Company Logo        Left      ─┐  band 1:  [ logo ] [ name + address ]
+Document Header     Right      │
+Company Address     Right     ─┘
+Recipient Address   Left      ─┐  band 2:  [ recipient ] [ details ]
+Document Details    Right     ─┘
+Items Table         Full width    full width, below both bands
+```
+
+Three rules worth knowing:
+
+- **Blocks paired side by side must be adjacent in the block list.** Drag them
+  next to each other first, then set Placement.
+- **Column Size, Column Gap and Vertical Align are read from the first block
+  in the band.** Setting them on the second block has no effect.
+- **A column with nothing opposite it falls back to full width.** Hiding the
+  Company Logo does not leave an empty gap where it was — the header simply
+  expands to the full width.
+
+For three or more columns, use the **Row Start / Column Break / Row End**
+layout blocks instead; blocks inside an explicit row ignore their Placement.
+
+### Company Logo
+
+The default layout for every document type ships with a **Company Logo** block
+at the top, set to *Left column* at 28% — but **hidden**, so nothing changes
+until you want it. To use it:
+
+1. Click the **eye** icon on the Company Logo row to show it.
+2. Select it and paste an image address into **Logo URL** (an ordinary
+   `https://…` URL, or a `data:image/png;base64,…` string to embed the image
+   directly in the document).
+3. Adjust **Max Width** / **Max Height** (mm) — the image is scaled to fit
+   inside that box, keeping its aspect ratio — and **Align** within its column.
+4. Adjust **Column Size** to change how much width the logo column takes.
+
+Leave the block hidden (or delete it) if you do not want a logo. Until a URL
+is set the preview shows a dashed placeholder box so you can position it; that
+placeholder is only ever drawn when the block is visible.
 
 ---
 
@@ -201,7 +264,8 @@ whole document (not a single block):
 1. Open **Settings → Technical → Document Template**.
 2. Select the document type (Invoice, Sales Order, etc.).
 3. Rearrange or remove blocks using the left panel.
-4. Click a block to configure its properties in the right sidebar.
+4. Click a block to configure its properties in the right sidebar. Use
+   **Column Layout → Placement** to sit two blocks side by side.
 5. For the **Footer Bar**, choose the text source, enable page numbers, and
    adjust the separator line style.
 6. Switch to the **Objects** tab to fine-tune margins and global typography.
@@ -213,6 +277,11 @@ whole document (not a single block):
 
 ## Tips
 
+- Templates saved before Column Layout existed are upgraded on load: the
+  **Document Details** block moves beside the **Recipient Address** instead of
+  below it. The Log panel notes when this happens. Nothing is written back
+  until you click **Save**, so you can set every block to *Full width* and save
+  to keep the old stacked look.
 - Place a **Page Fill Spacer** block directly above the **Footer Bar** to
   push the footer to the bottom of the last page.
 - Use **Footer Separator** instead of the built-in footer **Show Line** if

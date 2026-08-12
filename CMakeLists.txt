@@ -84,4 +84,22 @@ target_include_directories(erp_tests PRIVATE
 )
 target_link_libraries(erp_tests PRIVATE ssl crypto)
 
+# ------------------------------------------------------------------
+# ERP Admin Console (docs/073) — a SEPARATE, loopback-only IT admin tool.
+#
+#   cmake --build ./build --target erp-admin && ./build/erp-admin
+#
+# EXCLUDE_FROM_ALL so it never slows the default server build. It reuses the
+# vendored Drogon for its tiny HTTP server and shells out to system tools
+# (psql/pg_dump/nginx/certbot/systemctl) — no libpqxx dependency.
+# ------------------------------------------------------------------
+add_executable(erp-admin EXCLUDE_FROM_ALL tools/admin/erp_admin.cpp)
+target_include_directories(erp-admin PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/drogon/lib/inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/drogon
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/drogon/trantor
+)
+target_link_libraries(erp-admin PRIVATE drogon)
+
 message(STATUS "Source files: ${SOURCES}")

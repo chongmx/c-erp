@@ -26,6 +26,7 @@
 #include "IModule.hpp"
 #include "Factories.hpp"
 #include "BaseModel.hpp"
+#include "RecordRuleSql.hpp"
 #include "IrSequence.hpp"
 #include "IrCron.hpp"
 #include "StockQuant.hpp"
@@ -465,17 +466,17 @@ private:
             LEFT JOIN res_partner    rp     ON rp.id     = sp.partner_id
             WHERE )";
         sql += where;
+        // S-30: this custom read bypasses BaseModel, so enforce ir.rule here
+        // (record-rule bypass fix, 071 §1.2) — as an id-subquery, alias-safe.
+        pqxx::params p; for (auto& s : paramVec) p.append(s);
+        core::appendRecordRuleSubquery(sql, p, "stock.picking", core::RuleOp::Read,
+                                       extractContext_(call), "stock_picking", "sp.id",
+                                       static_cast<int>(paramVec.size()));
         sql += " ORDER BY sp.id DESC";
         sql += " LIMIT " + std::to_string(lim);
         if (off > 0) sql += " OFFSET " + std::to_string(off);
 
-        pqxx::result res;
-        if (paramVec.empty()) {
-            res = txn.exec(sql);
-        } else {
-            pqxx::params p; for (auto& s : paramVec) p.append(s);
-            res = txn.exec(sql, p);
-        }
+        pqxx::result res = txn.exec(sql, p);
 
         auto m2o = [](const pqxx::row& row,
                       const char* idCol, const char* nameCol) -> nlohmann::json {
@@ -1062,17 +1063,16 @@ private:
             LEFT JOIN res_company      rc    ON rc.id  = sm.company_id
             WHERE )";
         sql += where;
+        // S-30: enforce ir.rule on this custom read (record-rule bypass fix, 071 §1.2).
+        pqxx::params p; for (auto& s : paramVec) p.append(s);
+        core::appendRecordRuleSubquery(sql, p, "stock.move", core::RuleOp::Read,
+                                       extractContext_(call), "stock_move", "sm.id",
+                                       static_cast<int>(paramVec.size()));
         sql += " ORDER BY sm.id DESC";
         sql += " LIMIT " + std::to_string(lim);
         if (off > 0) sql += " OFFSET " + std::to_string(off);
 
-        pqxx::result res;
-        if (paramVec.empty()) {
-            res = txn.exec(sql);
-        } else {
-            pqxx::params p; for (auto& s : paramVec) p.append(s);
-            res = txn.exec(sql, p);
-        }
+        pqxx::result res = txn.exec(sql, p);
 
         nlohmann::json arr = nlohmann::json::array();
         for (const auto& row : res) {

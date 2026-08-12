@@ -5915,11 +5915,34 @@ const DLE_BLOCK_DEFS = [
 ];
 
 const DLE_DEFAULT_BLOCKS = {
-    'account.move':   ['doc_header','from_address','to_address','doc_details','items_table','totals','payment_terms','bank_details','footer_bar'],
-    'sale.order':     ['doc_header','from_address','to_address','doc_details','items_table','totals','payment_terms','notes','footer_bar'],
-    'purchase.order': ['doc_header','from_address','to_address','doc_details','items_table','totals','notes','footer_bar'],
-    'stock.picking':  ['doc_header','from_address','to_address','doc_details','items_table','footer_bar'],
+    'account.move':   ['logo','doc_header','from_address','to_address','doc_details','items_table','totals','payment_terms','bank_details','footer_bar'],
+    'sale.order':     ['logo','doc_header','from_address','to_address','doc_details','items_table','totals','payment_terms','notes','footer_bar'],
+    'purchase.order': ['logo','doc_header','from_address','to_address','doc_details','items_table','totals','notes','footer_bar'],
+    'stock.picking':  ['logo','doc_header','from_address','to_address','doc_details','items_table','footer_bar'],
 };
+
+// Default column placement for a fresh layout — same for every document type.
+// Row 1: logo on the left, company name + address on the right.
+// Row 2: recipient on the left, document details on the right.
+const DLE_DEFAULT_PROPS = {
+    logo:         { col:'left',  col_width:28, width:45, height:22 },
+    doc_header:   { col:'right' },
+    from_address: { col:'right' },
+    to_address:   { col:'left',  col_width:55 },
+    doc_details:  { col:'right' },
+};
+
+// Blocks that start switched off in a fresh layout (the logo needs a URL first,
+// and an empty logo box in every PDF would be worse than no logo at all).
+const DLE_DEFAULT_HIDDEN = new Set(['logo']);
+
+function dleDefaultBlocks(model) {
+    return (DLE_DEFAULT_BLOCKS[model] || []).map(t => ({
+        type:    t,
+        visible: !DLE_DEFAULT_HIDDEN.has(t),
+        props:   { ...(DLE_DEFAULT_PROPS[t] || {}) },
+    }));
+}
 
 const DLE_DOC_TYPES = [
     { model:'account.move',   label:'Invoice' },
@@ -5940,8 +5963,17 @@ body { font-family: Arial, Helvetica, sans-serif; font-size: 10pt; color: #33333
 .company-name { font-weight: bold; font-size: 11pt; }
 .company-detail { font-size: 10pt; }
 .info-row { overflow: hidden; margin-top: 10mm; margin-bottom: 6mm; }
-.buyer-col { float: left; width: 55%; }
-.meta-col { float: right; width: 42%; }
+/* buyer-col / meta-col no longer float: body is a flex column, so floats between
+   sibling blocks never pair up. Side-by-side is done with .dle-row / .dle-col. */
+.buyer-col { width: 100%; margin-top: 8mm; margin-bottom: 4mm; }
+.meta-col { width: 100%; margin-top: 8mm; margin-bottom: 4mm; }
+/* Columns use display:table, NOT flexbox. wkhtmltopdf's QtWebKit ignores
+   display:flex outright (the columns silently collapse into a stack), and it
+   has no support for the flexbox gap property either. CSS tables render
+   identically in Chrome and QtWebKit, so the preview matches the PDF. */
+.dle-row { display: table; width: 100%; table-layout: fixed; margin-bottom: 4mm; }
+.dle-col { display: table-cell; vertical-align: top; }
+.dle-col > .buyer-col, .dle-col > .meta-col, .dle-col > .hdr-left, .dle-col > .hdr-right { float: none; width: 100%; }
 .buyer-name { font-weight: bold; font-size: 11pt; }
 .doc-title { font-weight: bold; font-size: 14pt; margin-bottom: 2mm; }
 .meta-line { font-size: 10pt; }
@@ -6009,9 +6041,23 @@ function _bgbd()   { return [_D('Background & Border'),
     { key:'border_color', label:'Border Color', type:'color' },
     { key:'border_style', label:'Border Style', type:'select', options:_BSTYLE_OPTS },
 ]; }
-function _layout() { return [_D('Layout'),
-    { key:'same_line', label:'Same Line', type:'boolean' },
-    { key:'width',     label:'Width',     type:'number',  unit:'%', min:10, max:100 },
+const _COL_OPTS = [
+    { v:'full',  l:'Full width'   },
+    { v:'left',  l:'Left column'  },
+    { v:'right', l:'Right column' },
+];
+const _VALIGN_OPTS = [{ v:'',l:'Top'},{v:'center',l:'Middle'},{v:'end',l:'Bottom'}];
+
+// Column Layout — lets any block share a horizontal band with its neighbours.
+// A band opens at the first Left/Right block and closes when the next Left block
+// begins a new one, so several blocks can stack inside one column.
+function _cols() { return [_D('Column Layout'),
+    { key:'col',        label:'Placement',      type:'select', options:_COL_OPTS },
+    { key:'col_width',  label:'Column Size',    type:'number', unit:'%',  min:10, max:90 },
+    { key:'col_gap',    label:'Column Gap',     type:'number', unit:'mm', min:0,  max:30 },
+    { key:'col_valign', label:'Vertical Align', type:'select', options:_VALIGN_OPTS },
+    { key:'_colinfo',   type:'label',
+      label:'Blocks paired side by side must sit next to each other in the block list. Column Size sets the LEFT column — the right column takes the rest. Gap and Vertical Align are read from the first block of the pair. A column with nothing opposite it falls back to full width.' },
 ]; }
 
 const DLE_PROP_DEFS = {
@@ -6020,18 +6066,23 @@ const DLE_PROP_DEFS = {
         _D('Accent Line'),
         { key:'show_line',  label:'Show Line',  type:'boolean' },
         { key:'line_color', label:'Line Color', type:'color'   },
-        ..._layout(),
+        ..._cols(),
     ],
     logo: [
         _D('Image'),
-        { key:'src',    label:'Logo URL', type:'text' },
-        { key:'width',  label:'Width',    type:'number', unit:'mm', min:10, max:150 },
-        { key:'height', label:'Height',   type:'number', unit:'mm', min:5,  max:80  },
-        ..._spac(),
+        { key:'src',    label:'Logo URL', type:'text', placeholder:'https://… or data:image/png;base64,…' },
+        { key:'width',  label:'Max Width',  type:'number', unit:'mm', min:10, max:150 },
+        { key:'height', label:'Max Height', type:'number', unit:'mm', min:5,  max:80  },
+        { key:'logo_align', label:'Align', type:'select', options:[
+            { v:'',       l:'Left'   },
+            { v:'center', l:'Center' },
+            { v:'right',  l:'Right'  },
+        ]},
+        ..._spac(), ..._cols(),
     ],
-    from_address:  [..._typo(), ..._spac(), ..._bgbd(), ..._layout()],
-    to_address:    [..._typo(), ..._spac(), ..._bgbd()],
-    doc_details:   [..._typo(), ..._spac(), ..._bgbd()],
+    from_address:  [..._typo(), ..._spac(), ..._bgbd(), ..._cols()],
+    to_address:    [..._typo(), ..._spac(), ..._bgbd(), ..._cols()],
+    doc_details:   [..._typo(), ..._spac(), ..._bgbd(), ..._cols()],
     items_table: [
         ..._typo(), ..._spac(),
         _D('Table Header'),
@@ -6040,22 +6091,22 @@ const DLE_PROP_DEFS = {
         _D('Table Body'),
         { key:'alt_row_bg',   label:'Alternate Row Bg',   type:'color' },
         { key:'cell_border',  label:'Cell Border Color',  type:'color' },
-        ..._bgbd(), ..._layout(),
+        ..._bgbd(), ..._cols(),
     ],
     totals: [
         ..._typo(), ..._spac(), ..._bgbd(),
         _D('Total Row'),
         { key:'total_bg',    label:'Total Background', type:'color' },
         { key:'total_color', label:'Total Text Color', type:'color' },
-        ..._layout(),
+        ..._cols(),
     ],
-    payment_terms: [..._typo(), ..._spac(), ..._bgbd(), ..._layout()],
-    bank_details:  [..._typo(), ..._spac(), ..._bgbd(), ..._layout()],
-    notes:         [..._typo(), ..._spac(), ..._bgbd(), ..._layout()],
+    payment_terms: [..._typo(), ..._spac(), ..._bgbd(), ..._cols()],
+    bank_details:  [..._typo(), ..._spac(), ..._bgbd(), ..._cols()],
+    notes:         [..._typo(), ..._spac(), ..._bgbd(), ..._cols()],
     text_block: [
         _D('Content'),
         { key:'content', label:'Text Content', type:'textarea' },
-        ..._typo(), ..._spac(), ..._bgbd(), ..._layout(),
+        ..._typo(), ..._spac(), ..._bgbd(), ..._cols(),
     ],
     footer_bar: [
         _D('Content'),
@@ -6133,16 +6184,13 @@ function dleBlockHtml(type, model, props) {
         case 'doc_header': {
             const lineHtml = props.show_line
                 ? `<div style="border-top:2pt solid ${props.line_color || '#4a4a4a'};margin:2mm 0;"></div>` : '';
-            return `<div class="clearfix"${sa}>
-  <div class="hdr-left">
-    <div class="company-name">{{company_name}} ({{company_reg}})</div>
-  </div>
-  <div class="hdr-right"></div>
+            return `<div${sa}>
+  <div class="company-name">{{company_name}} ({{company_reg}})</div>
 </div>${lineHtml}`;
         }
 
         case 'logo':
-            return ''; // handled structurally in dleBuildHtml
+            return dleLogoHtml(props);
 
         case 'from_address':
             return `<div style="margin-bottom:4mm;${st}">
@@ -6154,7 +6202,7 @@ function dleBlockHtml(type, model, props) {
 </div>`;
 
         case 'to_address':
-            return `<div class="buyer-col" style="margin-top:8mm;margin-bottom:4mm;${st}">
+            return `<div class="buyer-col"${sa}>
   <div class="buyer-name">{{partner_name}}</div>
   <div>{{partner_street}}</div>
   <div>{{partner_city}}</div>
@@ -6169,7 +6217,7 @@ function dleBlockHtml(type, model, props) {
                 'purchase.order': `  <div class="meta-line"><span class="meta-lbl">PO No. :</span> {{doc_number}}</div>\n  <div class="meta-line"><span class="meta-lbl">Order Date :</span> {{doc_date}}</div>\n  <div class="meta-line"><span class="meta-lbl">Expected :</span> {{date_planned}}</div>`,
                 'stock.picking':  `  <div class="meta-line"><span class="meta-lbl">DO No. :</span> {{doc_number}}</div>\n  <div class="meta-line"><span class="meta-lbl">Date :</span> {{doc_date}}</div>\n  <div class="meta-line"><span class="meta-lbl">Origin :</span> {{origin}}</div>`,
             }[model] || '';
-            return `<div class="meta-col" style="margin-top:8mm;margin-bottom:4mm;${st}">
+            return `<div class="meta-col"${sa}>
   <div class="doc-title">{{document_title}}</div>
 ${lines}
 </div>`;
@@ -6336,89 +6384,157 @@ ${lines}
     }
 }
 
-// Blocks that float (need clearfix after their run)
-const DLE_FLOAT_BLOCKS = new Set(['to_address', 'doc_details']);
-// Layout-control block types
-const DLE_LAYOUT_BLOCKS = new Set(['row_start', 'col_break', 'row_end']);
+// Blocks that may take part in the automatic two-column bands
+const DLE_COL_BLOCKS = new Set([
+    'doc_header', 'logo', 'from_address', 'to_address', 'doc_details',
+    'items_table', 'totals', 'payment_terms', 'bank_details', 'notes', 'text_block',
+]);
+
+// 'left' | 'right' for a block that opted into a column band, otherwise null
+function dleColSide(blk) {
+    if (!blk || blk.visible === false)          return null;
+    if (!DLE_COL_BLOCKS.has(blk.type))          return null;
+    const c = (blk.props || {}).col;
+    return (c === 'left' || c === 'right') ? c : null;
+}
+
+// Maps the Vertical Align prop onto table-cell vertical-align ('' => top, via CSS)
+const _VALIGN_CSS = { center: 'middle', end: 'bottom' };
+
+// ---- Logo block ----
+function dleLogoHtml(props) {
+    props = props || {};
+    const h     = props.height || 20;
+    const w     = props.width  || 50;
+    const src   = props.src    || '';
+    const align = props.logo_align ? `text-align:${props.logo_align};` : '';
+    const pad   = (props.padding != null && props.padding !== '') ? `${props.padding}mm` : '2mm 0';
+    const mb    = (props.margin_bottom != null && props.margin_bottom !== '') ? `margin-bottom:${props.margin_bottom}mm;` : '';
+    const inner = src
+        ? `<img src="${src}" style="max-height:${h}mm; max-width:${w}mm;" alt="Logo"/>`
+        // Placeholder uses inline-block + line-height (not flex) so it honours text-align
+        : `<div style="display:inline-block; width:${w}mm; height:${h}mm; line-height:${h}mm; text-align:center; background:#f5f5f5; border:1pt dashed #bbb; color:#aaa; font-size:9pt; font-style:italic;">Company Logo</div>`;
+    return `<div style="padding:${pad};${mb}${align}">${inner}</div>`;
+}
+
+// ---- Render one content block (no column wrapping) ----
+function dleRenderBlock(blk, model) {
+    const props = blk.props || {};
+    if (blk.type === 'spacer') return `<div style="height:${props.height || 8}mm;"></div>`;
+    return dleBlockHtml(blk.type, model, props);
+}
+
+// Emit one CSS-table row. `cols` = [{ html, width, padLeft, padRight }].
+function dleRowHtml(cols, valign) {
+    const va = valign ? `vertical-align:${valign};` : '';
+    const cells = cols.map(c => {
+        const st = [va, c.width != null ? `width:${c.width}%;` : '',
+                    c.padLeft  ? `padding-left:${c.padLeft}mm;`   : '',
+                    c.padRight ? `padding-right:${c.padRight}mm;` : ''].join('');
+        return `<div class="dle-col"${st ? ` style="${st}"` : ''}>\n${c.html}\n</div>`;
+    });
+    return `<div class="dle-row">\n${cells.join('\n')}\n</div>`;
+}
 
 // ---- Assemble full HTML document from block list ----
 function dleBuildHtml(blocks, model) {
     const label = { 'account.move':'Invoice', 'sale.order':'Sales Order', 'purchase.order':'Purchase Order', 'stock.picking':'Delivery Order' }[model] || 'Document';
+    const list  = Array.isArray(blocks) ? blocks : [];
     const parts = [];
-    let pendingClearfix = false;
-    let inRow = false;
-    let firstColInRow = true;
+    // Explicit Row Start … Row End is buffered rather than streamed: column
+    // widths are a share of the row's total flex weight, so no cell can be
+    // emitted until every weight in the row is known.
+    let row = null;   // { gap, cols: [{ flex, parts: [] }] }
 
-    for (const blk of blocks) {
+    const flushRow = () => {
+        if (!row) return;
+        const cols  = row.cols.filter(c => c.parts.length);
+        if (cols.length) {
+            const total = cols.reduce((s, c) => s + c.flex, 0) || cols.length;
+            parts.push(dleRowHtml(cols.map((c, n) => ({
+                html:    c.parts.join('\n'),
+                width:   +(c.flex / total * 100).toFixed(4),
+                padLeft: n > 0 ? row.gap : 0,
+            }))));
+        }
+        row = null;
+    };
+
+    for (let i = 0; i < list.length; i++) {
+        const blk = list[i];
         if (blk.visible === false) continue;
         const props = blk.props || {};
 
-        // ---- Layout control blocks ----
+        // ---- Explicit row blocks (N columns, manual) ----
         if (blk.type === 'row_start') {
-            if (pendingClearfix) { parts.push('<div style="clear:both;"></div>'); pendingClearfix = false; }
-            const gap = props.gap || 6;
-            parts.push(`<div style="display:flex; gap:${gap}mm; align-items:flex-start; margin-bottom:4mm;">`);
-            const flex = props.flex || 1;
-            parts.push(`<div style="flex:${flex};">`);
-            inRow = true; firstColInRow = true;
+            flushRow();                                   // auto-close a dangling row
+            row = { gap: (props.gap != null && props.gap !== '') ? props.gap : 6,
+                    cols: [{ flex: props.flex || 1, parts: [] }] };
             continue;
         }
         if (blk.type === 'col_break') {
-            if (inRow) {
-                parts.push('</div>'); // close previous column
-                const flex = props.flex || 1;
-                parts.push(`<div style="flex:${flex};">`);
+            if (row) row.cols.push({ flex: props.flex || 1, parts: [] });
+            continue;
+        }
+        if (blk.type === 'row_end') { flushRow(); continue; }
+
+        // ---- Automatic two-column band ----
+        // Consumes the run of adjacent blocks that opted into a column. The band
+        // ends when a Left block appears after a Right one — that starts a new band.
+        if (!row && dleColSide(blk)) {
+            const run = [];
+            let seenRight = false;
+            let j = i;
+            for (; j < list.length; j++) {
+                const b = list[j];
+                if (b.visible === false) continue;        // hidden blocks never split a band
+                const side = dleColSide(b);
+                if (!side) break;
+                if (side === 'left' && seenRight) break;
+                if (side === 'right') seenRight = true;
+                run.push(b);
             }
-            continue;
-        }
-        if (blk.type === 'row_end') {
-            if (inRow) { parts.push('</div></div>'); inRow = false; }
-            continue;
-        }
+            const lHtml = run.filter(b => dleColSide(b) === 'left')
+                             .map(b => dleRenderBlock(b, model)).filter(Boolean).join('\n');
+            const rHtml = run.filter(b => dleColSide(b) === 'right')
+                             .map(b => dleRenderBlock(b, model)).filter(Boolean).join('\n');
 
-        // ---- Spacer with configurable height ----
-        if (blk.type === 'spacer') {
-            const h = props.height || 8;
-            if (pendingClearfix) { parts.push('<div style="clear:both;"></div>'); pendingClearfix = false; }
-            parts.push(`<div style="height:${h}mm;"></div>`);
-            continue;
-        }
-
-        // ---- Logo with configurable size ----
-        if (blk.type === 'logo') {
-            const h = props.height || 20;
-            const w = props.width  || 50;
-            const src = props.src  || '';
-            if (pendingClearfix && !inRow) { parts.push('<div style="clear:both;"></div>'); pendingClearfix = false; }
-            if (src) {
-                parts.push(`<div style="padding:2mm 0;"><img src="${src}" style="max-height:${h}mm; max-width:${w}mm;" alt="Logo"/></div>`);
+            if (lHtml && rHtml) {
+                // Band settings come from the first block that defines them
+                const pick = (k) => {
+                    for (const b of run) {
+                        const v = (b.props || {})[k];
+                        if (v !== undefined && v !== null && v !== '') return v;
+                    }
+                    return undefined;
+                };
+                let lw = parseFloat(pick('col_width'));
+                if (!(lw >= 10 && lw <= 90)) lw = 50;
+                const gap    = parseFloat(pick('col_gap'));
+                const gapMm  = (gap >= 0 && gap <= 30) ? gap : 6;
+                // Widths total 100% and the gap lives inside the left cell's
+                // padding — `box-sizing:border-box` is global, so nothing overflows.
+                parts.push(dleRowHtml([
+                    { html: lHtml, width: lw,      padRight: gapMm },
+                    { html: rHtml, width: 100 - lw },
+                ], _VALIGN_CSS[pick('col_valign')] || ''));
             } else {
-                parts.push(`<div style="padding:2mm 0;"><div style="width:${w}mm; height:${h}mm; display:flex; align-items:center; justify-content:center; background:#f5f5f5; border:1pt dashed #bbb; color:#aaa; font-size:9pt; font-style:italic;">Company Logo</div></div>`);
+                // Nothing opposite — a lone column would just waste the page width
+                if (lHtml) parts.push(lHtml);
+                if (rHtml) parts.push(rHtml);
             }
+            i = j - 1;
             continue;
         }
 
-        // ---- Standard content blocks ----
-        const html = dleBlockHtml(blk.type, model, props);
+        // ---- Standard content block ----
+        const html = dleRenderBlock(blk, model);
         if (!html) continue;
-
-        if (DLE_FLOAT_BLOCKS.has(blk.type)) {
-            pendingClearfix = true;
-        } else if (!inRow) {
-            if (pendingClearfix) { parts.push('<div style="clear:both;"></div>'); pendingClearfix = false; }
-        }
-
-        if (props.same_line && !DLE_FLOAT_BLOCKS.has(blk.type)) {
-            const ilw = props.width || 50;
-            parts.push(`<div style="display:inline-block;vertical-align:top;width:${ilw}%;box-sizing:border-box;">${html}</div>`);
-        } else {
-            parts.push(html);
-        }
+        if (row) row.cols[row.cols.length - 1].parts.push(html);
+        else     parts.push(html);
     }
 
-    // Close any unclosed row
-    if (inRow) parts.push('</div></div>');
-    if (pendingClearfix) parts.push('<div style="clear:both;"></div>');
+    flushRow();
 
     return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${label} - {{doc_number}}</title>\n${DLE_CSS}\n</head><body>\n${parts.join('\n\n')}\n</body></html>`;
 }
@@ -7200,6 +7316,41 @@ class DocumentLayoutEditor extends Component {
         if (id > 0) window.open(`/report/html/${this.state.docModel}/${id}`, '_blank');
     }
 
+    // Bring a stored layout up to the column model.
+    // Runs on every load; both steps are self-disabling once a layout is re-saved,
+    // because every block then carries an explicit `col` value.
+    migrateBlocks(raw) {
+        const blocks = (Array.isArray(raw) ? raw : []).map(b => ({ ...b, props: { ...(b.props || {}) } }));
+        const notes  = [];
+
+        // 1. Legacy `same_line` / `width` inline pairing → column placement
+        let sameLine = 0;
+        for (const b of blocks) {
+            if (b.props.same_line === undefined) continue;
+            if (b.props.same_line && b.props.col === undefined) {
+                b.props.col = 'left';
+                if (b.type !== 'logo' && b.props.width) b.props.col_width = b.props.width;
+                sameLine++;
+            }
+            delete b.props.same_line;
+        }
+        if (sameLine) notes.push(`${sameLine} "Same Line" block(s) converted to columns`);
+
+        // 2. Layouts saved before columns existed: put the document details beside
+        //    the recipient, which is where they could never go before.
+        if (!blocks.some(b => b.props.col !== undefined)) {
+            const to = blocks.find(b => b.type === 'to_address');
+            const dd = blocks.find(b => b.type === 'doc_details');
+            if (to && dd) {
+                to.props.col = 'left';
+                if (to.props.col_width === undefined) to.props.col_width = 55;
+                dd.props.col = 'right';
+                notes.push('document details moved beside the recipient address');
+            }
+        }
+        return { blocks, notes };
+    }
+
     async onDocTypeChange(model) {
         this.state.docModel      = model;
         this.state.selectedBlock = null;
@@ -7236,14 +7387,14 @@ class DocumentLayoutEditor extends Component {
             const cfgRows = await RpcService.call('ir.config.parameter', 'search_read',
                 [[['key', '=', cfgKey]]], { fields: ['id', 'value'], limit: 1 });
             if (cfgRows && cfgRows.length > 0 && cfgRows[0].value) {
-                this.state.blocks = JSON.parse(cfgRows[0].value);
+                const migrated = this.migrateBlocks(JSON.parse(cfgRows[0].value));
+                this.state.blocks = migrated.blocks;
+                if (migrated.notes.length) this.addLog(`Layout upgraded — ${migrated.notes.join('; ')}`);
             } else {
-                const defaults = DLE_DEFAULT_BLOCKS[model] || [];
-                this.state.blocks = defaults.map(t => ({ type: t, visible: true, props: {} }));
+                this.state.blocks = dleDefaultBlocks(model);
             }
         } catch (e) {
-            const defaults = DLE_DEFAULT_BLOCKS[model] || [];
-            this.state.blocks = defaults.map(t => ({ type: t, visible: true, props: {} }));
+            this.state.blocks = dleDefaultBlocks(model);
         }
         // Load design settings
         try {
@@ -8995,6 +9146,7 @@ const CUSTOM_VIEWS = {
     'barcode.scan':       BarcodeScan,
     'part.search':        PartSearch,
     'bank.reconcile':     BankReconcile,
+    'company.admin':      CompanyAdmin,
 };
 
 // ----------------------------------------------------------------

@@ -35,8 +35,9 @@ namespace odoo::infrastructure {
 struct Session {
     std::string    sessionId;
     int            uid         = 0;    ///< res.users id; 0 = anonymous
-    std::string    login;              ///< e.g. "admin"
-    std::string    db;                 ///< database name
+    std::string    login;              ///< e.g. "admin" (local login in this tenant)
+    std::string    db;                 ///< database name (the active tenant)
+    std::string    identity;           ///< global cross-tenant identity (docs/072 control plane); "" = single-tenant
     nlohmann::json context = nlohmann::json::object(); ///< user context
 
     // Enriched fields populated after authentication

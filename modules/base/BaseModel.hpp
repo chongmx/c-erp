@@ -94,7 +94,9 @@ public:
     // IModel — CRUD
     // ----------------------------------------------------------
     int create(const nlohmann::json& values) override {
-        fromJson(values);
+        nlohmann::json vals = values;
+        coerceNumericStrings_(vals);   // "330" -> 330 before the member round-trip
+        fromJson(vals);
         const auto errors = static_cast<TDerived*>(this)->validate();
         if (!errors.empty())
             throw std::runtime_error("Validation failed: " + errors[0]);
@@ -151,6 +153,7 @@ public:
                const nlohmann::json&    values) override {
         // OCC: work on a mutable copy so we can strip the concurrency sentinel
         nlohmann::json vals = values;
+        coerceNumericStrings_(vals);   // "330" -> 330 so scaled fields scale
 
         // OCC: extract __expected_write_date before building SET clause
         std::string expectedWd;
@@ -438,6 +441,43 @@ private:
         return s;
     }
 
+    // HTML <input type="number"> sends its value as a STRING ("330"), and so do
+    // CSV import and many API clients. Coerce those to JSON numbers for every
+    // registered NUMERIC field, up front, so both write paths agree:
+    //   • create() round-trips through typed members whose deserializeFields do
+    //     `is_number()` checks — a string was dropped, leaving the 0 default;
+    //   • write()/create() then scale via normalizeForDb_, which needs a number.
+    // Without this, keying 330 into a rate stored 0 (create) or 0.00033 (write).
+    // Non-numeric strings and non-registered keys are left untouched.
+    void coerceNumericStrings_(nlohmann::json& v) const {
+        if (!v.is_object()) return;
+        for (auto it = v.begin(); it != v.end(); ++it) {
+            if (!it.value().is_string() || !fieldRegistry_.has(it.key())) continue;
+            const auto& fd = fieldRegistry_.get(it.key());
+            const bool numeric = fd.scaled
+                              || fd.type == FieldType::Monetary
+                              || fd.type == FieldType::Float
+                              || fd.type == FieldType::Integer;
+            if (!numeric) continue;
+            const std::string s = it.value().get<std::string>();
+            if (s.empty()) {                       // cleared numeric field -> 0
+                it.value() = (fd.type == FieldType::Integer)
+                                 ? nlohmann::json(0) : nlohmann::json(0.0);
+                continue;
+            }
+            try {
+                std::size_t pos = 0;
+                if (fd.type == FieldType::Integer) {
+                    long long n = std::stoll(s, &pos);
+                    if (pos == s.size()) it.value() = n;
+                } else {
+                    double d = std::stod(s, &pos);
+                    if (pos == s.size()) it.value() = d;
+                }
+            } catch (...) { /* not numeric — leave as-is, let validation reject */ }
+        }
+    }
+
     // Odoo JSON uses `false` for null FK/integer values and `[id,"Name"]` arrays
     // for set Many2one values.  Neither is accepted by PostgreSQL for integer
     // columns — normalise them before binding.
@@ -466,8 +506,22 @@ private:
         // write(), CSV import — is covered in one place. Money::fromJson
         // rounds at scale 6, so 0.1 arriving as 0.09999999999999999 still
         // lands on exactly 100000 micros.
-        if (fdef.scaled && val.is_number())
-            return nlohmann::json(core::Money::fromJson(val.get<double>()).toDb());
+        //
+        // MUST handle numeric STRINGS as well as JSON numbers: HTML <input
+        // type="number"> yields e.target.value as a STRING ("330"), and so do
+        // CSV import and many API clients. A string skipped this conversion,
+        // landing "330" in the BIGINT column raw — read back ÷1e6 = 0.00033,
+        // the factor-of-a-million bug. Scale the string too.
+        if (fdef.scaled) {
+            if (val.is_number())
+                return nlohmann::json(core::Money::fromJson(val.get<double>()).toDb());
+            if (val.is_string()) {
+                const std::string s = val.get<std::string>();
+                if (s.empty()) return nlohmann::json(static_cast<long long>(0));  // cleared -> 0
+                try { return nlohmann::json(core::Money::parse(s).toDb()); }
+                catch (...) { /* not a number — leave as-is, let the DB reject it */ }
+            }
+        }
 
         return val;
     }

@@ -6,6 +6,7 @@
 // =============================================================
 #include "AccountModule.hpp"
 #include "BaseModel.hpp"
+#include "RecordRuleSql.hpp"
 #include "IrSequence.hpp"
 #include "PaymentAllocation.hpp"
 #include <map>
@@ -1646,11 +1647,14 @@ private:
         auto conn = db_->acquire(); pqxx::work txn{conn.get()};
         std::string sql = R"(
             SELECT l.id, l.name, l.date, l.amount, l.account_id, a.name AS account_name
-            FROM account_analytic_line l LEFT JOIN account_analytic_account a ON a.id = l.account_id )";
-        pqxx::params p;
-        if (acctFilter > 0) { sql += " WHERE l.account_id=$1"; p.append(acctFilter); }
+            FROM account_analytic_line l LEFT JOIN account_analytic_account a ON a.id = l.account_id WHERE TRUE )";
+        pqxx::params p; int pc = 0;
+        if (acctFilter > 0) { sql += " AND l.account_id=$1"; p.append(acctFilter); pc = 1; }
+        // S-30: enforce ir.rule on this custom read (record-rule bypass fix, 071 §1.2).
+        core::appendRecordRuleSubquery(sql, p, "account.analytic.line", core::RuleOp::Read,
+                                       extractContext_(call), "account_analytic_line", "l.id", pc);
         sql += " ORDER BY l.date DESC, l.id DESC LIMIT " + std::to_string(lim);
-        auto res = acctFilter > 0 ? txn.exec(sql, p) : txn.exec(sql);
+        auto res = txn.exec(sql, p);
         nlohmann::json arr = nlohmann::json::array();
         for (const auto& row : res) {
             nlohmann::json j;
@@ -1811,11 +1815,14 @@ private:
         std::string sql = R"(
             SELECT l.id, l.statement_id, l.date, l.name, l.payment_ref, l.amount,
                    l.is_reconciled, l.partner_id, rp.name AS partner_name, l.reconciled_move_id
-            FROM account_bank_statement_line l LEFT JOIN res_partner rp ON rp.id = l.partner_id )";
-        pqxx::params p;
-        if (stmtFilter > 0) { sql += " WHERE l.statement_id=$1"; p.append(stmtFilter); }
+            FROM account_bank_statement_line l LEFT JOIN res_partner rp ON rp.id = l.partner_id WHERE TRUE )";
+        pqxx::params p; int pc = 0;
+        if (stmtFilter > 0) { sql += " AND l.statement_id=$1"; p.append(stmtFilter); pc = 1; }
+        // S-30: enforce ir.rule on this custom read (record-rule bypass fix, 071 §1.2).
+        core::appendRecordRuleSubquery(sql, p, "account.bank.statement.line", core::RuleOp::Read,
+                                       extractContext_(call), "account_bank_statement_line", "l.id", pc);
         sql += " ORDER BY l.date, l.id";
-        auto res = stmtFilter > 0 ? txn.exec(sql, p) : txn.exec(sql);
+        auto res = txn.exec(sql, p);
         nlohmann::json arr = nlohmann::json::array();
         for (const auto& row : res) {
             nlohmann::json j;
@@ -1879,7 +1886,7 @@ private:
 
         auto conn = db_->acquire(); pqxx::work txn{conn.get()};
         auto ln = txn.exec(
-            "SELECT bsl.amount, bsl.company_id, bs.journal_id, bsl.is_reconciled "
+            "SELECT bsl.amount, bsl.company_id, bs.journal_id, bsl.is_reconciled, bsl.partner_id "
             "FROM account_bank_statement_line bsl JOIN account_bank_statement bs ON bs.id=bsl.statement_id "
             "WHERE bsl.id=$1", pqxx::params{lineId});
         if (ln.empty()) throw std::runtime_error("statement line not found");
@@ -1887,6 +1894,31 @@ private:
         const long long amount = ln[0]["amount"].as<long long>(0);
         const int comp = ln[0]["company_id"].is_null() ? 1 : ln[0]["company_id"].as<int>();
         const int jid  = ln[0]["journal_id"].as<int>();
+        const int lnPartner = ln[0]["partner_id"].is_null() ? 0 : ln[0]["partner_id"].as<int>();
+
+        // 071 §1.5: revalidate the target move before mutating it. Without this a
+        // billing user could drive an unrelated or already-paid move to 'paid' and
+        // post a bank entry against it. It must be a posted, still-open customer/
+        // vendor invoice in the SAME company (and same partner, when both name one).
+        {
+            auto mv = txn.exec(
+                "SELECT state, amount_residual, move_type, company_id, partner_id "
+                "FROM account_move WHERE id=$1", pqxx::params{moveId});
+            if (mv.empty()) throw infrastructure::ValidationError("Reconcile: invoice not found.");
+            const std::string mState = mv[0]["state"].c_str();
+            const std::string mType  = mv[0]["move_type"].c_str();
+            const long long   mResid = mv[0]["amount_residual"].is_null() ? 0 : mv[0]["amount_residual"].as<long long>(0);
+            const int mComp    = mv[0]["company_id"].is_null() ? 0 : mv[0]["company_id"].as<int>();
+            const int mPartner = mv[0]["partner_id"].is_null() ? 0 : mv[0]["partner_id"].as<int>();
+            const bool isInvoice = (mType=="out_invoice"||mType=="in_invoice"||mType=="out_refund"||mType=="in_refund");
+            if (mState != "posted") throw infrastructure::ValidationError("Reconcile: the invoice is not posted.");
+            if (!isInvoice)         throw infrastructure::ValidationError("Reconcile: the target is not a customer/vendor invoice.");
+            if (mResid <= 0)        throw infrastructure::ValidationError("Reconcile: the invoice is already fully paid.");
+            if (mComp > 0 && comp != mComp)
+                                    throw infrastructure::ValidationError("Reconcile: the invoice belongs to a different company.");
+            if (lnPartner > 0 && mPartner > 0 && lnPartner != mPartner)
+                                    throw infrastructure::ValidationError("Reconcile: the invoice partner does not match the statement line.");
+        }
 
         // Bank account = journal default, else code 1100.
         int bankAcct = 0;
