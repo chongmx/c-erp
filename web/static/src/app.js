@@ -167,13 +167,21 @@ class ListView extends Component {
 // ----------------------------------------------------------------
 class FormView extends Component {
     static template = xml`
-        <div class="view-form">
-            <div class="view-toolbar">
-                <button class="btn" t-on-click="onBack">← Back</button>
-                <button t-if="!state.isNew" class="btn btn-primary" t-on-click="onSave">Save</button>
-                <button t-if="!state.isNew" class="btn btn-danger" t-on-click="onDelete">Delete</button>
-                <button t-if="state.isNew"  class="btn btn-primary" t-on-click="onCreate">Create</button>
+        <div class="gf-shell">
+            <div class="gf-header">
+                <div class="gf-breadcrumb">
+                    <span class="gf-bc-link" t-on-click="onBack" t-esc="listTitle"/>
+                    <span class="gf-bc-sep">›</span>
+                    <span class="gf-bc-cur" t-esc="recordTitle"/>
+                </div>
+                <div class="gf-actions">
+                    <button t-if="state.isNew"  class="btn btn-primary" t-on-click="onCreate">Create</button>
+                    <button t-if="!state.isNew" class="btn btn-primary" t-on-click="onSave">Save</button>
+                    <button t-if="!state.isNew" class="btn btn-danger" t-on-click="onDelete">Delete</button>
+                    <button class="btn" t-on-click="onBack">Discard</button>
+                </div>
             </div>
+
             <t t-if="state.loading">
                 <div class="loading">Loading…</div>
             </t>
@@ -187,31 +195,50 @@ class FormView extends Component {
                 <div class="error" t-esc="state.error"/>
             </t>
             <t t-else="">
-                <div class="form-body" t-on-change="onFormChange" t-on-input="onFormInput" t-on-click="onFormClick">
-                    <t t-foreach="scalarFields" t-as="f" t-key="f.name">
-                        <div class="form-row">
-                            <label class="form-label" t-esc="f.label"/>
-                            <t t-if="f.type === 'many2one'">
-                                <select class="form-input" t-att-data-field="f.name">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.relOptions[f.name] || []" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="this.getM2oId(state.record[f.name]) === opt.id ? true : undefined">
-                                            <t t-esc="opt.display"/>
-                                        </option>
+                <div class="gf-card" t-on-change="onFormChange" t-on-input="onFormInput" t-on-click="onFormClick">
+                    <h1 class="gf-title" t-esc="recordTitle"/>
+                    <div class="gf-grid">
+                        <t t-foreach="scalarFields" t-as="f" t-key="f.name">
+                            <div t-attf-class="gf-field{{ f.type === 'text' ? ' gf-field-wide' : '' }}{{ f.type === 'boolean' ? ' gf-field-bool' : '' }}">
+                                <label class="gf-label" t-esc="f.label"/>
+                                <div class="gf-control">
+                                    <t t-if="f.type === 'many2one'">
+                                        <div class="gf-m2o">
+                                            <select class="form-input" t-att-data-field="f.name">
+                                                <option value="0">—</option>
+                                                <t t-foreach="state.relOptions[f.name] || []" t-as="opt" t-key="opt.id">
+                                                    <option t-att-value="opt.id"
+                                                            t-att-selected="this.getM2oId(state.record[f.name]) === opt.id ? true : undefined">
+                                                        <t t-esc="opt.display"/>
+                                                    </option>
+                                                </t>
+                                            </select>
+                                            <button class="gf-addnew" t-att-data-addnew="f.name" title="Add new…">＋</button>
+                                        </div>
                                     </t>
-                                </select>
-                            </t>
-                            <t t-else="">
-                                <input class="form-input"
-                                       t-att-type="f.type === 'boolean' ? 'checkbox' : f.type === 'date' || f.type === 'datetime' ? 'date' : 'text'"
-                                       t-att-checked="f.type === 'boolean' ? !!state.record[f.name] : undefined"
-                                       t-att-value="f.type !== 'boolean' ? formatValue(state.record[f.name]) : undefined"
-                                       t-att-data-field="f.name"
-                                       t-att-data-type="f.type"/>
-                            </t>
-                        </div>
-                    </t>
+                                    <t t-elif="f.type === 'boolean'">
+                                        <input type="checkbox" class="gf-check"
+                                               t-att-checked="!!state.record[f.name]"
+                                               t-att-data-field="f.name" t-att-data-type="'boolean'"/>
+                                    </t>
+                                    <t t-elif="f.type === 'text'">
+                                        <textarea class="form-input gf-textarea"
+                                                  t-att-data-field="f.name" t-att-data-type="'text'"><t t-esc="formatValue(state.record[f.name])"/></textarea>
+                                    </t>
+                                    <t t-else="">
+                                        <input class="form-input"
+                                               t-att-type="f.type === 'date' || f.type === 'datetime' ? 'date' : (f.type === 'integer' || f.type === 'float' || f.type === 'monetary' ? 'number' : 'text')"
+                                               t-att-step="f.type === 'float' || f.type === 'monetary' ? '0.01' : undefined"
+                                               t-att-value="formatValue(state.record[f.name])"
+                                               t-att-readonly="f.readonly ? true : undefined"
+                                               t-att-data-field="f.name"
+                                               t-att-data-type="f.type"/>
+                                    </t>
+                                </div>
+                            </div>
+                        </t>
+                    </div>
+
                     <t t-foreach="o2mFields" t-as="f" t-key="f.name">
                         <div class="o2m-section">
                             <div class="o2m-title" t-esc="f.label"/>
@@ -230,18 +257,24 @@ class FormView extends Component {
                                             <t t-foreach="this.o2mColumns(f.name)" t-as="col" t-key="col.name">
                                                 <td>
                                                     <t t-if="col.type === 'many2one'">
-                                                        <select class="o2m-input"
-                                                                t-att-data-o2m="f.name"
-                                                                t-att-data-key="line._key"
-                                                                t-att-data-field="col.name">
-                                                            <option value="0">—</option>
-                                                            <t t-foreach="state.relOptions[col.name] || []" t-as="opt" t-key="opt.id">
-                                                                <option t-att-value="opt.id"
-                                                                        t-att-selected="this.getM2oId(line[col.name]) === opt.id ? true : undefined">
-                                                                    <t t-esc="opt.display"/>
-                                                                </option>
-                                                            </t>
-                                                        </select>
+                                                        <div class="gf-m2o">
+                                                            <select class="o2m-input"
+                                                                    t-att-data-o2m="f.name"
+                                                                    t-att-data-key="line._key"
+                                                                    t-att-data-field="col.name">
+                                                                <option value="0">—</option>
+                                                                <t t-foreach="state.relOptions[col.name] || []" t-as="opt" t-key="opt.id">
+                                                                    <option t-att-value="opt.id"
+                                                                            t-att-selected="this.getM2oId(line[col.name]) === opt.id ? true : undefined">
+                                                                        <t t-esc="opt.display"/>
+                                                                    </option>
+                                                                </t>
+                                                            </select>
+                                                            <button class="gf-addnew"
+                                                                    t-att-data-addnew-o2m="f.name"
+                                                                    t-att-data-addnew-field="col.name"
+                                                                    t-att-data-key="line._key" title="Add new…">＋</button>
+                                                        </div>
                                                     </t>
                                                     <t t-elif="col.readonly">
                                                         <span t-esc="line[col.name] !== undefined ? String(line[col.name]) : ''"/>
@@ -266,9 +299,26 @@ class FormView extends Component {
                                     </t>
                                 </tbody>
                             </table>
-                            <button class="btn btn-sm" t-att-data-add-o2m="f.name">+ Add a line</button>
+                            <button class="btn so-add-line" t-att-data-add-o2m="f.name">+ Add a line</button>
                         </div>
                     </t>
+                </div>
+            </t>
+
+            <!-- Add-new related record modal (combobox "Add new…") -->
+            <t t-if="state.addNew">
+                <div class="gf-modal" t-on-click="onModalBackdrop">
+                    <div class="gf-modal-card">
+                        <h3 class="gf-modal-title">New <t t-esc="state.addNew.label"/></h3>
+                        <label class="gf-modal-lbl">Name</label>
+                        <input class="gf-modal-input" t-att-value="state.addNew.name"
+                               t-on-input="onAddNewNameInput" t-on-keydown="onAddNewKey"/>
+                        <div t-if="state.addNew.error" class="gf-modal-err" t-esc="state.addNew.error"/>
+                        <div class="gf-modal-actions">
+                            <button class="btn" t-on-click="closeAddNew">Cancel</button>
+                            <button class="btn btn-primary" t-on-click="submitAddNew">Create</button>
+                        </div>
+                    </div>
                 </div>
             </t>
         </div>
@@ -282,9 +332,55 @@ class FormView extends Component {
             o2mLines:   {},
             o2mMeta:    {},
             deletedIds: {},
+            addNew:     null,   // { field, relation, label, name, error, o2mField?, targetKey? }
         });
         this._nextKey = 1;
         onMounted(() => this.load());
+    }
+
+    // Title for the header breadcrumb (list name) and the current record.
+    get listTitle() {
+        const a = this.props.action || {};
+        return a.name || a.res_model || 'Records';
+    }
+    get recordTitle() {
+        if (this.state.isNew) return 'New';
+        const r = this.state.record || {};
+        return this.formatValue(r.name) || this.formatValue(r.display_name) ||
+               this.formatValue(r.code) || this.formatValue(r.reference) ||
+               ('#' + (r.id || ''));
+    }
+
+    // ---- combobox "Add new…" — create a related record inline ----
+    openAddNew(ctx) { this.state.addNew = { name: '', error: '', ...ctx }; }
+    onAddNewNameInput(e) { if (this.state.addNew) this.state.addNew.name = e.target.value; }
+    onAddNewKey(e) { if (e.key === 'Enter') { e.preventDefault(); this.submitAddNew(); } }
+    closeAddNew() { this.state.addNew = null; }
+    onModalBackdrop(e) { if (e.target === e.currentTarget) this.state.addNew = null; }
+
+    async submitAddNew() {
+        const ctx = this.state.addNew;
+        if (!ctx) return;
+        const name = (ctx.name || '').trim();
+        if (!name) { ctx.error = 'Please enter a name.'; return; }
+        ctx.error = '';
+        try {
+            const id = await RpcService.call(ctx.relation, 'create', [{ name }], {});
+            // Make the new record selectable and select it immediately.
+            const opts = this.state.relOptions[ctx.field] ? [...this.state.relOptions[ctx.field]] : [];
+            opts.push({ id, display: name });
+            this.state.relOptions[ctx.field] = opts;
+            if (ctx.o2mField) {
+                const line = (this.state.o2mLines[ctx.o2mField] || []).find(l => l._key === ctx.targetKey);
+                if (line) line[ctx.field] = id;
+            } else {
+                this.state.record[ctx.field] = id;
+            }
+            this.state.addNew = null;
+        } catch (e) {
+            // Some models need more than a name; say so rather than failing silently.
+            ctx.error = (e && e.message) || 'Could not create this record here — open its own menu to add all details.';
+        }
     }
 
     get formFields() {
@@ -300,7 +396,11 @@ class FormView extends Component {
     }
 
     get scalarFields() {
-        return this.formFields.filter(f => f.type !== 'one2many' && f.type !== 'many2many');
+        // Hide the plumbing columns — they are never user-editable and only
+        // clutter the form (the id is still kept on the record for write()).
+        const HIDE = new Set(['id', 'create_date', 'write_date', '__last_update', 'display_name']);
+        return this.formFields.filter(f =>
+            f.type !== 'one2many' && f.type !== 'many2many' && !HIDE.has(f.name));
     }
 
     get o2mFields() {
@@ -469,7 +569,26 @@ class FormView extends Component {
         const addField = e.target.dataset.addO2m;
         if (addField) { e.preventDefault(); this.addO2mLine(addField); return; }
         const delField = e.target.dataset.delO2m;
-        if (delField) { e.preventDefault(); this.removeO2mLine(delField, e.target.dataset.key); }
+        if (delField) { e.preventDefault(); this.removeO2mLine(delField, e.target.dataset.key); return; }
+        // "Add new…" beside a scalar many2one combobox
+        const newField = e.target.dataset.addnew;
+        if (newField) {
+            e.preventDefault();
+            const f = this.formFields.find(x => x.name === newField);
+            if (f && f.relation) this.openAddNew({ field: f.name, relation: f.relation, label: f.label });
+            return;
+        }
+        // "Add new…" beside a many2one inside an o2m line
+        const newO2m = e.target.dataset.addnewO2m;
+        if (newO2m) {
+            e.preventDefault();
+            const colName = e.target.dataset.addnewField;
+            const meta = (this.state.o2mMeta[newO2m] || {})[colName];
+            if (meta && meta.relation)
+                this.openAddNew({ field: colName, relation: meta.relation,
+                                  label: meta.string || colName,
+                                  o2mField: newO2m, targetKey: e.target.dataset.key });
+        }
     }
 
     addO2mLine(fieldName) {
@@ -831,7 +950,7 @@ class InvoiceFormView extends Component {
                             <span class="so-bc-link" t-on-click.stop="onBack">Invoices</span>
                             <span class="so-bc-sep">›</span>
                         </t>
-                        <span class="so-bc-cur" t-esc="state.record.name || 'Draft Invoice'"/>
+                        <span class="so-bc-cur" t-esc="state.record.name || ('New ' + docLabel)"/>
                     </div>
                     <div class="so-action-btns">
                         <t t-if="props.navTotal and props.navTotal > 1">
@@ -852,6 +971,7 @@ class InvoiceFormView extends Component {
                         </t>
                         <t t-if="isPosted">
                             <button class="btn"           t-on-click.stop="onSave">Save</button>
+                            <button t-if="canReverse" class="btn" t-on-click.stop="onReverse" t-esc="reverseLabel"/>
                             <button class="btn btn-danger" t-on-click.stop="onCancel">Cancel</button>
                         </t>
                         <t t-if="isCancelled">
@@ -1090,6 +1210,17 @@ class InvoiceFormView extends Component {
     get isCancelled()  { return this.state.record.state === 'cancel'; }
     get isPaid()       { return this.state.record.payment_state === 'paid'; }
     get canRegisterPayment() { return this.isPosted && !this.isPaid; }
+
+    // Credit note / refund support (docs/082)
+    get moveType()  { return this.state.record.move_type || 'out_invoice'; }
+    get docLabel()  {
+        return { out_invoice: 'Invoice', out_refund: 'Credit Note',
+                 in_invoice: 'Vendor Bill', in_refund: 'Vendor Refund' }[this.moveType] || 'Invoice';
+    }
+    get isRefund()  { return this.moveType === 'out_refund' || this.moveType === 'in_refund'; }
+    // A posted invoice/bill can be reversed into a credit note / refund.
+    get canReverse()   { return this.isPosted && (this.moveType === 'out_invoice' || this.moveType === 'in_invoice'); }
+    get reverseLabel() { return this.moveType === 'in_invoice' ? 'Add Refund' : 'Add Credit Note'; }
 
     stepClass(step) {
         const order = { draft: 0, posted: 1, cancel: 2 };
@@ -1447,6 +1578,20 @@ class InvoiceFormView extends Component {
         } catch (e) { this.state.error = e.message; }
     }
 
+    // Create a credit note / vendor refund by reversing this posted document.
+    async onReverse() {
+        try {
+            await RpcService.call('account.move', 'action_reverse', [[this.state.record.id]], {});
+            const where = this.moveType === 'in_invoice' ? 'Vendors ▸ Refunds' : 'Customers ▸ Credit Notes';
+            const what  = this.moveType === 'in_invoice' ? 'Refund' : 'Credit note';
+            alert(what + ' created as a draft (reversal of ' + (this.state.record.name || 'this document') +
+                  ').\nReview and Confirm it under ' + where + '.');
+            this.props.onBack();
+        } catch (e) {
+            alert('Could not create the credit note: ' + (e.message || e));
+        }
+    }
+
     async onDelete() {
         if (!confirm('Delete this draft invoice? This cannot be undone.')) return;
         try {
@@ -1650,6 +1795,7 @@ class SaleOrderFormView extends Component {
                             <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
                             <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
                             <button class="btn" t-on-click.stop="onPrint">Print</button>
+                            <button class="btn" t-on-click.stop="onProforma" title="Open a Pro-Forma Invoice PDF the customer can pay against">Pro-Forma Invoice</button>
                         </t>
                         <button class="btn" t-on-click.stop="onBack">Discard</button>
                     </div>
@@ -1836,6 +1982,39 @@ class SaleOrderFormView extends Component {
                             </thead>
                             <tbody>
                                 <t t-foreach="state.lines" t-as="line" t-key="line._key">
+                                    <t t-if="line.display_type === 'line_section'">
+                                        <tr class="inv-row-section">
+                                            <td colspan="7">
+                                                <input class="inv-sect-input"
+                                                       data-line-field="name"
+                                                       t-att-data-key="line._key"
+                                                       t-att-value="line.name || ''"
+                                                       placeholder="Section name…"/>
+                                            </td>
+                                            <td class="so-col-del">
+                                                <button class="btn btn-sm btn-danger"
+                                                        data-del-line="1"
+                                                        t-att-data-key="line._key">✕</button>
+                                            </td>
+                                        </tr>
+                                    </t>
+                                    <t t-elif="line.display_type === 'line_note'">
+                                        <tr class="inv-row-note">
+                                            <td colspan="7">
+                                                <input class="inv-note-input"
+                                                       data-line-field="name"
+                                                       t-att-data-key="line._key"
+                                                       t-att-value="line.name || ''"
+                                                       placeholder="Note…"/>
+                                            </td>
+                                            <td class="so-col-del">
+                                                <button class="btn btn-sm btn-danger"
+                                                        data-del-line="1"
+                                                        t-att-data-key="line._key">✕</button>
+                                            </td>
+                                        </tr>
+                                    </t>
+                                    <t t-else="">
                                     <tr>
                                         <td class="so-col-product">
                                             <select class="o2m-input"
@@ -1894,10 +2073,15 @@ class SaleOrderFormView extends Component {
                                                     t-att-data-key="line._key">✕</button>
                                         </td>
                                     </tr>
+                                    </t>
                                 </t>
                             </tbody>
                         </table>
-                        <button class="btn so-add-line" data-add-line="1">+ Add a line</button>
+                        <div class="so-line-adds">
+                            <button class="btn so-add-line" data-add-line="normal">+ Add a line</button>
+                            <button class="btn so-add-line" data-add-line="section">+ Add a section</button>
+                            <button class="btn so-add-line" data-add-line="note">+ Add a note</button>
+                        </div>
 
                         <div class="so-footer">
                             <div class="so-notes-wrap">
@@ -2096,7 +2280,7 @@ class SaleOrderFormView extends Component {
         try {
             const lineFields = [
                 'id', 'product_id', 'name', 'product_uom_qty', 'product_uom_id',
-                'price_unit', 'discount', 'price_subtotal',
+                'price_unit', 'discount', 'price_subtotal', 'display_type',
             ];
             const rows = await RpcService.call('sale.order.line', 'search_read',
                 [[['order_id', '=', this.props.recordId]]],
@@ -2193,8 +2377,11 @@ class SaleOrderFormView extends Component {
 
     onAnyClick(e) {
         if (this.state.invoiceMode || this.state.invoiceListMode) return;
-        if (e.target.dataset.addLine) {
+        const addType = e.target.dataset.addLine;
+        if (addType) {
             e.preventDefault();
+            const dt = addType === 'section' ? 'line_section'
+                     : addType === 'note'    ? 'line_note' : '';
             this.state.lines.push({
                 _key:            String(this._nextKey++),
                 id:              null,
@@ -2205,6 +2392,7 @@ class SaleOrderFormView extends Component {
                 price_unit:      0,
                 discount:        0,
                 price_subtotal:  0,
+                display_type:    dt,
             });
             return;
         }
@@ -2275,14 +2463,16 @@ class SaleOrderFormView extends Component {
             this.state.deletedLineIds = [];
         }
         for (const line of this.state.lines) {
+            const isSN = line.display_type === 'line_section' || line.display_type === 'line_note';
             const vals = {
                 order_id:        parentId,
-                product_id:      this.getM2oId(line.product_id),
-                name:            line.name            || '',
-                product_uom_qty: parseFloat(line.product_uom_qty) || 1,
-                product_uom_id:  this.getM2oId(line.product_uom_id) || false,
-                price_unit:      parseFloat(line.price_unit)      || 0,
-                discount:        parseFloat(line.discount)         || 0,
+                product_id:      isSN ? false : this.getM2oId(line.product_id),
+                name:            line.name || '',
+                product_uom_qty: isSN ? 0 : (parseFloat(line.product_uom_qty) || 1),
+                product_uom_id:  isSN ? false : (this.getM2oId(line.product_uom_id) || false),
+                price_unit:      isSN ? 0 : (parseFloat(line.price_unit) || 0),
+                discount:        isSN ? 0 : (parseFloat(line.discount) || 0),
+                display_type:    line.display_type || '',
             };
             if (!line.id) {
                 await RpcService.call('sale.order.line', 'create', [vals], {});
@@ -2478,6 +2668,7 @@ class SaleOrderFormView extends Component {
     }
 
     onPrint() { window.open('/report/pdf/sale.order/' + this.state.record.id, '_blank'); }
+    onProforma() { window.open('/report/pdf/sale.order/' + this.state.record.id + '?proforma=1', '_blank'); }
 }
 
 // ----------------------------------------------------------------
@@ -3162,7 +3353,10 @@ class TransferFormView extends Component {
                         <span class="so-bc-cur" t-esc="state.record.name || 'New Transfer'"/>
                     </div>
                     <div class="so-action-btns">
-                        <t t-if="canEdit">
+                        <t t-if="isNew">
+                            <button class="btn btn-primary" t-on-click.stop="onCreate">Create</button>
+                        </t>
+                        <t t-elif="canEdit">
                             <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
                         </t>
                         <t t-if="!isNew">
@@ -3275,7 +3469,19 @@ class TransferFormView extends Component {
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Operation Type</label>
-                                <span class="so-field-val" t-esc="pickingTypeName"/>
+                                <t t-if="isNew">
+                                    <select class="form-input" data-field="picking_type_id">
+                                        <option value="0">—</option>
+                                        <t t-foreach="state.pickingTypes" t-as="pt" t-key="pt.id">
+                                            <option t-att-value="pt.id"
+                                                    t-att-selected="getM2oId(state.record.picking_type_id) === pt.id ? true : undefined"
+                                                    t-esc="pt.display"/>
+                                        </t>
+                                    </select>
+                                </t>
+                                <t t-else="">
+                                    <span class="so-field-val" t-esc="pickingTypeName"/>
+                                </t>
                             </div>
                         </div>
                     </div>
@@ -3387,6 +3593,7 @@ class TransferFormView extends Component {
             partners:    [],
             users:          [],
             locations:      [],
+            pickingTypes:   [],
             companyName:    '',
             activeTab:      'operations',
             chatRefreshKey: 0,
@@ -3403,22 +3610,40 @@ class TransferFormView extends Component {
         this.state.loading = true;
         this.state.error   = null;
         try {
-            const recs = await RpcService.call('stock.picking', 'read',
-                [[this.props.recordId]],
-                { fields: ['name','state','partner_id','location_id','location_dest_id',
-                           'scheduled_date','origin','picking_type_id','sale_id','purchase_id',
-                           'company_id','user_id'] });
-            if (!recs || recs.length === 0) throw new Error('Transfer not found');
-            this.state.record = recs[0];
+            if (this.props.recordId) {
+                const recs = await RpcService.call('stock.picking', 'read',
+                    [[this.props.recordId]],
+                    { fields: ['name','state','partner_id','location_id','location_dest_id',
+                               'scheduled_date','origin','picking_type_id','sale_id','purchase_id',
+                               'company_id','user_id'] });
+                if (!recs || recs.length === 0) throw new Error('Transfer not found');
+                this.state.record = recs[0];
+            } else {
+                // New transfer: no record to read (reading a null id 500'd — the
+                // "Internal Error" on Operations → New). Start a draft and let the
+                // user pick an Operation Type, which supplies the locations.
+                this.state.record = { state: 'draft' };
+                const types = await RpcService.call('stock.picking.type', 'search_read',
+                    [[]], { fields: ['id','name','default_location_src_id','default_location_dest_id'], limit: 100 });
+                this.state.pickingTypes = (Array.isArray(types) ? types : []).map(t => ({
+                    id: t.id, display: t.name,
+                    src:  this.getM2oId(t.default_location_src_id),
+                    dest: this.getM2oId(t.default_location_dest_id),
+                }));
+            }
 
-            // Partners, users, and locations in parallel
+            // Partners, users, and locations in parallel. Each is wrapped so a
+            // single failing lookup (e.g. an 'active' column that isn't
+            // registered as filterable on that model) yields an empty dropdown
+            // instead of breaking the whole form with an "internal error".
+            const safe = pr => pr.catch(() => []);
             const [parts, users, locs] = await Promise.all([
-                RpcService.call('res.partner', 'search_read',
-                    [[['active','=',true]]], { fields: ['id','name'], limit: 200 }),
-                RpcService.call('res.users', 'search_read',
-                    [[['active','=',true]]], { fields: ['id','name'], limit: 200 }),
-                RpcService.call('stock.location', 'search_read',
-                    [[['active','=',true]]], { fields: ['id','name','complete_name'], limit: 500 }),
+                safe(RpcService.call('res.partner', 'search_read',
+                    [[]], { fields: ['id','name'], limit: 200 })),
+                safe(RpcService.call('res.users', 'search_read',
+                    [[]], { fields: ['id','name'], limit: 200 })),
+                safe(RpcService.call('stock.location', 'search_read',
+                    [[]], { fields: ['id','name','complete_name'], limit: 500 })),
             ]);
             this.state.partners  = (Array.isArray(parts) ? parts : []).map(p => ({ id: p.id, display: p.name }));
             this.state.users     = (Array.isArray(users) ? users : []).map(u => ({ id: u.id, display: u.name }));
@@ -3442,13 +3667,14 @@ class TransferFormView extends Component {
                 } catch (_) {}
             }
 
-            await this.loadMoves();
-
-            // Load location names for display in non-draft mode
-            await this.loadLocNames([
-                this.getM2oId(this.state.record.location_id),
-                this.getM2oId(this.state.record.location_dest_id),
-            ]);
+            if (this.props.recordId) {
+                await this.loadMoves();
+                // Load location names for display in non-draft mode
+                await this.loadLocNames([
+                    this.getM2oId(this.state.record.location_id),
+                    this.getM2oId(this.state.record.location_dest_id),
+                ]);
+            }
         } catch (e) {
             this.state.error = e.message || 'Failed to load transfer';
         } finally {
@@ -3576,6 +3802,27 @@ class TransferFormView extends Component {
             }
             await RpcService.call('stock.picking', 'write', [[this.props.recordId], vals]);
         } catch (e) { alert('Save failed: ' + (e.message || e)); }
+    }
+
+    // Create a new draft transfer. The Operation Type supplies the source and
+    // destination locations (both required), so it is the one mandatory choice.
+    async onCreate() {
+        const ptId = this.getM2oId(this.state.record.picking_type_id);
+        const pt   = this.state.pickingTypes.find(t => t.id === ptId);
+        if (!pt) { alert('Please choose an Operation Type first.'); return; }
+        try {
+            const vals = {
+                picking_type_id: ptId,
+                location_id:      this.getM2oId(this.state.record.location_id)      || pt.src  || false,
+                location_dest_id: this.getM2oId(this.state.record.location_dest_id) || pt.dest || false,
+                partner_id:       this.getM2oId(this.state.record.partner_id) || false,
+                scheduled_date:   this.state.record.scheduled_date || false,
+                user_id:          this.getM2oId(this.state.record.user_id)    || false,
+                state:            'draft',
+            };
+            await RpcService.call('stock.picking', 'create', [vals]);
+            this.props.onBack();   // back to the list, where the new draft appears
+        } catch (e) { alert('Create failed: ' + (e.message || e)); }
     }
 
     async onConfirm() {
@@ -9119,6 +9366,870 @@ class ProductCategoryListView extends Component {
 }
 
 // ----------------------------------------------------------------
+// AssetFormView — account.asset detail: confirm → schedule → depreciate (docs/084)
+// ----------------------------------------------------------------
+class AssetFormView extends Component {
+    static components = { DatePicker };
+    static template = xml`
+        <div class="so-shell" t-on-change="onChange" t-on-input="onInput">
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Assets</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.name || 'New Asset'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <t t-if="isNew"><button class="btn btn-primary" t-on-click.stop="onCreate">Create</button></t>
+                        <t t-else="">
+                            <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                            <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
+                        </t>
+                        <button class="btn" t-on-click.stop="onBack">Back</button>
+                    </div>
+                </div>
+            </div>
+            <div class="so-statusbar">
+                <div class="so-sb-left">
+                    <t t-if="!isNew and state.record.state === 'draft'">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onConfirm">Confirm — build schedule</button>
+                    </t>
+                    <t t-if="state.record.state === 'open'">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onDepreciate">Post depreciation</button>
+                        <button class="btn ghost so-wf-btn"       t-on-click.stop="onClose">Set to closed</button>
+                    </t>
+                </div>
+                <div class="so-stepper">
+                    <div t-attf-class="so-step{{stepClass('draft')}}">Draft</div>
+                    <div t-attf-class="so-step{{stepClass('open')}}">Running</div>
+                    <div t-attf-class="so-step{{stepClass('close')}}">Closed</div>
+                </div>
+            </div>
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="so-card">
+                    <div class="so-card-head">
+                        <h1 class="so-doc-id" t-esc="state.record.name || 'New Asset'"/>
+                        <div class="so-stat-btns">
+                            <div class="so-stat-btn so-stat-btn-disabled"><span class="so-stat-num" t-esc="formatMoney(state.record.value_residual)"/><span class="so-stat-lbl">Book Value</span></div>
+                        </div>
+                    </div>
+                    <div class="so-info-grid">
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl">Asset Name</label>
+                                <input class="form-input" data-field="name" t-att-value="state.record.name || ''"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Asset Type</label>
+                                <select class="form-input" data-field="asset_type_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.types" t-as="o" t-key="o.id"><option t-att-value="o.id" t-att-selected="getM2oId(state.record.asset_type_id) === o.id ? true : undefined" t-esc="o.display"/></t>
+                                </select></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Gross Value</label>
+                                <input class="form-input" type="number" step="0.01" data-field="value" t-att-value="state.record.value !== undefined ? state.record.value : 0" t-att-readonly="isRunning ? true : undefined"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Acquisition Date</label>
+                                <DatePicker value="formatDate(state.record.acquisition_date)" onSelect.bind="setAcqDate"/></div>
+                        </div>
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl"># Depreciations</label>
+                                <input class="form-input" type="number" data-field="number" t-att-value="state.record.number !== undefined ? state.record.number : 5" t-att-readonly="isRunning ? true : undefined"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Months / period</label>
+                                <input class="form-input" type="number" data-field="period_months" t-att-value="state.record.period_months !== undefined ? state.record.period_months : 12" t-att-readonly="isRunning ? true : undefined"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Depreciation Journal</label>
+                                <select class="form-input" data-field="journal_id"><option value="0">—</option>
+                                    <t t-foreach="state.journals" t-as="o" t-key="o.id"><option t-att-value="o.id" t-att-selected="getM2oId(state.record.journal_id) === o.id ? true : undefined" t-esc="o.display"/></t></select></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Expense Account</label>
+                                <select class="form-input" data-field="account_expense_id"><option value="0">—</option>
+                                    <t t-foreach="state.accounts" t-as="o" t-key="o.id"><option t-att-value="o.id" t-att-selected="getM2oId(state.record.account_expense_id) === o.id ? true : undefined" t-esc="o.display"/></t></select></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Depreciation Account</label>
+                                <select class="form-input" data-field="account_depreciation_id"><option value="0">—</option>
+                                    <t t-foreach="state.accounts" t-as="o" t-key="o.id"><option t-att-value="o.id" t-att-selected="getM2oId(state.record.account_depreciation_id) === o.id ? true : undefined" t-esc="o.display"/></t></select></div>
+                        </div>
+                    </div>
+                    <t t-if="state.lines.length">
+                        <div class="so-tabs"><span class="so-tab active">Depreciation Board</span></div>
+                        <table class="so-lines-table">
+                            <thead><tr><th>#</th><th>Date</th><th class="so-col-num">Depreciation</th><th class="so-col-num">Cumulative</th><th class="so-col-num">Book Value</th><th>Status</th></tr></thead>
+                            <tbody>
+                                <t t-foreach="state.lines" t-as="l" t-key="l.id">
+                                    <tr>
+                                        <td t-esc="l.sequence"/>
+                                        <td t-esc="formatDate(l.depreciation_date)"/>
+                                        <td class="so-col-num" t-esc="formatMoney(l.amount)"/>
+                                        <td class="so-col-num" t-esc="formatMoney(l.depreciated_value)"/>
+                                        <td class="so-col-num" t-esc="formatMoney(l.remaining_value)"/>
+                                        <td><span t-attf-class="asset-badge {{ l.posted ? 'posted' : 'draft' }}" t-esc="l.posted ? 'Posted' : 'Draft'"/></td>
+                                    </tr>
+                                </t>
+                            </tbody>
+                        </table>
+                    </t>
+                </div>
+            </t>
+        </div>
+    `;
+    setup() {
+        this.state = useState({ loading: true, error: '', record: {}, lines: [],
+                                types: [], journals: [], accounts: [],
+                                isNew: !this.props.recordId });
+        onMounted(() => this.load());
+    }
+    get isNew()     { return !this.props.recordId; }
+    get isRunning() { return this.state.record.state === 'open' || this.state.record.state === 'close'; }
+    stepClass(s) {
+        const order = { draft: 0, open: 1, close: 2 };
+        const cur = order[this.state.record.state] ?? 0, x = order[s];
+        return x === cur ? ' active' : (x < cur ? ' done' : '');
+    }
+    getM2oId(v) {
+        if (!v && v !== 0) return 0;
+        if (typeof v === 'number') return v;
+        if (Array.isArray(v) && v.length) return typeof v[0] === 'number' ? v[0] : 0;
+        if (typeof v === 'string') return parseInt(v) || 0;
+        return 0;
+    }
+    formatMoney(v) { return (parseFloat(v) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+    formatDate(v)  { return (!v || v === false) ? '' : String(v).substring(0, 10); }
+    async load() {
+        this.state.loading = true; this.state.error = '';
+        try {
+            const [types, journals, accounts] = await Promise.all([
+                RpcService.call('account.asset.type', 'search_read', [[]], { fields: ['id','name'], limit: 200 }).catch(() => []),
+                RpcService.call('account.journal', 'search_read', [[]], { fields: ['id','name'], limit: 200 }).catch(() => []),
+                RpcService.call('account.account', 'search_read', [[]], { fields: ['id','name','code'], limit: 500 }).catch(() => []),
+            ]);
+            this.state.types    = (types || []).map(t => ({ id: t.id, display: t.name }));
+            this.state.journals = (journals || []).map(j => ({ id: j.id, display: j.name }));
+            this.state.accounts = (accounts || []).map(a => ({ id: a.id, display: (a.code ? a.code + ' ' : '') + a.name }));
+            if (this.props.recordId) {
+                const r = await RpcService.call('account.asset', 'read', [[this.props.recordId]],
+                    { fields: ['name','asset_type_id','value','value_residual','acquisition_date',
+                               'number','period_months','account_asset_id','account_depreciation_id',
+                               'account_expense_id','journal_id','state'] });
+                this.state.record = (Array.isArray(r) ? r[0] : r) || {};
+                const lines = await RpcService.call('account.asset.depreciation.line', 'search_read',
+                    [[['asset_id','=',this.props.recordId]]],
+                    { fields: ['id','sequence','depreciation_date','amount','remaining_value','depreciated_value','posted'], limit: 500 });
+                this.state.lines = (Array.isArray(lines) ? lines : []).sort((a, b) => a.sequence - b.sequence);
+            } else {
+                this.state.record = { state: 'draft', number: 5, period_months: 12 };
+                this.state.lines = [];
+            }
+        } catch (e) { this.state.error = e.message || 'Failed to load asset'; }
+        this.state.loading = false;
+    }
+    onChange(e) { const f = e.target.dataset.field; if (f && e.target.tagName === 'SELECT') this.state.record[f] = parseInt(e.target.value) || 0; }
+    onInput(e)  { const f = e.target.dataset.field; if (f && e.target.tagName !== 'SELECT') this.state.record[f] = e.target.value; }
+    setAcqDate(v) { this.state.record.acquisition_date = v; }
+    _vals() {
+        const r = this.state.record;
+        return {
+            name: r.name || '', asset_type_id: this.getM2oId(r.asset_type_id) || false,
+            value: parseFloat(r.value) || 0, acquisition_date: r.acquisition_date || false,
+            number: parseInt(r.number) || 5, period_months: parseInt(r.period_months) || 12,
+            journal_id: this.getM2oId(r.journal_id) || false,
+            account_expense_id: this.getM2oId(r.account_expense_id) || false,
+            account_depreciation_id: this.getM2oId(r.account_depreciation_id) || false,
+        };
+    }
+    async onCreate() { try { await RpcService.call('account.asset', 'create', [this._vals()], {}); this.props.onBack(); } catch (e) { this.state.error = e.message; } }
+    async onSave()   { try { await RpcService.call('account.asset', 'write', [[this.props.recordId], this._vals()], {}); await this.load(); } catch (e) { alert('Save failed: ' + (e.message || e)); } }
+    async onDelete() { try { await RpcService.call('account.asset', 'unlink', [[this.props.recordId]], {}); this.props.onBack(); } catch (e) { alert(e.message || e); } }
+    async onConfirm() { try { await this.onSaveQuiet(); await RpcService.call('account.asset', 'action_confirm', [[this.props.recordId]], {}); await this.load(); } catch (e) { alert('Confirm failed: ' + (e.message || e)); } }
+    async onSaveQuiet() { if (!this.isNew) await RpcService.call('account.asset', 'write', [[this.props.recordId], this._vals()], {}); }
+    async onDepreciate() { try { const n = await RpcService.call('account.asset', 'action_depreciate', [[this.props.recordId]], {}); await this.load(); alert(n ? (n + ' depreciation entr' + (n === 1 ? 'y' : 'ies') + ' posted.') : 'Nothing due yet.'); } catch (e) { alert('Depreciation failed: ' + (e.message || e)); } }
+    async onClose() { try { await RpcService.call('account.asset', 'action_close', [[this.props.recordId]], {}); await this.load(); } catch (e) { alert(e.message || e); } }
+    onBack() { this.props.onBack(); }
+}
+
+// ----------------------------------------------------------------
+// BudgetFormView — account.budget: planned vs actual per position (docs/085)
+// ----------------------------------------------------------------
+class BudgetFormView extends Component {
+    static components = { DatePicker };
+    static template = xml`
+        <div class="so-shell" t-on-change="onChange" t-on-input="onInput" t-on-click="onClick">
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Budgets</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.name || 'New Budget'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <t t-if="isNew"><button class="btn btn-primary" t-on-click.stop="onCreate">Create</button></t>
+                        <t t-else="">
+                            <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                            <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
+                        </t>
+                        <button class="btn" t-on-click.stop="onBack">Back</button>
+                    </div>
+                </div>
+            </div>
+            <div class="so-statusbar">
+                <div class="so-sb-left">
+                    <t t-if="!isNew">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onCompute">Refresh actuals</button>
+                        <t t-if="state.record.state === 'draft'">
+                            <button class="btn so-wf-btn" t-on-click.stop="onConfirm">Confirm</button>
+                        </t>
+                        <t t-if="state.record.state === 'confirm'">
+                            <button class="btn so-wf-btn" t-on-click.stop="onDone">Mark done</button>
+                        </t>
+                        <t t-if="state.record.state === 'done'">
+                            <button class="btn ghost so-wf-btn" t-on-click.stop="onDraft">Reset to draft</button>
+                        </t>
+                    </t>
+                </div>
+                <div class="so-stepper">
+                    <div t-attf-class="so-step{{stepClass('draft')}}">Draft</div>
+                    <div t-attf-class="so-step{{stepClass('confirm')}}">Confirmed</div>
+                    <div t-attf-class="so-step{{stepClass('done')}}">Done</div>
+                </div>
+            </div>
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="so-card">
+                    <div class="so-card-head">
+                        <h1 class="so-doc-id" t-esc="state.record.name || 'New Budget'"/>
+                        <div class="so-stat-btns">
+                            <div class="so-stat-btn so-stat-btn-disabled"><span class="so-stat-num" t-esc="formatMoney(totalPlanned)"/><span class="so-stat-lbl">Planned</span></div>
+                            <div class="so-stat-btn so-stat-btn-disabled"><span class="so-stat-num" t-esc="formatMoney(totalActual)"/><span class="so-stat-lbl">Actual</span></div>
+                        </div>
+                    </div>
+                    <div class="so-info-grid">
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl">Budget Name</label>
+                                <input class="form-input" data-field="name" t-att-value="state.record.name || ''"/></div>
+                        </div>
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl">Period From</label>
+                                <DatePicker value="formatDate(state.record.date_from)" onSelect.bind="setFrom"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Period To</label>
+                                <DatePicker value="formatDate(state.record.date_to)" onSelect.bind="setTo"/></div>
+                        </div>
+                    </div>
+
+                    <div class="so-tabs"><span class="so-tab active">Budget Lines</span></div>
+                    <table class="so-lines-table">
+                        <thead><tr>
+                            <th>Budgetary Position</th>
+                            <th class="so-col-num">Planned</th>
+                            <th class="so-col-num">Actual</th>
+                            <th class="so-col-num">Remaining</th>
+                            <th style="width:180px">Achieved</th>
+                            <th class="so-col-del"/>
+                        </tr></thead>
+                        <tbody>
+                            <t t-foreach="state.lines" t-as="l" t-key="l._key">
+                                <tr>
+                                    <td>
+                                        <select class="o2m-input" data-line-field="post_id" t-att-data-key="l._key">
+                                            <option value="0">—</option>
+                                            <t t-foreach="state.posts" t-as="o" t-key="o.id">
+                                                <option t-att-value="o.id" t-att-selected="getM2oId(l.post_id) === o.id ? true : undefined" t-esc="o.display"/>
+                                            </t>
+                                        </select>
+                                    </td>
+                                    <td class="so-col-num">
+                                        <input class="o2m-input" type="number" step="0.01" data-line-field="planned_amount"
+                                               t-att-data-key="l._key" t-att-value="l.planned_amount !== undefined ? l.planned_amount : 0"/>
+                                    </td>
+                                    <td class="so-col-num" t-esc="formatMoney(l.practical_amount)"/>
+                                    <td class="so-col-num" t-esc="formatMoney(remainingOf(l))"/>
+                                    <td>
+                                        <div class="bg-meter"><div t-attf-class="bg-fill {{ pctOf(l) > 100 ? 'over' : '' }}" t-attf-style="width:{{ pctWidth(l) }}%"/></div>
+                                        <span class="bg-pct" t-esc="pctOf(l) + '%'"/>
+                                    </td>
+                                    <td class="so-col-del">
+                                        <button class="btn btn-sm btn-danger" data-del-line="1" t-att-data-key="l._key">✕</button>
+                                    </td>
+                                </tr>
+                            </t>
+                            <t t-if="!state.lines.length">
+                                <tr><td colspan="6" class="trn-empty-row">No budget lines yet — add one below.</td></tr>
+                            </t>
+                        </tbody>
+                    </table>
+                    <div class="so-line-adds"><button class="btn so-add-line" data-add-line="1">+ Add a line</button></div>
+                </div>
+            </t>
+        </div>
+    `;
+    setup() {
+        this.state = useState({ loading: true, error: '', record: {}, lines: [], posts: [], deleted: [] });
+        this._key = 1;
+        onMounted(() => this.load());
+    }
+    get isNew() { return !this.props.recordId; }
+    get totalPlanned() { return this.state.lines.reduce((s, l) => s + (parseFloat(l.planned_amount) || 0), 0); }
+    get totalActual()  { return this.state.lines.reduce((s, l) => s + (parseFloat(l.practical_amount) || 0), 0); }
+    stepClass(s) {
+        const order = { draft: 0, confirm: 1, done: 2 };
+        const cur = order[this.state.record.state] ?? 0, x = order[s];
+        return x === cur ? ' active' : (x < cur ? ' done' : '');
+    }
+    pctOf(l) {
+        const p = parseFloat(l.planned_amount) || 0, a = parseFloat(l.practical_amount) || 0;
+        return p ? Math.round(a / p * 100) : 0;
+    }
+    remainingOf(l) { return (parseFloat(l.planned_amount) || 0) - (parseFloat(l.practical_amount) || 0); }
+    pctWidth(l) { return Math.max(0, Math.min(100, this.pctOf(l))); }
+    getM2oId(v) {
+        if (!v && v !== 0) return 0;
+        if (typeof v === 'number') return v;
+        if (Array.isArray(v) && v.length) return typeof v[0] === 'number' ? v[0] : 0;
+        if (typeof v === 'string') return parseInt(v) || 0;
+        return 0;
+    }
+    formatMoney(v) { return (parseFloat(v) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+    formatDate(v)  { return (!v || v === false) ? '' : String(v).substring(0, 10); }
+    async load() {
+        this.state.loading = true; this.state.error = '';
+        try {
+            const posts = await RpcService.call('account.budget.post', 'search_read', [[]],
+                { fields: ['id', 'name'], limit: 200 }).catch(() => []);
+            this.state.posts = (posts || []).map(p => ({ id: p.id, display: p.name }));
+            if (this.props.recordId) {
+                const r = await RpcService.call('account.budget', 'read', [[this.props.recordId]],
+                    { fields: ['name', 'date_from', 'date_to', 'state'] });
+                this.state.record = (Array.isArray(r) ? r[0] : r) || {};
+                const lines = await RpcService.call('account.budget.line', 'search_read',
+                    [[['budget_id', '=', this.props.recordId]]],
+                    { fields: ['id', 'post_id', 'planned_amount', 'practical_amount'], limit: 500 });
+                this.state.lines = (Array.isArray(lines) ? lines : []).map(l => ({ _key: String(this._key++), ...l }));
+            } else {
+                this.state.record = { state: 'draft' };
+                this.state.lines = [];
+            }
+        } catch (e) { this.state.error = e.message || 'Failed to load budget'; }
+        this.state.loading = false;
+    }
+    onChange(e) {
+        const lf = e.target.dataset.lineField;
+        if (lf) { const l = this.state.lines.find(x => x._key === e.target.dataset.key); if (l) l[lf] = parseInt(e.target.value) || 0; return; }
+        const f = e.target.dataset.field; if (f && e.target.tagName === 'SELECT') this.state.record[f] = parseInt(e.target.value) || 0;
+    }
+    onInput(e) {
+        if (e.target.tagName === 'SELECT') return;
+        const lf = e.target.dataset.lineField;
+        if (lf) { const l = this.state.lines.find(x => x._key === e.target.dataset.key); if (l) l[lf] = e.target.value; return; }
+        const f = e.target.dataset.field; if (f) this.state.record[f] = e.target.value;
+    }
+    onClick(e) {
+        if (e.target.dataset.addLine) {
+            e.preventDefault();
+            this.state.lines.push({ _key: String(this._key++), id: null, post_id: 0, planned_amount: 0, practical_amount: 0 });
+            return;
+        }
+        if (e.target.dataset.delLine) {
+            e.preventDefault();
+            const k = e.target.dataset.key;
+            const l = this.state.lines.find(x => x._key === k);
+            if (l && l.id) this.state.deleted.push(l.id);
+            this.state.lines = this.state.lines.filter(x => x._key !== k);
+        }
+    }
+    setFrom(v) { this.state.record.date_from = v; }
+    setTo(v)   { this.state.record.date_to   = v; }
+    _vals() {
+        const r = this.state.record;
+        return { name: r.name || '', date_from: r.date_from || false, date_to: r.date_to || false };
+    }
+    async syncLines(budgetId) {
+        if (this.state.deleted.length) {
+            await RpcService.call('account.budget.line', 'unlink', [this.state.deleted], {});
+            this.state.deleted = [];
+        }
+        for (const l of this.state.lines) {
+            const vals = { budget_id: budgetId, post_id: this.getM2oId(l.post_id) || false,
+                           planned_amount: parseFloat(l.planned_amount) || 0 };
+            if (!l.id) await RpcService.call('account.budget.line', 'create', [vals], {});
+            else       await RpcService.call('account.budget.line', 'write', [[l.id], vals], {});
+        }
+    }
+    async onCreate() {
+        try {
+            const id = await RpcService.call('account.budget', 'create', [this._vals()], {});
+            await this.syncLines(id);
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+    async onSave() {
+        try {
+            await RpcService.call('account.budget', 'write', [[this.props.recordId], this._vals()], {});
+            await this.syncLines(this.props.recordId);
+            await this.onCompute();
+        } catch (e) { alert('Save failed: ' + (e.message || e)); }
+    }
+    async onDelete() { try { await RpcService.call('account.budget', 'unlink', [[this.props.recordId]], {}); this.props.onBack(); } catch (e) { alert(e.message || e); } }
+    async onCompute() { try { await RpcService.call('account.budget', 'action_compute', [[this.props.recordId]], {}); await this.load(); } catch (e) { alert('Could not refresh actuals: ' + (e.message || e)); } }
+    async onConfirm() { await this._state('action_confirm'); }
+    async onDone()    { await this._state('action_done'); }
+    async onDraft()   { await this._state('action_draft'); }
+    async _state(m)   { try { await RpcService.call('account.budget', m, [[this.props.recordId]], {}); await this.load(); } catch (e) { alert(e.message || e); } }
+    onBack() { this.props.onBack(); }
+}
+
+// ----------------------------------------------------------------
+// BankAccountFormView — account.bank.account: the debit/credit register (docs/087)
+// Index · Description · Date · Debit · Credit, with a running balance.
+// ----------------------------------------------------------------
+class BankAccountFormView extends Component {
+    static template = xml`
+        <div class="so-shell" t-on-change="onChange" t-on-input="onInput" t-on-click="onClick">
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Bank Accounts</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.name || 'New Bank Account'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <t t-if="isNew"><button class="btn btn-primary" t-on-click.stop="onCreate">Create</button></t>
+                        <t t-else="">
+                            <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                            <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
+                        </t>
+                        <button class="btn" t-on-click.stop="onBack">Back</button>
+                    </div>
+                </div>
+            </div>
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="so-card">
+                    <div class="so-card-head">
+                        <h1 class="so-doc-id" t-esc="state.record.name || 'New Bank Account'"/>
+                        <div class="so-stat-btns">
+                            <div class="so-stat-btn so-stat-btn-disabled">
+                                <span class="so-stat-num" t-esc="formatMoney(balance)"/>
+                                <span class="so-stat-lbl">Balance</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="so-info-grid">
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl">Account Name</label>
+                                <input class="form-input" data-field="name" t-att-value="state.record.name || ''"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Bank</label>
+                                <input class="form-input" data-field="bank_name" t-att-value="state.record.bank_name || ''"/></div>
+                        </div>
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl">Account Number</label>
+                                <input class="form-input" data-field="account_number" t-att-value="state.record.account_number || ''"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Journal</label>
+                                <select class="form-input" data-field="journal_id"><option value="0">—</option>
+                                    <t t-foreach="state.journals" t-as="o" t-key="o.id">
+                                        <option t-att-value="o.id" t-att-selected="getM2oId(state.record.journal_id) === o.id ? true : undefined" t-esc="o.display"/>
+                                    </t></select></div>
+                        </div>
+                    </div>
+
+                    <div class="so-tabs"><span class="so-tab active">Entries</span></div>
+                    <table class="so-lines-table">
+                        <thead><tr>
+                            <th style="width:60px">#</th>
+                            <th>Description</th>
+                            <th style="width:150px">Date</th>
+                            <th class="so-col-num">Debit</th>
+                            <th class="so-col-num">Credit</th>
+                            <th class="so-col-num">Balance</th>
+                            <th class="so-col-del"/>
+                        </tr></thead>
+                        <tbody>
+                            <t t-foreach="rowsWithBalance" t-as="l" t-key="l._key">
+                                <tr>
+                                    <td t-esc="l._idx"/>
+                                    <td><input class="o2m-input" data-line-field="name" t-att-data-key="l._key"
+                                               t-att-value="l.name || ''" placeholder="Description"/></td>
+                                    <td><input class="o2m-input" type="date" data-line-field="date" t-att-data-key="l._key"
+                                               t-att-value="formatDate(l.date)"/></td>
+                                    <td class="so-col-num"><input class="o2m-input" type="number" step="0.01"
+                                               data-line-field="debit" t-att-data-key="l._key"
+                                               t-att-value="l.debit !== undefined ? l.debit : 0"/></td>
+                                    <td class="so-col-num"><input class="o2m-input" type="number" step="0.01"
+                                               data-line-field="credit" t-att-data-key="l._key"
+                                               t-att-value="l.credit !== undefined ? l.credit : 0"/></td>
+                                    <td class="so-col-num" t-esc="formatMoney(l._balance)"/>
+                                    <td class="so-col-del">
+                                        <button class="btn btn-sm btn-danger" data-del-line="1" t-att-data-key="l._key">✕</button>
+                                    </td>
+                                </tr>
+                            </t>
+                            <t t-if="!state.lines.length">
+                                <tr><td colspan="7" class="trn-empty-row">No entries yet — add the first line below.</td></tr>
+                            </t>
+                        </tbody>
+                        <tfoot>
+                            <tr class="bank-total-row">
+                                <td colspan="3">Totals</td>
+                                <td class="so-col-num" t-esc="formatMoney(totalDebit)"/>
+                                <td class="so-col-num" t-esc="formatMoney(totalCredit)"/>
+                                <td class="so-col-num" t-esc="formatMoney(balance)"/>
+                                <td/>
+                            </tr>
+                        </tfoot>
+                    </table>
+                    <div class="so-line-adds"><button class="btn so-add-line" data-add-line="1">+ Add a line</button></div>
+                </div>
+            </t>
+        </div>
+    `;
+    setup() {
+        this.state = useState({ loading: true, error: '', record: {}, lines: [], journals: [], deleted: [] });
+        this._key = 1;
+        onMounted(() => this.load());
+    }
+    get isNew() { return !this.props.recordId; }
+    get totalDebit()  { return this.state.lines.reduce((s, l) => s + (parseFloat(l.debit)  || 0), 0); }
+    get totalCredit() { return this.state.lines.reduce((s, l) => s + (parseFloat(l.credit) || 0), 0); }
+    get balance()     { return this.totalDebit - this.totalCredit; }
+    // Index + running balance, computed for display (never stored, so it can't drift).
+    get rowsWithBalance() {
+        let run = 0;
+        return this.state.lines.map((l, i) => {
+            run += (parseFloat(l.debit) || 0) - (parseFloat(l.credit) || 0);
+            return Object.assign({}, l, { _idx: i + 1, _balance: run });
+        });
+    }
+    getM2oId(v) {
+        if (!v && v !== 0) return 0;
+        if (typeof v === 'number') return v;
+        if (Array.isArray(v) && v.length) return typeof v[0] === 'number' ? v[0] : 0;
+        if (typeof v === 'string') return parseInt(v) || 0;
+        return 0;
+    }
+    formatMoney(v) { return (parseFloat(v) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+    formatDate(v)  { return (!v || v === false) ? '' : String(v).substring(0, 10); }
+    async load() {
+        this.state.loading = true; this.state.error = '';
+        try {
+            const js = await RpcService.call('account.journal', 'search_read', [[]],
+                { fields: ['id', 'name'], limit: 200 }).catch(() => []);
+            this.state.journals = (js || []).map(j => ({ id: j.id, display: j.name }));
+            if (this.props.recordId) {
+                const r = await RpcService.call('account.bank.account', 'read', [[this.props.recordId]],
+                    { fields: ['name', 'bank_name', 'account_number', 'journal_id', 'active'] });
+                this.state.record = (Array.isArray(r) ? r[0] : r) || {};
+                const lines = await RpcService.call('account.bank.account.line', 'search_read',
+                    [[['bank_account_id', '=', this.props.recordId]]],
+                    { fields: ['id', 'sequence', 'date', 'name', 'debit', 'credit'], limit: 1000 });
+                this.state.lines = (Array.isArray(lines) ? lines : [])
+                    .sort((a, b) => (a.sequence - b.sequence) || (a.id - b.id))
+                    .map(l => ({ _key: String(this._key++), ...l }));
+            } else {
+                this.state.record = { active: true };
+                this.state.lines = [];
+            }
+        } catch (e) { this.state.error = e.message || 'Failed to load bank account'; }
+        this.state.loading = false;
+    }
+    onChange(e) {
+        const lf = e.target.dataset.lineField;
+        if (lf) { const l = this.state.lines.find(x => x._key === e.target.dataset.key); if (l) l[lf] = e.target.value; return; }
+        const f = e.target.dataset.field; if (f && e.target.tagName === 'SELECT') this.state.record[f] = parseInt(e.target.value) || 0;
+    }
+    onInput(e) {
+        if (e.target.tagName === 'SELECT') return;
+        const lf = e.target.dataset.lineField;
+        if (lf) { const l = this.state.lines.find(x => x._key === e.target.dataset.key); if (l) l[lf] = e.target.value; return; }
+        const f = e.target.dataset.field; if (f) this.state.record[f] = e.target.value;
+    }
+    onClick(e) {
+        if (e.target.dataset.addLine) {
+            e.preventDefault();
+            const today = new Date().toISOString().slice(0, 10);
+            this.state.lines.push({ _key: String(this._key++), id: null,
+                sequence: this.state.lines.length + 1, date: today, name: '', debit: 0, credit: 0 });
+            return;
+        }
+        if (e.target.dataset.delLine) {
+            e.preventDefault();
+            const k = e.target.dataset.key;
+            const l = this.state.lines.find(x => x._key === k);
+            if (l && l.id) this.state.deleted.push(l.id);
+            this.state.lines = this.state.lines.filter(x => x._key !== k);
+        }
+    }
+    _vals() {
+        const r = this.state.record;
+        return { name: r.name || '', bank_name: r.bank_name || '', account_number: r.account_number || '',
+                 journal_id: this.getM2oId(r.journal_id) || false };
+    }
+    async syncLines(id) {
+        if (this.state.deleted.length) {
+            await RpcService.call('account.bank.account.line', 'unlink', [this.state.deleted], {});
+            this.state.deleted = [];
+        }
+        let seq = 0;
+        for (const l of this.state.lines) {
+            seq += 1;
+            const vals = { bank_account_id: id, sequence: seq, date: l.date || false,
+                           name: l.name || '', debit: parseFloat(l.debit) || 0, credit: parseFloat(l.credit) || 0 };
+            if (!l.id) await RpcService.call('account.bank.account.line', 'create', [vals], {});
+            else       await RpcService.call('account.bank.account.line', 'write', [[l.id], vals], {});
+        }
+    }
+    async onCreate() {
+        try {
+            const id = await RpcService.call('account.bank.account', 'create', [this._vals()], {});
+            await this.syncLines(id);
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+    async onSave() {
+        try {
+            await RpcService.call('account.bank.account', 'write', [[this.props.recordId], this._vals()], {});
+            await this.syncLines(this.props.recordId);
+            await this.load();
+        } catch (e) { alert('Save failed: ' + (e.message || e)); }
+    }
+    async onDelete() { try { await RpcService.call('account.bank.account', 'unlink', [[this.props.recordId]], {}); this.props.onBack(); } catch (e) { alert(e.message || e); } }
+    onBack() { this.props.onBack(); }
+}
+
+// ----------------------------------------------------------------
+// AccountDashboard — adjustable journal cards (docs/087)
+// ----------------------------------------------------------------
+class AccountDashboard extends Component {
+    static template = xml`
+        <div class="dash-screen">
+            <div class="dash-head">
+                <div>
+                    <h2>Accounting Dashboard</h2>
+                    <p class="dash-sub">A quick read on what is owed, owing and on hand.</p>
+                </div>
+                <button class="btn" t-on-click="toggleCustomize" t-esc="state.customizing ? 'Done' : 'Customize'"/>
+            </div>
+
+            <t t-if="state.customizing">
+                <div class="dash-customize">
+                    <div class="dash-customize-title">Show these cards</div>
+                    <t t-foreach="state.cards" t-as="c" t-key="c.id">
+                        <label class="dash-toggle">
+                            <input type="checkbox" t-att-checked="isOn(c.id)" t-on-change="() => this.toggle(c.id)"/>
+                            <span t-esc="c.title"/>
+                        </label>
+                    </t>
+                </div>
+            </t>
+
+            <t t-if="state.loading"><div class="dash-msg">Loading…</div></t>
+            <t t-elif="state.error"><div class="dash-msg dash-err" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="dash-grid">
+                    <t t-foreach="visibleCards" t-as="c" t-key="c.id">
+                        <div class="dash-card">
+                            <div class="dash-card-title" t-esc="c.title"/>
+                            <div class="dash-card-amount" t-esc="c.amount"/>
+                            <div class="dash-card-sub"><t t-esc="c.subtitle"/> · <t t-esc="c.count"/></div>
+                        </div>
+                    </t>
+                    <t t-if="!visibleCards.length">
+                        <div class="dash-msg">No cards selected — press <b>Customize</b> to choose some.</div>
+                    </t>
+                </div>
+            </t>
+        </div>
+    `;
+    setup() {
+        this.state = useState({ loading: true, error: '', cards: [], enabled: [], customizing: false });
+        onMounted(() => this.load());
+    }
+    get visibleCards() { return this.state.cards.filter(c => this.state.enabled.includes(c.id)); }
+    isOn(id) { return this.state.enabled.includes(id); }
+    toggleCustomize() { this.state.customizing = !this.state.customizing; }
+    async toggle(id) {
+        this.state.enabled = this.isOn(id)
+            ? this.state.enabled.filter(x => x !== id)
+            : [...this.state.enabled, id];
+        await this.save();
+    }
+    async save() {
+        try {
+            await fetch('/web/account/dashboard?cards=' + encodeURIComponent(this.state.enabled.join(',')),
+                        { credentials: 'same-origin' });
+        } catch (_) {}
+    }
+    async load() {
+        this.state.loading = true; this.state.error = '';
+        try {
+            const res = await fetch('/web/account/dashboard', { credentials: 'same-origin' });
+            if (!res.ok) throw new Error('Could not load the dashboard (' + res.status + ').');
+            const data = await res.json();
+            this.state.cards   = data.cards || [];
+            this.state.enabled = (data.enabled || '').split(',').map(s => s.trim()).filter(Boolean);
+        } catch (e) { this.state.error = (e && e.message) || 'Failed to load dashboard.'; }
+        this.state.loading = false;
+    }
+}
+
+// ----------------------------------------------------------------
+// AccountSettings — the Accounting settings screen (docs/088)
+// Surfaces the new switches (fiscal year, lock dates, tax periodicity,
+// defaults) and links to the config lists that already have their own menus.
+// ----------------------------------------------------------------
+class AccountSettings extends Component {
+    static template = xml`
+        <div class="set-screen">
+            <div class="set-head">
+                <div>
+                    <h2>Accounting Settings</h2>
+                    <p class="set-sub">Changes save as you edit.</p>
+                </div>
+                <t t-if="state.saved"><span class="set-saved">Saved</span></t>
+            </div>
+            <t t-if="state.loading"><div class="dash-msg">Loading…</div></t>
+            <t t-elif="state.error"><div class="dash-msg dash-err" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="set-section">
+                    <h3>Fiscal year</h3>
+                    <div class="set-row">
+                        <label class="set-lbl">Last day</label>
+                        <input class="set-in" type="number" min="1" max="31"
+                               t-att-value="val('account.fiscal_year_last_day') || 31"
+                               t-on-change="(e) => this.save('account.fiscal_year_last_day', e.target.value)"/>
+                        <label class="set-lbl">Last month</label>
+                        <select class="set-in" t-on-change="(e) => this.save('account.fiscal_year_last_month', e.target.value)">
+                            <t t-foreach="months" t-as="m" t-key="m.v">
+                                <option t-att-value="m.v" t-att-selected="(val('account.fiscal_year_last_month') || '12') === m.v ? true : undefined" t-esc="m.n"/>
+                            </t>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="set-section set-lock">
+                    <h3>Lock dates</h3>
+                    <p class="set-hint">Entries dated on or before a lock date can no longer be posted — this is what protects a closed period.</p>
+                    <div class="set-row">
+                        <label class="set-lbl">All users lock date</label>
+                        <input class="set-in" type="date" t-att-value="val('account.lock_date')"
+                               t-on-change="(e) => this.save('account.lock_date', e.target.value)"/>
+                        <label class="set-lbl">Tax return lock date</label>
+                        <input class="set-in" type="date" t-att-value="val('account.tax_lock_date')"
+                               t-on-change="(e) => this.save('account.tax_lock_date', e.target.value)"/>
+                    </div>
+                </div>
+
+                <div class="set-section">
+                    <h3>Taxes</h3>
+                    <div class="set-row">
+                        <label class="set-lbl">Default sales tax</label>
+                        <select class="set-in" t-on-change="(e) => this.save('account.default_sale_tax_id', e.target.value)">
+                            <option value="">—</option>
+                            <t t-foreach="salesTaxes" t-as="t" t-key="t.id">
+                                <option t-att-value="sid(t.id)" t-att-selected="val('account.default_sale_tax_id') === sid(t.id) ? true : undefined" t-esc="t.name"/>
+                            </t>
+                        </select>
+                        <label class="set-lbl">Default purchase tax</label>
+                        <select class="set-in" t-on-change="(e) => this.save('account.default_purchase_tax_id', e.target.value)">
+                            <option value="">—</option>
+                            <t t-foreach="purchaseTaxes" t-as="t" t-key="t.id">
+                                <option t-att-value="sid(t.id)" t-att-selected="val('account.default_purchase_tax_id') === sid(t.id) ? true : undefined" t-esc="t.name"/>
+                            </t>
+                        </select>
+                    </div>
+                    <div class="set-row">
+                        <label class="set-lbl">Tax return periodicity</label>
+                        <select class="set-in" t-on-change="(e) => this.save('account.tax_periodicity', e.target.value)">
+                            <t t-foreach="periodicities" t-as="p" t-key="p.v">
+                                <option t-att-value="p.v" t-att-selected="(val('account.tax_periodicity') || 'bimonthly') === p.v ? true : undefined" t-esc="p.n"/>
+                            </t>
+                        </select>
+                        <label class="set-lbl">Tax rounding</label>
+                        <select class="set-in" t-on-change="(e) => this.save('account.tax_rounding', e.target.value)">
+                            <option value="per_line"  t-att-selected="(val('account.tax_rounding') || 'per_line') === 'per_line' ? true : undefined">Round per line</option>
+                            <option value="per_tax"   t-att-selected="val('account.tax_rounding') === 'per_tax' ? true : undefined">Round globally per tax</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="set-section">
+                    <h3>Default journals</h3>
+                    <div class="set-row">
+                        <label class="set-lbl">Sales journal</label>
+                        <select class="set-in" t-on-change="(e) => this.save('account.default_sale_journal_id', e.target.value)">
+                            <option value="">—</option>
+                            <t t-foreach="saleJournals" t-as="j" t-key="j.id">
+                                <option t-att-value="sid(j.id)" t-att-selected="val('account.default_sale_journal_id') === sid(j.id) ? true : undefined" t-esc="j.name"/>
+                            </t>
+                        </select>
+                        <label class="set-lbl">Purchase journal</label>
+                        <select class="set-in" t-on-change="(e) => this.save('account.default_purchase_journal_id', e.target.value)">
+                            <option value="">—</option>
+                            <t t-foreach="purchaseJournals" t-as="j" t-key="j.id">
+                                <option t-att-value="sid(j.id)" t-att-selected="val('account.default_purchase_journal_id') === sid(j.id) ? true : undefined" t-esc="j.name"/>
+                            </t>
+                        </select>
+                    </div>
+                    <div class="set-row">
+                        <label class="set-check">
+                            <input type="checkbox" t-att-checked="val('account.multi_currency') === '1'"
+                                   t-on-change="(e) => this.save('account.multi_currency', e.target.checked ? '1' : '0')"/>
+                            <span>Enable multi-currency</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="set-section">
+                    <h3>Configured elsewhere</h3>
+                    <p class="set-hint">These already have their own screens — this is just where to find them.</p>
+                    <div class="set-links">
+                        <t t-foreach="links" t-as="l" t-key="l">
+                            <span class="set-link" t-esc="l"/>
+                        </t>
+                    </div>
+                </div>
+            </t>
+        </div>
+    `;
+    setup() {
+        this.state = useState({ loading: true, error: '', values: {}, taxes: [], journals: [], saved: false });
+        this.months = [['1','January'],['2','February'],['3','March'],['4','April'],['5','May'],['6','June'],
+                       ['7','July'],['8','August'],['9','September'],['10','October'],['11','November'],['12','December']]
+                      .map(([v, n]) => ({ v, n }));
+        this.periodicities = [{ v: 'monthly', n: 'Monthly' }, { v: 'bimonthly', n: 'Bi-monthly (SST-02)' },
+                              { v: 'quarterly', n: 'Quarterly' }, { v: 'yearly', n: 'Yearly' }];
+        this.links = ['Chart of Accounts', 'Taxes', 'Journals', 'Payment Terms', 'Fiscal Positions',
+                      'Account Types', 'Currencies', 'Incoterms', 'Journal Groups', 'Bank Accounts',
+                      'Budgetary Positions', 'Asset Types', 'Analytic Accounts', 'Document Templates'];
+        onMounted(() => this.load());
+    }
+    val(k) { return this.state.values[k] || ''; }
+    // String() is not available inside OWL templates - use this instead.
+    sid(v) { return v == null ? '' : ('' + v); }
+    get salesTaxes()       { return this.state.taxes.filter(t => t.scope === 'sale'); }
+    get purchaseTaxes()    { return this.state.taxes.filter(t => t.scope === 'purchase'); }
+    get saleJournals()     { return this.state.journals.filter(j => j.type === 'sale'); }
+    get purchaseJournals() { return this.state.journals.filter(j => j.type === 'purchase'); }
+    async load() {
+        this.state.loading = true; this.state.error = '';
+        try {
+            const res = await fetch('/web/account/settings', { credentials: 'same-origin' });
+            if (!res.ok) throw new Error('Could not load settings (' + res.status + ').');
+            const d = await res.json();
+            this.state.values = d.values || {};
+            this.state.taxes = d.taxes || [];
+            this.state.journals = d.journals || [];
+        } catch (e) { this.state.error = (e && e.message) || 'Failed to load settings.'; }
+        this.state.loading = false;
+    }
+    async save(key, value) {
+        try {
+            const res = await fetch('/web/account/settings?key=' + encodeURIComponent(key) +
+                                    '&value=' + encodeURIComponent(value == null ? '' : value),
+                                    { credentials: 'same-origin' });
+            if (!res.ok) throw new Error('Save failed (' + res.status + ').');
+            const d = await res.json();
+            this.state.values = d.values || this.state.values;
+            this.state.saved = true;
+            setTimeout(() => { this.state.saved = false; }, 1500);
+        } catch (e) { this.state.error = (e && e.message) || 'Could not save that setting.'; }
+    }
+}
+
+// ----------------------------------------------------------------
 // CUSTOM_VIEWS — models that replace ActionView entirely
 //
 // These take over the whole action regardless of list/form mode, so they
@@ -9147,6 +10258,10 @@ const CUSTOM_VIEWS = {
     'part.search':        PartSearch,
     'bank.reconcile':     BankReconcile,
     'company.admin':      CompanyAdmin,
+    'db.backups':         DbBackups,
+    'account.report':     AccountReports,
+    'account.dashboard':  AccountDashboard,
+    'account.settings':   AccountSettings,
 };
 
 // ----------------------------------------------------------------
@@ -9254,6 +10369,18 @@ class ActionView extends Component {
                     <UserFormView recordId="state.recordId"
                                   onBack.bind="backToList"/>
                 </t>
+                <t t-elif="isAssetModel">
+                    <AssetFormView recordId="state.recordId"
+                                   onBack.bind="backToList"/>
+                </t>
+                <t t-elif="isBudgetModel">
+                    <BudgetFormView recordId="state.recordId"
+                                    onBack.bind="backToList"/>
+                </t>
+                <t t-elif="isBankAccountModel">
+                    <BankAccountFormView recordId="state.recordId"
+                                         onBack.bind="backToList"/>
+                </t>
                 <t t-else="">
                     <FormView action="currentAction"
                               viewDef="state.formView"
@@ -9264,7 +10391,7 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor, PortalUserListView, UserFormView, GroupsListView, ProductCategoryTree, ProductCategoryListView };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor, PortalUserListView, UserFormView, GroupsListView, ProductCategoryTree, ProductCategoryListView, AssetFormView, BudgetFormView, BankAccountFormView };
 
     // Use overrideAction when navigateTo() has been called, else fall back to props.action
     get currentAction()          { return this.state.overrideAction || this.props.action; }
@@ -9276,6 +10403,9 @@ class ActionView extends Component {
     get isStockLocationModel()   { return this.currentAction.res_model === 'stock.location'; }
     get isStockWarehouseModel()  { return this.currentAction.res_model === 'stock.warehouse'; }
     get isProductModel()         { return this.currentAction.res_model === 'product.product'; }
+    get isAssetModel()           { return this.currentAction.res_model === 'account.asset'; }
+    get isBudgetModel()          { return this.currentAction.res_model === 'account.budget'; }
+    get isBankAccountModel()     { return this.currentAction.res_model === 'account.bank.account'; }
     get isBomModel()             { return this.currentAction.res_model === 'mrp.bom'; }
     get isPartnerModel()         { return this.currentAction.res_model === 'res.partner'; }
     get isUsersModel()           { return this.currentAction.res_model === 'res.users'; }

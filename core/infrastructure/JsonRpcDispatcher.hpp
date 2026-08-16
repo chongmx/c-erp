@@ -6,7 +6,10 @@
 #include "TtlCache.hpp"
 #include "../../core/factories/Factories.hpp"
 #include "../../core/ControlPlane.hpp"
+#include "../../core/DbBackup.hpp"
 #include "../../core/interfaces/IViewModel.hpp"
+#include "AuthService.hpp"          // password re-verification for destructive DB ops
+#include "AuditService.hpp"
 #include "../../core/interfaces/IView.hpp"
 #include <drogon/Cookie.h>
 #include <nlohmann/json.hpp>
@@ -20,6 +23,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <sstream>
+#include <fstream>
 
 namespace odoo::infrastructure {
 
@@ -258,6 +262,31 @@ public:
                 return handleControlAdmin_(req, body);
             });
         http.addCorsOptions("/web/control/admin");
+
+        // In-app Database section (docs/075) — per-tenant snapshot/restore, admin
+        // + password gated. Every op targets ONLY the caller's own tenant db.
+        http.addJsonPost("/web/db/list",    [this](const HttpRequestPtr& r, const nlohmann::json& b){ return handleDbList_(r, b); });
+        http.addJsonPost("/web/db/backup",  [this](const HttpRequestPtr& r, const nlohmann::json& b){ return handleDbBackup_(r, b); });
+        http.addJsonPost("/web/db/restore", [this](const HttpRequestPtr& r, const nlohmann::json& b){ return handleDbRestore_(r, b); });
+        http.addJsonPost("/web/db/delete",  [this](const HttpRequestPtr& r, const nlohmann::json& b){ return handleDbDelete_(r, b); });
+        http.addCorsOptions("/web/db/list");
+        http.addCorsOptions("/web/db/backup");
+        http.addCorsOptions("/web/db/restore");
+        http.addCorsOptions("/web/db/delete");
+        http.addCorsOptions("/web/db/upload");
+        // upload (raw .dump body) + download (file response) — raw drogon handlers.
+        drogon::app().registerHandler("/web/db/upload",
+            [this](const HttpRequestPtr& req, std::function<void(const HttpResponsePtr&)>&& cb) {
+                nlohmann::json j = handleDbUploadRaw_(req);
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                r->setBody(j.dump());
+                cb(r);
+            }, {drogon::Post});
+        drogon::app().registerHandler("/web/db/download",
+            [this](const HttpRequestPtr& req, std::function<void(const HttpResponsePtr&)>&& cb) {
+                cb(handleDbDownload_(req));
+            }, {drogon::Get});
     }
 
     // ── Multi-company: company chooser + cross-tenant switch (docs/072) ──────
@@ -487,6 +516,126 @@ public:
             return {{"ok", true}};
         }
         return {{"error", "unknown op"}};
+    }
+
+    // ── In-app Database section (docs/075) ─────────────────────────
+    // Security envelope: authenticated ADMIN only; every operation targets ONLY
+    // the caller's own tenant database (session.db) — never a client-supplied
+    // name — so one company can never dump/restore another's; destructive ops
+    // (restore/import) additionally require the caller's password; all audited.
+
+    bool dbAdmin_(const HttpRequestPtr& req, const nlohmann::json& body,
+                  Session& out, nlohmann::json& err) {
+        core::CallKwArgs call;
+        if (body.contains("params") && body["params"].is_object()) call.kwargs = body["params"];
+        const std::string sid = resolveSessionId_(req, call);
+        out = sessions_->get(sid).value_or(Session{});
+        if (!out.isAuthenticated()) { err = {{"error", "not authenticated"}}; return false; }
+        if (!out.isAdmin)           { err = {{"error", "administrator access required"}}; return false; }
+        return true;
+    }
+    std::string dbBackupDir_(const Session& s) const {
+        std::string t = s.db.empty() ? (db_ ? db_->defaultTenant() : std::string("default")) : s.db;
+        std::string safe; for (char c : t) if (std::isalnum((unsigned char)c) || c == '_' || c == '-') safe += c;
+        return "backups/" + (safe.empty() ? std::string("default") : safe);
+    }
+    DbConfig dbTenantCfg_(const Session& s) const {
+        return db_ ? db_->tenantConfig(s.db.empty() ? db_->defaultTenant() : s.db) : DbConfig{};
+    }
+    bool verifySessionPassword_(const Session& s, const std::string& password) {
+        if (password.empty() || !db_ || s.uid <= 0) return false;
+        try {
+            TenantScope scope(db_.get(), s.db);
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            auto r = txn.exec("SELECT password FROM res_users WHERE id=$1", pqxx::params{s.uid});
+            if (r.empty() || r[0][0].is_null()) return false;
+            return odoo::modules::auth::AuthService::verifyPassword(password, r[0][0].c_str());
+        } catch (...) { return false; }
+    }
+    void dbAudit_(const Session& s, const std::string& op) {
+        if (AuditService::ready())
+            AuditService::instance().log("db.backup", op, std::vector<int>{}, s.uid);
+    }
+
+    nlohmann::json handleDbList_(const HttpRequestPtr& req, const nlohmann::json& body) {
+        Session s; nlohmann::json err;
+        if (!dbAdmin_(req, body, s, err)) return err;
+        return {{"ok", true}, {"company", s.db}, {"backups", core::DbBackup::list(dbBackupDir_(s))}};
+    }
+    nlohmann::json handleDbBackup_(const HttpRequestPtr& req, const nlohmann::json& body) {
+        Session s; nlohmann::json err;
+        if (!dbAdmin_(req, body, s, err)) return err;
+        const nlohmann::json& p = body.contains("params") ? body["params"] : body;
+        const std::string label = p.is_object() ? p.value("label", std::string{}) : std::string{};
+        auto r = core::DbBackup::backup(dbBackupDir_(s), dbTenantCfg_(s), label);
+        dbAudit_(s, "backup");
+        LOG_INFO << "[db.backup] company=" << s.db << " uid=" << s.uid << " -> " << r.value("file", std::string{});
+        return r;
+    }
+    nlohmann::json handleDbRestore_(const HttpRequestPtr& req, const nlohmann::json& body) {
+        Session s; nlohmann::json err;
+        if (!dbAdmin_(req, body, s, err)) return err;
+        const nlohmann::json& p = body.contains("params") ? body["params"] : body;
+        const std::string file = p.value("file", std::string{});
+        const std::string pw   = p.value("password", std::string{});
+        if (!verifySessionPassword_(s, pw)) return {{"error", "password confirmation failed"}};
+        auto r = core::DbBackup::restore(dbBackupDir_(s), dbTenantCfg_(s), file);
+        dbAudit_(s, "restore:" + file);
+        LOG_WARN << "[db.restore] company=" << s.db << " uid=" << s.uid << " file=" << file;
+        return r;
+    }
+    nlohmann::json handleDbDelete_(const HttpRequestPtr& req, const nlohmann::json& body) {
+        Session s; nlohmann::json err;
+        if (!dbAdmin_(req, body, s, err)) return err;
+        const nlohmann::json& p = body.contains("params") ? body["params"] : body;
+        const std::string file = p.value("file", std::string{});
+        if (!core::DbBackup::validFile(file)) return {{"error", "invalid file"}};
+        const std::string path = dbBackupDir_(s) + "/" + file;
+        if (::unlink(path.c_str()) != 0) return {{"error", "could not delete"}};
+        dbAudit_(s, "delete:" + file);
+        return {{"ok", true}};
+    }
+    // Import: raw .dump bytes in the POST body, filename in ?name=. Saved into the
+    // caller's tenant dir (non-destructive — the user then restores it explicitly).
+    nlohmann::json handleDbUploadRaw_(const HttpRequestPtr& req) {
+        core::CallKwArgs call;
+        const std::string sid = resolveSessionId_(req, call);
+        Session s = sessions_->get(sid).value_or(Session{});
+        if (!s.isAuthenticated() || !s.isAdmin) return {{"error", "administrator access required"}};
+        std::string base;
+        for (char c : std::string(req->getParameter("name")))
+            if (std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.') base += c;
+        if (base.find("..") != std::string::npos) return {{"error", "bad file name"}};
+        if (base.size() < 5 || base.substr(base.size() - 5) != ".dump")
+            base = "import-" + core::DbBackup::stamp() + ".dump";
+        const std::string data(req->getBody());
+        if (data.empty())                       return {{"error", "empty upload"}};
+        if (data.size() > 512ull * 1024 * 1024) return {{"error", "file too large (max 512MB)"}};
+        core::dbRunCmd_({"mkdir", "-p", dbBackupDir_(s)});
+        std::ofstream f(dbBackupDir_(s) + "/" + base, std::ios::binary);
+        if (!f.is_open()) return {{"error", "could not write file"}};
+        f.write(data.data(), (std::streamsize)data.size());
+        f.close();
+        dbAudit_(s, "import:" + base);
+        return {{"ok", true}, {"file", base}};
+    }
+    HttpResponsePtr handleDbDownload_(const HttpRequestPtr& req) {
+        core::CallKwArgs call;
+        // allow ?session_id= for a plain <a> download link, plus the cookie
+        if (!req->getParameter("session_id").empty())
+            call.kwargs = {{"context", {{"session_id", std::string(req->getParameter("session_id"))}}}};
+        const std::string sid = resolveSessionId_(req, call);
+        Session s = sessions_->get(sid).value_or(Session{});
+        auto deny = [](drogon::HttpStatusCode c, const char* m) {
+            auto r = drogon::HttpResponse::newHttpResponse(); r->setStatusCode(c); r->setBody(m); return r;
+        };
+        if (!s.isAuthenticated() || !s.isAdmin) return deny(drogon::k403Forbidden, "forbidden");
+        const std::string file = std::string(req->getParameter("file"));
+        if (!core::DbBackup::validFile(file)) return deny(drogon::k400BadRequest, "bad file");
+        const std::string path = dbBackupDir_(s) + "/" + file;
+        if (access(path.c_str(), R_OK) != 0)  return deny(drogon::k404NotFound, "not found");
+        return drogon::HttpResponse::newFileResponse(path, file, drogon::CT_APPLICATION_OCTET_STREAM);
     }
 
 private:

@@ -247,6 +247,15 @@ public:
     /** @brief Config of the default tenant (kept for backward compat). */
     const DbConfig& config() const { return tenants_.at(defaultTenant_).cfg; }
 
+    /** @brief Connection config for a specific tenant db (for pg_dump/restore).
+     *  Falls back to the default tenant if `db` is unknown. */
+    DbConfig tenantConfig(const std::string& db) const {
+        std::scoped_lock lock{mutex_};
+        auto it = tenants_.find(db);
+        if (it == tenants_.end()) it = tenants_.find(defaultTenant_);
+        return it->second.cfg;
+    }
+
 private:
     friend class PooledConnection;
 

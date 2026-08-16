@@ -2858,7 +2858,10 @@ void StockModule::seedMenus_() {
             (27, 'Inventory Valuation', 'stock.valuation.layer', 'list',      '[]', '{}'),
             (28, 'Lots/Serial Numbers', 'stock.production.lot',  'list,form', '[]', '{}'),
             (29, 'Landed Costs',        'stock.landed.cost',     'list,form', '[]', '{}'),
-            (30, 'Reordering Rules',    'stock.warehouse.orderpoint', 'list,form', '[]', '{}'),
+            -- id 30 is owned by ReportModule ('Document Templates') and is seeded
+            -- there with ON CONFLICT DO UPDATE, so it won this id and the
+            -- Reordering Rules menu opened the template editor. Use 94.
+            (94, 'Reordering Rules',    'stock.warehouse.orderpoint', 'list,form', '[]', '{}'),
             (31, 'Putaway Rules',       'stock.putaway.rule',    'list,form', '[]', '{}'),
             (47, 'Barcode',             'barcode.scan',          'list',      '[]', '{}')
         ON CONFLICT (id) DO UPDATE
@@ -2887,7 +2890,7 @@ void StockModule::seedMenus_() {
             (202, 'Internal Transfers', 91, 30, 24),
             (95,  'All Transfers',      91, 40, 17),
             (207, 'Landed Costs',       91, 50, 29),
-            (208, 'Reordering Rules',   92, 30, 30),
+            (208, 'Reordering Rules',   92, 30, 94),
             (210, 'Barcode',            91, 60, 47)
         ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
             sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id

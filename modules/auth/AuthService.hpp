@@ -139,6 +139,12 @@ public:
              + base64Encode_(hash,  sizeof(hash));
     }
 
+    /// Public wrapper: verify a plaintext password against a stored PBKDF2 hash.
+    /// Used for re-confirming identity before destructive admin actions.
+    static bool verifyPassword(const std::string& plaintext, const std::string& storedHash) {
+        return verifyPassword_(plaintext, storedHash);
+    }
+
     // ----------------------------------------------------------
     // Health check
     // ----------------------------------------------------------

@@ -1362,6 +1362,19 @@ void IrModule::registerMigrations(infrastructure::MigrationRunner& runner) {
     )SQL"});
 
     // --------------------------------------------------------
+    // 1021 — the reverse-invoice (credit note) sequence
+    //
+    // A customer credit note (out_refund) is a "reverse invoice": its own
+    // continuous series with prefix "RINV" (RINV000001, …), separate from INV
+    // so a credit note is recognisable on sight. AccountModule::handleActionPost
+    // draws out_refund numbers from here instead of the INV series.
+    runner.registerMigration({1021, "reverse_invoice_sequence_RINV", R"SQL(
+        INSERT INTO ir_sequence (code, name, prefix, padding, reset_policy, number_next)
+        VALUES ('account.move.RINV', 'Reverse Invoice (Credit Note)', 'RINV', 6, 'never', 1)
+        ON CONFLICT (code) WHERE company_id IS NULL DO NOTHING;
+    )SQL"});
+
+    // --------------------------------------------------------
     // 1030 — ir.model.data (external identifiers)
     //
     // Maps a stable "module.name" xml_id to a concrete (model, res_id).
@@ -1551,25 +1564,39 @@ void IrModule::seedMenus_() {
     txn.exec("DELETE FROM ir_ui_menu WHERE id < 10");
     txn.exec("DELETE FROM ir_ui_menu WHERE id=33");
 
+    // The app roots are structural: they must survive another module accidentally
+    // seeding the same ir_ui_menu id. DO UPDATE (not DO NOTHING) so a database
+    // whose root was overwritten self-heals on the next start — this happened to
+    // the Settings root (id 30) and it removed the whole Settings app from the
+    // home screen. See docs/089.
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id, web_icon) VALUES
             (10, 'Accounting', NULL, 10, NULL, 'accounting'),
             (20, 'Contacts',   NULL, 20, NULL, 'contacts'),
             (30, 'Settings',   NULL, 30, NULL, 'settings')
-        ON CONFLICT (id) DO NOTHING
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id,
+                web_icon=EXCLUDED.web_icon
     )");
 
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
             (21, 'Contacts', 20, 10, 1)
-        ON CONFLICT (id) DO NOTHING
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
     )");
 
+    // Same reasoning as the app roots above: restore these if something else
+    // claimed the id (id 32 was overwritten by a Budgetary Positions menu).
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
             (31, 'Users',        30, 10, 2),
             (32, 'Companies',    30, 20, 3)
-        ON CONFLICT (id) DO NOTHING
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
     )");
 
     txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");

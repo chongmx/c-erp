@@ -1272,10 +1272,16 @@ void PurchaseModule::seedMenus_() {
     auto conn = services_.db()->acquire();
     pqxx::work txn{conn.get()};
 
+    // ir_act_window id=49: Purchase Orders.
+    // id 12 collided with ProductModule's 'Footprints' (part.footprint), which
+    // is seeded with ON CONFLICT DO UPDATE and clobbered this action. Use a
+    // unique id (49) and DO UPDATE so existing databases self-heal on startup.
     txn.exec(R"(
         INSERT INTO ir_act_window (id, name, res_model, view_mode, context, target)
-        VALUES (12, 'Purchase Orders', 'purchase.order', 'list,form', '{}', 'current')
-        ON CONFLICT (id) DO NOTHING
+        VALUES (49, 'Purchase Orders', 'purchase.order', 'list,form', '{}', 'current')
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
+                view_mode=EXCLUDED.view_mode
     )");
 
     txn.exec(R"(
@@ -1292,8 +1298,10 @@ void PurchaseModule::seedMenus_() {
 
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id)
-        VALUES (72, 'Purchase Orders', 71, 10, 12)
-        ON CONFLICT (id) DO NOTHING
+        VALUES (72, 'Purchase Orders', 71, 10, 49)
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
     )");
 
     txn.commit();

@@ -99,7 +99,10 @@ public:
         fromJson(vals);
         const auto errors = static_cast<TDerived*>(this)->validate();
         if (!errors.empty())
-            throw std::runtime_error("Validation failed: " + errors[0]);
+            // A missing/invalid field is a USER error, not a server fault: throw
+            // ValidationError so the dispatcher returns it as a 400 with the
+            // message ("Name is required") instead of a 500 "Internal Error".
+            throw odoo::infrastructure::ValidationError(errors[0]);
 
         const auto cols = fieldRegistry_.storedColumnNames();
         nlohmann::json full = toJson();
@@ -124,10 +127,39 @@ public:
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        auto row = txn.exec(sql, params).one_row();
+        pqxx::result res;
+        try {
+            res = txn.exec(sql, params);
+        } catch (const pqxx::sql_error& e) {
+            // A NOT NULL / CHECK violation means the user omitted a required
+            // field. Surface it as a ValidationError (400 "… is required")
+            // rather than a raw 500 "Internal Error". The column name is not
+            // sensitive; the full SQL text (SEC-28) is never included.
+            const std::string what = e.what();
+            const std::string col  = notNullColumn_(what);
+            if (!col.empty())
+                throw odoo::infrastructure::ValidationError(
+                    "The field '" + col + "' is required.");
+            if (what.find("violates check constraint") != std::string::npos)
+                throw odoo::infrastructure::ValidationError(
+                    "A value is out of the allowed range for this record.");
+            throw;   // anything else stays a gated internal error
+        }
+        auto row = res.one_row();
         txn.commit();
         id_ = row[0].as<int>();
         return id_;
+    }
+
+    // Extract the column from a Postgres "null value in column \"x\" ... violates
+    // not-null constraint" message; empty string if it isn't that error.
+    static std::string notNullColumn_(const std::string& msg) {
+        if (msg.find("not-null constraint") == std::string::npos) return {};
+        const auto a = msg.find("column \"");
+        if (a == std::string::npos) return {};
+        const auto b = msg.find('"', a + 8);
+        if (b == std::string::npos) return {};
+        return msg.substr(a + 8, b - (a + 8));
     }
 
     nlohmann::json read(const std::vector<int>&         ids,

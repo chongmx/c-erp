@@ -193,6 +193,7 @@ public:
     double      priceUnit       = 0.0;
     double      discount        = 0.0;
     std::string taxIdsJson      = "[]";
+    std::string displayType;   // '' | 'line_section' | 'line_note'
     double      priceSubtotal   = 0.0;
     double      priceTax        = 0.0;
     double      priceTotal      = 0.0;
@@ -211,6 +212,8 @@ public:
         fieldRegistry_.add({"price_unit",      FieldType::Monetary,  "Unit Price"});
         fieldRegistry_.add({"discount",        FieldType::Float,     "Disc.%"});
         fieldRegistry_.add({"tax_ids_json",    FieldType::Text,      "Taxes (JSON)"});
+        // '' = product line; 'line_section' = section header; 'line_note' = note
+        fieldRegistry_.add({"display_type",    FieldType::Char,      "Display Type"});
         fieldRegistry_.add({.name="price_subtotal", .type=FieldType::Monetary, .string="Subtotal",      .readonly=true, .compute=true, .depends="product_uom_qty,price_unit,discount"});
         fieldRegistry_.add({.name="price_tax",      .type=FieldType::Monetary, .string="Tax",           .readonly=true, .compute=true, .depends="product_uom_qty,price_unit,discount"});
         fieldRegistry_.add({.name="price_total",    .type=FieldType::Monetary, .string="Total",         .readonly=true, .compute=true, .depends="product_uom_qty,price_unit,discount"});
@@ -236,6 +239,7 @@ public:
         j["price_unit"]      = priceUnit;
         j["discount"]        = discount;
         j["tax_ids_json"]    = taxIdsJson;
+        j["display_type"]    = displayType;
         j["price_subtotal"]  = priceSubtotal;
         j["price_tax"]       = priceTax;
         j["price_total"]     = priceTotal;
@@ -255,6 +259,7 @@ public:
         if (j.contains("price_unit")     && j["price_unit"].is_number())     priceUnit     = j["price_unit"].get<double>();
         if (j.contains("discount")       && j["discount"].is_number())       discount      = j["discount"].get<double>();
         if (j.contains("tax_ids_json")   && j["tax_ids_json"].is_string())   taxIdsJson    = j["tax_ids_json"].get<std::string>();
+        if (j.contains("display_type")   && j["display_type"].is_string())   displayType   = j["display_type"].get<std::string>();
         if (j.contains("price_subtotal") && j["price_subtotal"].is_number()) priceSubtotal = j["price_subtotal"].get<double>();
         if (j.contains("price_tax")      && j["price_tax"].is_number())      priceTax      = j["price_tax"].get<double>();
         if (j.contains("price_total")    && j["price_total"].is_number())    priceTotal    = j["price_total"].get<double>();
@@ -277,7 +282,8 @@ public:
     std::vector<std::string> validate() const override {
         std::vector<std::string> e;
         if (orderId <= 0) e.push_back("Order is required");
-        if (name.empty()) e.push_back("Description is required");
+        // Section/note rows carry their text in name but may be left blank.
+        if (name.empty() && displayType.empty()) e.push_back("Description is required");
         return e;
     }
 };
@@ -696,9 +702,12 @@ private:
             int         payTermId     = r[0][2].is_null() ? 0 : r[0][2].as<int>();
             int         companyId     = r[0][3].as<int>();
             int         currencyId    = r[0][4].is_null() ? 0 : r[0][4].as<int>();
-            double      amtUntaxed    = r[0][5].as<double>();
-            double      amtTax        = r[0][6].as<double>();
-            double      amtTotal      = r[0][7].as<double>();
+            // These columns hold BIGINT micro-units. Read them as integers:
+            // appending a double like 2e8 serialises to "2e+08", which a
+            // bigint column rejects (invoices failed for any total ≳ $10).
+            long long   amtUntaxed    = std::llround(r[0][5].as<double>());
+            long long   amtTax        = std::llround(r[0][6].as<double>());
+            long long   amtTotal      = std::llround(r[0][7].as<double>());
             std::string orderName     = r[0][8].c_str();
 
             if (state != "sale")
@@ -762,20 +771,24 @@ private:
                 mp);
             int moveId = mvRow[0][0].as<int>();
 
-            // Create move lines from sale order lines
+            // Create move lines from sale order lines. Section/note rows are
+            // document annotations only — never invoice them (they would become
+            // bogus zero-value ledger lines).
             auto lines = txn.exec(
                 "SELECT name, product_uom_qty, price_unit, "
                 "       price_subtotal, price_tax, price_total "
-                "FROM sale_order_line WHERE order_id = $1",
+                "FROM sale_order_line WHERE order_id = $1 "
+                "AND COALESCE(display_type,'') = ''",
                 pqxx::params{ordId});
 
             for (const auto& ln : lines) {
                 std::string lname   = ln[0].c_str();
-                double      qty     = ln[1].as<double>();
-                double      unit    = ln[2].as<double>();
-                double      sub     = ln[3].as<double>();
-                double      tax     = ln[4].as<double>();
-                // double      total = ln[5].as<double>(); // unused here
+                // BIGINT micro-units — see the note above; append as integers.
+                long long   qty     = std::llround(ln[1].as<double>());
+                long long   unit    = std::llround(ln[2].as<double>());
+                long long   sub     = std::llround(ln[3].as<double>());
+                long long   tax     = std::llround(ln[4].as<double>());
+                // long long   total = std::llround(ln[5].as<double>()); // unused
 
                 // Income (credit) line
                 pqxx::params il;
@@ -1397,10 +1410,14 @@ void SaleModule::ensureSchema_() {
             qty_delivered    NUMERIC(16,4) NOT NULL DEFAULT 0,
             company_id       INTEGER REFERENCES res_company(id),
             currency_id      INTEGER REFERENCES res_currency(id),
+            display_type     VARCHAR NOT NULL DEFAULT '',
             create_date      TIMESTAMP DEFAULT now(),
             write_date       TIMESTAMP DEFAULT now()
         )
     )");
+    // Existing databases: add the section/note discriminator column.
+    txn.exec("ALTER TABLE sale_order_line "
+             "ADD COLUMN IF NOT EXISTS display_type VARCHAR NOT NULL DEFAULT ''");
 
     txn.commit();
 }
@@ -1409,11 +1426,18 @@ void SaleModule::seedMenus_() {
     auto conn = services_.db()->acquire();
     pqxx::work txn{conn.get()};
 
-    // ir_act_window id=11: Sales Orders
+    // ir_act_window id=48: Sales Orders.
+    // NOTE: id 11 was previously used here, but ProductModule owns id 11
+    // ('Vendor Pricelists') and seeds it with ON CONFLICT DO UPDATE, which
+    // clobbered this action — the Sales Orders menu ended up opening
+    // product.supplierinfo. Use a unique id (48) and DO UPDATE so existing
+    // databases self-heal on the next startup.
     txn.exec(R"(
         INSERT INTO ir_act_window (id, name, res_model, view_mode, context, target)
-        VALUES (11, 'Sales Orders', 'sale.order', 'list,form', '{}', 'current')
-        ON CONFLICT (id) DO NOTHING
+        VALUES (48, 'Sales Orders', 'sale.order', 'list,form', '{}', 'current')
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
+                view_mode=EXCLUDED.view_mode
     )");
 
     // Level 0 — Sales app tile (id=60, parent=NULL)
@@ -1430,11 +1454,14 @@ void SaleModule::seedMenus_() {
         ON CONFLICT (id) DO NOTHING
     )");
 
-    // Level 2 — Sales Orders leaf (id=62, parent=61, action_id=11)
+    // Level 2 — Sales Orders leaf (id=62, parent=61, action_id=48).
+    // DO UPDATE so a database seeded with the old action_id (11) is corrected.
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id)
-        VALUES (62, 'Sales Orders', 61, 10, 11)
-        ON CONFLICT (id) DO NOTHING
+        VALUES (62, 'Sales Orders', 61, 10, 48)
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
     )");
 
     txn.commit();

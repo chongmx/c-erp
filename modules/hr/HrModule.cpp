@@ -618,10 +618,17 @@ void HrModule::seedMenus_() {
     auto conn = services_.db()->acquire();
     pqxx::work txn{conn.get()};
 
+    // ids 13/15 collided with ProductModule's part.unit / part.search (seeded
+    // with ON CONFLICT DO UPDATE), which clobbered the Employees and Job
+    // Positions actions. Use unique ids (50/51) with DO UPDATE so existing
+    // databases self-heal. Departments (14) and Working Schedules (16) never
+    // collided, so they keep their ids.
     txn.exec(R"(
         INSERT INTO ir_act_window (id, name, res_model, view_mode, context, target)
-        VALUES (13, 'Employees', 'hr.employee', 'list,form', '{}', 'current')
-        ON CONFLICT (id) DO NOTHING
+        VALUES (50, 'Employees', 'hr.employee', 'list,form', '{}', 'current')
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
+                view_mode=EXCLUDED.view_mode
     )");
     txn.exec(R"(
         INSERT INTO ir_act_window (id, name, res_model, view_mode, context, target)
@@ -630,8 +637,10 @@ void HrModule::seedMenus_() {
     )");
     txn.exec(R"(
         INSERT INTO ir_act_window (id, name, res_model, view_mode, context, target)
-        VALUES (15, 'Job Positions', 'hr.job', 'list,form', '{}', 'current')
-        ON CONFLICT (id) DO NOTHING
+        VALUES (51, 'Job Positions', 'hr.job', 'list,form', '{}', 'current')
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
+                view_mode=EXCLUDED.view_mode
     )");
     txn.exec(R"(
         INSERT INTO ir_act_window (id, name, res_model, view_mode, context, target)
@@ -646,8 +655,10 @@ void HrModule::seedMenus_() {
     )");
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id)
-        VALUES (81, 'Employees', 80, 10, 13)
-        ON CONFLICT (id) DO NOTHING
+        VALUES (81, 'Employees', 80, 10, 50)
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
     )");
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id)
@@ -661,8 +672,10 @@ void HrModule::seedMenus_() {
     )");
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id)
-        VALUES (84, 'Job Positions', 83, 10, 15)
-        ON CONFLICT (id) DO NOTHING
+        VALUES (84, 'Job Positions', 83, 10, 51)
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
     )");
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id)

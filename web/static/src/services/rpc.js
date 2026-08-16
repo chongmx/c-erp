@@ -209,9 +209,37 @@ const RpcService = (() => {
         return info;
     }
 
+    // Database section (docs/075) — per-tenant snapshots, admin + password gated.
+    async function _dbPost(path, extra = {}) {
+        const res = await fetch(path, {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', method: 'call', id: _id++,
+                params: Object.assign({ context: { session_id: _session.sessionId } }, extra) }),
+        });
+        const data = await res.json();
+        return data.result ?? data;
+    }
+    const dbList    = ()               => _dbPost('/web/db/list');
+    const dbBackup  = (label = '')     => _dbPost('/web/db/backup', { label });
+    const dbRestore = (file, password) => _dbPost('/web/db/restore', { file, password });
+    const dbDelete  = (file)           => _dbPost('/web/db/delete', { file });
+    async function dbUpload(file) {
+        const buf = await file.arrayBuffer();
+        const res = await fetch('/web/db/upload?name=' + encodeURIComponent(file.name), {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/octet-stream' }, body: buf,
+        });
+        return res.json();
+    }
+    const dbDownloadUrl = (file) =>
+        '/web/db/download?file=' + encodeURIComponent(file) +
+        '&session_id=' + encodeURIComponent(_session.sessionId);
+
     return { call, authenticate, logout, restoreSession,
              isAuthenticated, getSession,
              loadMenus, loadAction, getViews,
              health, sessionInfo,
-             listCompanies, switchCompany, lookupCompanies, controlAdmin };
+             listCompanies, switchCompany, lookupCompanies, controlAdmin,
+             dbList, dbBackup, dbRestore, dbDelete, dbUpload, dbDownloadUrl };
 })();
