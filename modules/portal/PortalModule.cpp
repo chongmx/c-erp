@@ -2933,18 +2933,30 @@ void PortalModule::seedMenu_() {
     auto conn = db_->acquire();
     pqxx::work txn{conn.get()};
 
-    // Action 35: open portal.partner list
+    // Both ids here used to collide with MrpModule, which seeds with
+    // ON CONFLICT DO UPDATE and therefore won both: action 35 became
+    // "Manufacturing Orders" and menu 120 became "Master Production Schedule",
+    // so Settings ▸ Portal Users disappeared from the menu entirely. Found by
+    // scripts/verify_menu_ids.sh, which now fails the suite on any such clash
+    // (docs/090).
+    //
+    // Moved to free space, and to DO UPDATE so existing databases — where the
+    // rows currently hold MRP's values — repair themselves on the next start.
     txn.exec(R"(
         INSERT INTO ir_act_window (id, name, res_model, view_mode, domain)
-        VALUES (35, 'Portal Users', 'portal.partner', 'list,form', '[]')
-        ON CONFLICT (id) DO NOTHING
+        VALUES (100, 'Portal Users', 'portal.partner', 'list,form', '[]')
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
+                view_mode=EXCLUDED.view_mode
     )");
 
-    // Menu 120: Portal Users under Settings (id=30)
+    // Portal Users under Settings (id=30)
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, action_id, sequence, web_icon)
-        VALUES (120, 'Portal Users', 30, 35, 35, 'settings')
-        ON CONFLICT (id) DO NOTHING
+        VALUES (73, 'Portal Users', 30, 100, 35, 'settings')
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                action_id=EXCLUDED.action_id, sequence=EXCLUDED.sequence
     )");
 
     txn.commit();

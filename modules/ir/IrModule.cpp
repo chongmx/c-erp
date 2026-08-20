@@ -26,6 +26,7 @@
 #include <drogon/MultiPart.h>
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
+#include <cstdio>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -586,6 +587,128 @@ private:
         if (v.is_number_integer()) return v.get<int>();
         if (v.is_array() && !v.empty() && v[0].is_number_integer()) return v[0].get<int>();
         return 0;
+    }
+};
+
+// ----------------------------------------------------------------
+// IrAttachmentViewModel — CRUD, plus the two things a plain
+// GenericViewModel got wrong for a file:
+//
+//   1. unlink deleted the metadata row and left the BLOB on disk forever.
+//      Filestore::gc() existed and nothing ever called it. Because storage is
+//      content-addressed, two attachments can share one blob, so the blob may
+//      only go when the last row referencing it does — which is exactly the
+//      remainingRefs argument gc() takes.
+//   2. the list had no download URL and a raw byte count, so every caller
+//      had to rebuild both.
+// ----------------------------------------------------------------
+class IrAttachmentViewModel : public core::GenericViewModel<IrAttachmentModel> {
+public:
+    explicit IrAttachmentViewModel(std::shared_ptr<infrastructure::DbConnection> db)
+        : core::GenericViewModel<IrAttachmentModel>(std::move(db))
+    {
+        REGISTER_METHOD("search_read",     handleListForRecord)
+        REGISTER_METHOD("web_search_read", handleListForRecord)
+        REGISTER_MUTATOR("unlink",          handleUnlinkWithGc)
+    }
+    std::string modelName() const override { return "ir.attachment"; }
+
+private:
+    // The panel's list: newest first, with the URL and a human size, so the
+    // client neither builds paths nor formats bytes.
+    nlohmann::json handleListForRecord(const core::CallKwArgs& call) {
+        std::string resModel;
+        int resId = 0;
+        const auto& dom = call.domain();
+        if (dom.is_array()) {
+            for (const auto& leaf : dom) {
+                if (!leaf.is_array() || leaf.size() != 3 || !leaf[0].is_string()) continue;
+                const std::string f = leaf[0].get<std::string>();
+                if (f == "res_model" && leaf[2].is_string())         resModel = leaf[2].get<std::string>();
+                else if (f == "res_id" && leaf[2].is_number_integer()) resId   = leaf[2].get<int>();
+            }
+        }
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        std::string sql =
+            "SELECT a.id, a.name, a.description, a.res_model, a.res_id, a.mimetype, "
+            "       a.file_size, a.checksum, a.create_uid, "
+            "       to_char(a.create_date,'YYYY-MM-DD HH24:MI') AS created, "
+            "       COALESCE(u.login,'') AS created_by "
+            "FROM ir_attachment a LEFT JOIN res_users u ON u.id = a.create_uid "
+            "WHERE a.type = 'binary'";
+        pqxx::params p;
+        int n = 0;
+        if (!resModel.empty()) { sql += " AND a.res_model = $" + std::to_string(++n); p.append(resModel); }
+        if (resId > 0)         { sql += " AND a.res_id    = $" + std::to_string(++n); p.append(resId); }
+        sql += " ORDER BY a.id DESC LIMIT " + std::to_string(call.limit() > 0 ? call.limit() : 80);
+        auto res = n ? txn.exec(sql, p) : txn.exec(sql);
+
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& row : res) {
+            const long long bytes = row["file_size"].as<long long>(0);
+            char human[32];
+            if (bytes >= 1024LL * 1024)      std::snprintf(human, sizeof human, "%.1f MB", bytes / 1048576.0);
+            else if (bytes >= 1024)          std::snprintf(human, sizeof human, "%.0f KB", bytes / 1024.0);
+            else                             std::snprintf(human, sizeof human, "%lld B", bytes);
+            nlohmann::json j;
+            j["id"]          = row["id"].as<int>();
+            j["name"]        = row["name"].is_null() ? "" : row["name"].c_str();
+            j["description"] = row["description"].is_null() ? "" : row["description"].c_str();
+            j["res_model"]   = row["res_model"].is_null() ? nlohmann::json(false)
+                                                          : nlohmann::json(row["res_model"].c_str());
+            j["res_id"]      = row["res_id"].is_null() ? nlohmann::json(false)
+                                                       : nlohmann::json(row["res_id"].as<int>());
+            j["mimetype"]    = row["mimetype"].is_null() ? "" : row["mimetype"].c_str();
+            j["file_size"]   = bytes;
+            j["size_human"]  = human;
+            j["checksum"]    = row["checksum"].is_null() ? "" : row["checksum"].c_str();
+            j["created"]     = row["created"].is_null() ? "" : row["created"].c_str();
+            j["created_by"]  = row["created_by"].is_null() ? "" : row["created_by"].c_str();
+            j["url"]         = "/web/content/" + std::to_string(row["id"].as<int>());
+            arr.push_back(std::move(j));
+        }
+        return arr;
+    }
+
+    // Delete the rows, then release any blob that nothing references any more.
+    nlohmann::json handleUnlinkWithGc(const core::CallKwArgs& call) {
+        const auto ids = call.ids();
+        if (ids.empty()) return true;
+
+        std::vector<std::string> blobs;
+        {
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            std::string in;
+            for (size_t i = 0; i < ids.size(); ++i) { if (i) in += ","; in += std::to_string(ids[i]); }
+            // Read the blob paths BEFORE the delete — after it, there is
+            // nothing left to look them up from.
+            for (const auto& r : txn.exec(
+                    "SELECT COALESCE(store_fname,'') FROM ir_attachment WHERE id IN (" + in + ")"))
+                if (!r[0].is_null() && *r[0].c_str()) blobs.emplace_back(r[0].c_str());
+            txn.commit();
+        }
+
+        auto res = core::GenericViewModel<IrAttachmentModel>::handleUnlink(call);
+
+        // One count per distinct blob, after the delete: dedup means another
+        // attachment may still point at it, and gc() is a no-op when it does.
+        std::sort(blobs.begin(), blobs.end());
+        blobs.erase(std::unique(blobs.begin(), blobs.end()), blobs.end());
+        if (!blobs.empty()) {
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            for (const auto& sf : blobs) {
+                const long long refs = txn.exec(
+                    "SELECT count(*) FROM ir_attachment WHERE store_fname = $1",
+                    pqxx::params{sf})[0][0].as<long long>(0);
+                core::Filestore::gc(sf, refs);
+            }
+            txn.commit();
+        }
+        return res;
     }
 };
 
@@ -1317,7 +1440,7 @@ void IrModule::registerViewModels() {
         return std::make_shared<core::GenericViewModel<IrModelDataModel>>(db);
     });
     viewModels_.registerCreator("ir.attachment", [db]{
-        return std::make_shared<core::GenericViewModel<IrAttachmentModel>>(db);
+        return std::make_shared<IrAttachmentViewModel>(db);
     });
     viewModels_.registerCreator("audit.log", [db]{
         return std::make_shared<AuditLogViewModel>(db);

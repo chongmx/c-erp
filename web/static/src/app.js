@@ -794,6 +794,169 @@ class ChatterPanel extends Component {
 }
 
 // ----------------------------------------------------------------
+// AttachmentPanel — files on a record (docs/091)
+//
+//   Props:
+//     model     {string} — e.g. 'hr.expense.sheet'
+//     recordId  {number} — 0 / null → the panel says to save first
+//     title     {string?} — panel heading, default 'Attachments'
+//     readonly  {boolean?} — hide upload and delete
+//
+// ir.attachment, its content-addressed filestore and both HTTP routes were
+// already built and tested; what was missing was any way for a user to reach
+// them. Deliberately generic: adding files to another form is one tag.
+//
+// The bytes go over the dedicated multipart route, never through JSON-RPC —
+// a base64 blob in a search_read would defeat storing the file out of the row.
+// ----------------------------------------------------------------
+class AttachmentPanel extends Component {
+    static props = ['model', 'recordId', 'title?', 'readonly?', 'refreshKey?'];
+    static template = xml`
+        <div class="att-panel">
+            <div class="chatter-head">
+                <span t-esc="props.title || 'Attachments'"/>
+                <span t-if="state.files.length" class="att-count" t-esc="state.files.length"/>
+            </div>
+
+            <t t-if="!props.recordId">
+                <div class="chatter-empty">Save this record first, then attach files to it.</div>
+            </t>
+            <t t-else="">
+                <t t-if="state.loading">
+                    <div class="chatter-loading">Loading…</div>
+                </t>
+                <t t-else="">
+                    <div class="att-list">
+                        <t t-foreach="state.files" t-as="f" t-key="f.id">
+                            <div class="att-row">
+                                <span class="att-icon" t-esc="iconFor(f.mimetype)"/>
+                                <a class="att-name" t-att-href="f.url" target="_blank"
+                                   t-att-title="f.name" t-esc="f.name"/>
+                                <span class="att-meta" t-esc="f.size_human"/>
+                                <span class="att-meta att-when" t-esc="f.created"/>
+                                <a class="att-dl" t-att-href="f.url + '?download=1'"
+                                   title="Download">&#8615;</a>
+                                <span t-if="!props.readonly" class="att-del" title="Remove"
+                                      t-on-click.stop="() => this.onDelete(f)">&#x2715;</span>
+                            </div>
+                        </t>
+                        <t t-if="!state.files.length">
+                            <div class="chatter-empty">No files attached yet.</div>
+                        </t>
+                    </div>
+
+                    <t t-if="!props.readonly">
+                        <div t-attf-class="att-drop{{ state.dragging ? ' over' : '' }}"
+                             t-on-dragover.prevent="onDragOver"
+                             t-on-dragleave="onDragLeave"
+                             t-on-drop.prevent="onDrop"
+                             t-on-click="onPick">
+                            <t t-if="state.uploading">Uploading <t t-esc="state.uploadName"/>…</t>
+                            <t t-else="">Drop a file here, or click to choose one</t>
+                        </div>
+                        <input type="file" class="att-file-input" t-ref="fileInput"
+                               t-on-change="onFileChosen"/>
+                        <div t-if="state.error" class="att-error" t-esc="state.error"/>
+                        <div class="att-hint">
+                            PDF, images, CSV, TXT, XLSX, DOCX or ZIP — up to 25 MB.
+                        </div>
+                    </t>
+                </t>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({ files: [], loading: false, uploading: false,
+                                uploadName: '', error: '', dragging: false });
+        this.fileInputRef = useRef('fileInput');
+        const { onMounted, onWillUpdateProps } = owl;
+        onMounted(() => { if (this.props.recordId) this.load(this.props.recordId); });
+        onWillUpdateProps(np => {
+            if (np.recordId !== this.props.recordId ||
+                np.refreshKey !== this.props.refreshKey) {
+                if (np.recordId) this.load(np.recordId); else this.state.files = [];
+            }
+        });
+    }
+
+    async load(recordId) {
+        this.state.loading = true;
+        try {
+            const files = await RpcService.call('ir.attachment', 'search_read',
+                [[['res_model', '=', this.props.model], ['res_id', '=', recordId]]],
+                { limit: 100 });
+            this.state.files = Array.isArray(files) ? files : [];
+        } catch (e) {
+            this.state.error = e.message || 'Could not load the attachments';
+        }
+        this.state.loading = false;
+    }
+
+    iconFor(mime) {
+        const m = mime || '';
+        if (m.startsWith('image/'))            return '\u{1F5BC}';
+        if (m === 'application/pdf')           return '\u{1F4C4}';
+        if (m === 'application/zip')           return '\u{1F5DC}';
+        if (m.startsWith('text/'))             return '\u{1F4DD}';
+        return '\u{1F4CE}';
+    }
+
+    onPick()     { if (this.fileInputRef.el) this.fileInputRef.el.click(); }
+    onDragOver() { this.state.dragging = true; }
+    onDragLeave(){ this.state.dragging = false; }
+
+    onDrop(ev) {
+        this.state.dragging = false;
+        const f = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+        if (f) this.upload(f);
+    }
+    onFileChosen(ev) {
+        const f = ev.target.files && ev.target.files[0];
+        if (f) this.upload(f);
+        // Reset, or choosing the same file twice fires no change event.
+        ev.target.value = '';
+    }
+
+    async upload(file) {
+        if (!this.props.recordId) return;
+        this.state.uploading = true;
+        this.state.uploadName = file.name;
+        this.state.error = '';
+        try {
+            const form = new FormData();
+            form.append('file', file);
+            form.append('res_model', this.props.model);
+            form.append('res_id', String(this.props.recordId));
+            form.append('name', file.name);
+            // The upload route is multipart and session-cookie authenticated,
+            // so it does not go through RpcService.
+            const resp = await fetch('/web/attachment/upload', {
+                method: 'POST', body: form, credentials: 'same-origin',
+            });
+            const out = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(out.error || `Upload failed (${resp.status})`);
+            await this.load(this.props.recordId);
+        } catch (e) {
+            this.state.error = e.message || 'Upload failed';
+        } finally {
+            this.state.uploading = false;
+            this.state.uploadName = '';
+        }
+    }
+
+    async onDelete(f) {
+        if (!confirm(`Remove "${f.name}"?`)) return;
+        try {
+            await RpcService.call('ir.attachment', 'unlink', [[f.id]], {});
+            await this.load(this.props.recordId);
+        } catch (e) {
+            this.state.error = e.message || 'Could not remove the file';
+        }
+    }
+}
+
+// ----------------------------------------------------------------
 // AuditLogPanel — shows audit trail for the current record
 //   Props:
 //     model    {string} — e.g. 'sale.order'
@@ -1864,7 +2027,9 @@ class SaleOrderFormView extends Component {
                     <div class="so-card-head">
                         <h1 class="so-doc-id" t-esc="state.record.name || 'New Quotation'"/>
                         <div class="so-stat-btns">
-                            <div class="so-stat-btn so-stat-btn-disabled" title="PDF preview — coming soon">
+                            <div t-attf-class="so-stat-btn{{ props.recordId ? '' : ' so-stat-btn-disabled' }}"
+                                 t-on-click.stop="onPreviewPdf"
+                                 title="Open this order as a printable document">
                                 <span class="so-stat-num">&#128196;</span>
                                 <span class="so-stat-lbl">Preview</span>
                             </div>
@@ -2603,6 +2768,13 @@ class SaleOrderFormView extends Component {
     onViewDeliveries() {
         // Full delivery view is in the Inventory app; navigate back to list for now
         this.props.onBack();
+    }
+
+    // The report route renders the sale.order document template with a
+    // Print / Save as PDF button, so this is the PDF preview.
+    onPreviewPdf() {
+        if (!this.props.recordId) return;
+        window.open(`/report/html/sale.order/${this.props.recordId}`, '_blank');
     }
 
     onViewInvoices() {
@@ -3505,11 +3677,13 @@ class TransferFormView extends Component {
                                     <th class="text-right">Demand</th>
                                     <th class="text-right">Done</th>
                                     <th>UoM</th>
+                                    <th t-if="anyTracked">Lot/Serial</th>
+                                    <th t-if="anyPacked">Package</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <t t-if="state.moves.length === 0">
-                                    <tr><td colspan="6" class="trn-empty-row">No operations.</td></tr>
+                                    <tr><td colspan="8" class="trn-empty-row">No operations.</td></tr>
                                 </t>
                                 <t t-foreach="state.moves" t-as="mv" t-key="mv._key">
                                     <tr>
@@ -3530,13 +3704,42 @@ class TransferFormView extends Component {
                                             </t>
                                         </td>
                                         <td t-esc="uomName(mv.product_uom_id)"/>
+                                        <td t-if="anyTracked">
+                                            <t t-if="isTracked(mv)">
+                                                <select class="inv-line-input"
+                                                        t-att-data-move-key="mv._key" data-move-field="lot_id"
+                                                        t-att-disabled="isDone ? true : undefined">
+                                                    <option value="0">— select —</option>
+                                                    <t t-foreach="lotsFor(mv)" t-as="lot" t-key="lot.id">
+                                                        <option t-att-value="lot.id"
+                                                                t-att-selected="getM2oId(mv.lot_id) === lot.id ? true : undefined"
+                                                                t-esc="lot.name"/>
+                                                    </t>
+                                                </select>
+                                                <span t-if="!isDone" class="trn-lot-add" title="Create a new lot/serial"
+                                                      t-on-click.stop="() => this.onNewLot(mv._key)">＋</span>
+                                            </t>
+                                            <span t-else="" class="trn-muted">—</span>
+                                        </td>
+                                        <td t-if="anyPacked">
+                                            <span t-if="mv.result_package_id" class="trn-pack-tag"
+                                                  t-esc="m2oName(mv.result_package_id)"/>
+                                            <span t-else="" class="trn-muted">—</span>
+                                        </td>
                                     </tr>
                                 </t>
                             </tbody>
                         </table>
-                        <!-- Put in Pack — not yet implemented -->
+                        <!-- Put in Pack: group the unpacked operations into a parcel -->
                         <div class="trn-put-in-pack-row">
-                            <button class="btn so-wf-btn so-stat-btn-disabled" title="Put in Pack — coming soon">Put in Pack</button>
+                            <button t-if="canPack" class="btn so-wf-btn" t-on-click.stop="onPutInPack"
+                                    t-att-disabled="state.packing"
+                                    title="Group the remaining operations into a numbered package">
+                                <t t-if="state.packing">Packing…</t><t t-else="">Put in Pack</t>
+                            </button>
+                            <button t-else="" class="btn so-wf-btn so-stat-btn-disabled"
+                                    t-att-title="packDisabledReason">Put in Pack</button>
+                            <span t-if="state.packMsg" class="trn-pack-msg" t-esc="state.packMsg"/>
                         </div>
                     </t>
 
@@ -3563,11 +3766,11 @@ class TransferFormView extends Component {
                             <div class="so-info-col">
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Lot/Serial tracking</label>
-                                    <span class="so-field-val trn-muted">— (not implemented)</span>
+                                    <span class="so-field-val" t-esc="trackingSummary"/>
                                 </div>
                                 <div class="so-field-row">
-                                    <label class="so-field-lbl">Package tracking</label>
-                                    <span class="so-field-val trn-muted">— (not implemented)</span>
+                                    <label class="so-field-lbl">Packages</label>
+                                    <span class="so-field-val" t-esc="packageSummary"/>
                                 </div>
                             </div>
                         </div>
@@ -3597,6 +3800,10 @@ class TransferFormView extends Component {
             companyName:    '',
             activeTab:      'operations',
             chatRefreshKey: 0,
+            // Lots for the tracked products on this transfer, keyed by product id
+            lotsByProduct:  {},
+            packing:        false,
+            packMsg:        '',
         });
         this._locMap  = {};
         this._prodMap = {};
@@ -3687,7 +3894,8 @@ class TransferFormView extends Component {
             const moves = await RpcService.call('stock.move', 'search_read',
                 [[['picking_id','=',this.props.recordId]]],
                 { fields: ['id','product_id','location_id','location_dest_id','product_uom_id',
-                           'name','product_uom_qty','quantity','state'], limit: 200 });
+                           'name','product_uom_qty','quantity','state',
+                           'lot_id','tracking','result_package_id'], limit: 200 });
             const arr = Array.isArray(moves) ? moves : [];
 
             const prodIds = [...new Set(arr.map(m => this.getM2oId(m.product_id)).filter(Boolean))];
@@ -3713,9 +3921,29 @@ class TransferFormView extends Component {
             this.state.moves = arr.map(m => ({
                 _key: String(this._nextMoveKey++), ...m,
             }));
+            await this.loadLots();
         } catch (_) {
             this.state.moves = [];
         }
+    }
+
+    // Lots are only fetched for the products that are actually tracked — an
+    // untracked transfer makes no extra call.
+    async loadLots() {
+        const tracked = [...new Set(this.state.moves
+            .filter(m => m.tracking === 'lot' || m.tracking === 'serial')
+            .map(m => this.getM2oId(m.product_id))
+            .filter(Boolean))];
+        if (!tracked.length) { this.state.lotsByProduct = {}; return; }
+        try {
+            const byProd = {};
+            for (const pid of tracked) {
+                const lots = await RpcService.call('stock.production.lot', 'search_read',
+                    [[['product_id','=',pid]]], { fields: ['id','name'], limit: 300 });
+                byProd[pid] = (Array.isArray(lots) ? lots : []).map(l => ({ id: l.id, name: l.name }));
+            }
+            this.state.lotsByProduct = byProd;
+        } catch (_) { this.state.lotsByProduct = {}; }
     }
 
     async loadLocNames(ids) {
@@ -3739,6 +3967,45 @@ class TransferFormView extends Component {
     get canEdit()     { return !this.isDone && !this.state.loading; }
 
     get pickingTypeName() { return this._pickingTypeName || '—'; }
+
+    // ---- Lots & packages -------------------------------------------
+    // The backend already enforces lots on tracked products at validation
+    // (a tracked move without a lot is refused); these getters are what let
+    // the operator set one before they hit Validate rather than after.
+    isTracked(mv)  { return mv.tracking === 'lot' || mv.tracking === 'serial'; }
+    get anyTracked() { return this.state.moves.some(m => this.isTracked(m)); }
+    get anyPacked()  { return this.state.moves.some(m => !!m.result_package_id); }
+    lotsFor(mv)    { return this.state.lotsByProduct[this.getM2oId(mv.product_id)] || []; }
+    m2oName(v)     { return Array.isArray(v) && v.length > 1 ? v[1] : ''; }
+
+    get trackingSummary() {
+        const tracked = this.state.moves.filter(m => this.isTracked(m));
+        if (!tracked.length) return 'No tracked products on this transfer';
+        const missing = tracked.filter(m => !this.getM2oId(m.lot_id)).length;
+        return missing
+            ? `${tracked.length} tracked line(s) — ${missing} still needs a lot/serial`
+            : `${tracked.length} tracked line(s), all assigned`;
+    }
+    get packageSummary() {
+        const names = [...new Set(this.state.moves
+            .filter(m => m.result_package_id)
+            .map(m => this.m2oName(m.result_package_id)))];
+        if (!names.length) return 'Not packed';
+        const loose = this.state.moves.filter(m => !m.result_package_id).length;
+        return names.join(', ') + (loose ? ` (${loose} line(s) still loose)` : '');
+    }
+
+    get canPack() {
+        return !this.isNew && !this.isDone && !this.isCancelled
+               && this.state.moves.some(m => !m.result_package_id);
+    }
+    get packDisabledReason() {
+        if (this.isNew)       return 'Save the transfer first';
+        if (this.isDone)      return 'This transfer is already done';
+        if (this.isCancelled) return 'This transfer is cancelled';
+        if (!this.state.moves.length) return 'Add an operation first';
+        return 'Everything on this transfer is already packed';
+    }
 
     stepClass(step) {
         const order = { draft: 0, confirmed: 1, assigned: 2, done: 3 };
@@ -3765,9 +4032,69 @@ class TransferFormView extends Component {
 
     // ---- Event handlers ----
     onAnyChange(e) {
+        // A per-line <select> (the lot picker) is a change event, not an input
+        // one, so it has to be routed here as well as in onAnyInput.
+        const moveKey   = e.target.dataset.moveKey;
+        const moveField = e.target.dataset.moveField;
+        if (moveKey && moveField && e.target.tagName === 'SELECT') {
+            const mv = this.state.moves.find(m => m._key === moveKey);
+            if (mv) {
+                mv[moveField] = parseInt(e.target.value) || 0;
+                if (moveField === 'lot_id') this.saveLot(mv);
+            }
+            return;
+        }
         const field = e.target.dataset.field;
         if (field && e.target.tagName === 'SELECT') {
             this.state.record[field] = parseInt(e.target.value) || 0;
+        }
+    }
+
+    // Written straight through: the lot is what Validate will check, and a
+    // half-saved transfer that looks assigned but is not is worse than a
+    // round trip per pick.
+    async saveLot(mv) {
+        if (!mv.id) return;
+        try {
+            await RpcService.call('stock.move', 'write',
+                [[mv.id], { lot_id: this.getM2oId(mv.lot_id) || false }], {});
+        } catch (e) {
+            alert('Could not set the lot/serial: ' + (e.message || e));
+            await this.loadMoves();
+        }
+    }
+
+    async onNewLot(moveKey) {
+        const mv = this.state.moves.find(m => m._key === moveKey);
+        if (!mv) return;
+        const pid = this.getM2oId(mv.product_id);
+        const name = prompt(`New lot/serial number for ${this.prodName(mv.product_id)}:`);
+        if (!name) return;
+        try {
+            const id = await RpcService.call('stock.production.lot', 'create',
+                [{ name, product_id: pid }], {});
+            mv.lot_id = [id, name];
+            await this.saveLot(mv);
+            await this.loadLots();
+        } catch (e) {
+            alert('Could not create the lot: ' + (e.message || e));
+        }
+    }
+
+    async onPutInPack() {
+        this.state.packing = true;
+        this.state.packMsg = '';
+        try {
+            const res = await RpcService.call('stock.quant.package', 'put_in_pack',
+                [{ picking_id: this.props.recordId }], {});
+            this.state.packMsg = res && res.name
+                ? `Packed ${res.moves} operation(s) into ${res.name}` : 'Packed';
+            await this.loadMoves();
+        } catch (e) {
+            this.state.packMsg = '';
+            alert(e.message || e);
+        } finally {
+            this.state.packing = false;
         }
     }
 
@@ -3887,7 +4214,7 @@ class TransferFormView extends Component {
 // ProductFormView — product.product detail (Odoo 17-style)
 // ----------------------------------------------------------------
 class ProductFormView extends Component {
-    static components = { ChatterPanel };
+    static components = { ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onFormChange"
@@ -3908,16 +4235,67 @@ class ProductFormView extends Component {
                 </div>
                 <!-- Secondary action buttons (inventory operations) -->
                 <div class="prd-secondary-btns">
-                    <button class="btn so-stat-btn-disabled"
-                            title="Update stock quantity — requires stock.quant (coming soon)">
-                        Update Quantity
-                    </button>
-                    <button class="btn so-stat-btn-disabled"
-                            title="Replenish stock — requires reordering rules (coming soon)">
-                        Replenish
-                    </button>
+                    <t t-if="stockTracked">
+                        <button class="btn" t-on-click.stop="onUpdateQuantity"
+                                title="Count the stock on hand at a location">
+                            Update Quantity
+                        </button>
+                        <button class="btn" t-on-click.stop="onReplenish" t-att-disabled="state.replenishing"
+                                title="Run this product's reordering rules now">
+                            <t t-if="state.replenishing">Replenishing…</t><t t-else="">Replenish</t>
+                        </button>
+                    </t>
+                    <t t-else="">
+                        <button class="btn so-stat-btn-disabled"
+                                title="Only storable products carry stock">Update Quantity</button>
+                        <button class="btn so-stat-btn-disabled"
+                                title="Only storable products carry stock">Replenish</button>
+                    </t>
                 </div>
             </div>
+
+            <!-- Inventory adjustment: count the on-hand per location -->
+            <t t-if="state.adjust.open">
+                <div class="gf-modal" t-on-click="onAdjustBackdrop">
+                    <div class="prd-adjust-card" t-on-click.stop="">
+                        <h3 class="gf-modal-title">Update Quantity &#8212; <t t-esc="state.record.name"/></h3>
+                        <p class="prd-adjust-hint">
+                            Set the counted quantity. The difference is booked as a move to or from
+                            Inventory Adjustments, so the correction stays in the stock ledger.
+                        </p>
+                        <table class="prd-adjust-table">
+                            <thead>
+                                <tr><th>Location</th><th class="num">On Hand</th><th class="num">Counted</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr t-foreach="state.adjust.rows" t-as="ar" t-key="ar.location_id">
+                                    <td t-esc="ar.location_name"/>
+                                    <td class="num" t-esc="fmtQty(ar.on_hand)"/>
+                                    <td class="num">
+                                        <input type="number" step="0.01" class="prd-adjust-input"
+                                               t-att-value="ar.counted"
+                                               t-att-data-loc="ar.location_id"
+                                               t-on-input="onAdjustInput"/>
+                                    </td>
+                                </tr>
+                                <tr t-if="!state.adjust.rows.length">
+                                    <td colspan="3" class="prd-adjust-empty">
+                                        No internal locations available.
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div t-if="state.adjust.error" class="gf-modal-err" t-esc="state.adjust.error"/>
+                        <div class="gf-modal-actions">
+                            <button class="btn" t-on-click="() => this.state.adjust.open = false">Cancel</button>
+                            <button class="btn btn-primary" t-on-click="onApplyAdjust"
+                                    t-att-disabled="state.adjust.saving">
+                                <t t-if="state.adjust.saving">Applying…</t><t t-else="">Apply</t>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </t>
 
             <t t-if="state.loading"><div class="loading">Loading…</div></t>
             <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
@@ -3932,16 +4310,18 @@ class ProductFormView extends Component {
                             <span class="prd-stat-icon">🌐</span>
                             <span class="prd-stat-lbl">Go to Website</span>
                         </div>
-                        <div class="prd-stat-widget prd-stat-disabled"
-                             title="Units On Hand — requires stock.quant (coming soon)">
+                        <div t-attf-class="prd-stat-widget{{ stockTracked ? '' : ' prd-stat-disabled' }}"
+                             t-on-click.stop="onViewOnHand"
+                             title="Units on hand across internal locations">
                             <span class="prd-stat-icon">📦</span>
-                            <span class="prd-stat-num">0.00</span>
+                            <span class="prd-stat-num" t-esc="fmtQty(state.stock.qty_available)"/>
                             <span class="prd-stat-lbl">On Hand</span>
                         </div>
-                        <div class="prd-stat-widget prd-stat-disabled"
-                             title="Forecasted Quantity — requires virtual stock computation (coming soon)">
+                        <div t-attf-class="prd-stat-widget{{ stockTracked ? '' : ' prd-stat-disabled' }}"
+                             t-on-click.stop="onViewForecast"
+                             t-att-title="forecastTitle">
                             <span class="prd-stat-icon">📊</span>
-                            <span class="prd-stat-num">0.00</span>
+                            <span class="prd-stat-num" t-esc="fmtQty(state.stock.virtual_available)"/>
                             <span class="prd-stat-lbl">Forecasted</span>
                         </div>
                         <div class="prd-stat-widget" t-on-click.stop="onViewMoves"
@@ -3950,9 +4330,10 @@ class ProductFormView extends Component {
                             <span class="prd-stat-num" t-esc="state.moveCount"/>
                             <span class="prd-stat-lbl">Product Moves</span>
                         </div>
-                        <div class="prd-stat-widget prd-stat-disabled"
-                             title="Reordering Rules — requires stock.warehouse.orderpoint (coming soon)">
+                        <div class="prd-stat-widget" t-on-click.stop="onViewOrderpoints"
+                             title="Reordering rules for this product">
                             <span class="prd-stat-icon">🔄</span>
+                            <span class="prd-stat-num" t-esc="state.stock.orderpoint_count"/>
                             <span class="prd-stat-lbl">Reordering Rules</span>
                         </div>
                         <div class="prd-stat-widget" t-on-click.stop="onViewBom"
@@ -3961,9 +4342,10 @@ class ProductFormView extends Component {
                             <span class="prd-stat-num" t-esc="state.bomCount"/>
                             <span class="prd-stat-lbl">Bill of Materials</span>
                         </div>
-                        <div class="prd-stat-widget prd-stat-disabled"
-                             title="Putaway Rules — requires stock.putaway.rule (coming soon)">
+                        <div class="prd-stat-widget" t-on-click.stop="onViewPutaway"
+                             title="Putaway rules for this product">
                             <span class="prd-stat-icon">📋</span>
+                            <span class="prd-stat-num" t-esc="state.stock.putaway_count"/>
                             <span class="prd-stat-lbl">Putaway Rules</span>
                         </div>
                     </div>
@@ -4321,6 +4703,13 @@ class ProductFormView extends Component {
 
                 </div><!-- /.so-card -->
 
+                <!-- ── Datasheets & documents ──────────────────── -->
+                <t t-if="!isNew">
+                    <AttachmentPanel model="'product.product'"
+                                     recordId="props.recordId"
+                                     title="'Datasheets &amp; Documents'"/>
+                </t>
+
                 <!-- ── Chatter ───────────────────────────────────── -->
                 <t t-if="!isNew">
                     <ChatterPanel model="'product.product'"
@@ -4345,10 +4734,32 @@ class ProductFormView extends Component {
             bomCount:       0,
             activeTab:      'general',
             chatRefreshKey: 0,
+            // Live inventory figures (stock.quant product_summary)
+            stock: { qty_available: 0, reserved: 0, incoming_qty: 0, outgoing_qty: 0,
+                     virtual_available: 0, orderpoint_count: 0, putaway_count: 0 },
+            replenishing: false,
+            adjust: { open: false, rows: [], saving: false, error: '' },
         });
         this._orig = {};
         onMounted(() => this.load());
     }
+
+    // Storable products carry stock. A consumable that already has quants or a
+    // reordering rule still needs its counters usable, so it counts too.
+    get stockTracked() {
+        if ((this.state.record.type || 'consu') === 'storable') return true;
+        const s = this.state.stock;
+        return !!(s.qty_available || s.incoming_qty || s.outgoing_qty || s.orderpoint_count);
+    }
+
+    get forecastTitle() {
+        const s = this.state.stock;
+        return `Forecasted = on hand ${this.fmtQty(s.qty_available)}`
+             + ` + incoming ${this.fmtQty(s.incoming_qty)}`
+             + ` − outgoing ${this.fmtQty(s.outgoing_qty)}`;
+    }
+
+    fmtQty(v) { return (Number(v) || 0).toFixed(2); }
 
     get isNew() { return !this.props.recordId; }
 
@@ -4400,6 +4811,7 @@ class ProductFormView extends Component {
                 ]);
                 this.state.moveCount = typeof mc === 'number' ? mc : 0;
                 this.state.bomCount  = typeof bc === 'number' ? bc : 0;
+                await this.loadStock();
             } else {
                 this.state.record = {
                     name: '', default_code: '', barcode: false,
@@ -4523,6 +4935,117 @@ class ProductFormView extends Component {
             this.state.record.image_1920 = b64;
         };
         reader.readAsDataURL(file);
+    }
+
+    // ---- Inventory: live figures, adjustment, replenishment ----------
+    // The stat row used to be inert placeholders. stock.quant, the reordering
+    // rules and the putaway rules all exist, so these read and write the real
+    // ledger (docs/090).
+
+    async loadStock() {
+        if (!this.props.recordId) return;
+        try {
+            const s = await RpcService.call('stock.quant', 'product_summary',
+                                            [this.props.recordId], {});
+            if (s && typeof s === 'object') this.state.stock = { ...this.state.stock, ...s };
+        } catch (e) { console.error(e); }
+    }
+
+    async onUpdateQuantity() {
+        this.state.adjust = { open: true, rows: [], saving: false, error: '' };
+        try {
+            // Every internal location, with the product's current quant on it —
+            // stock can be counted into a location that has no quant row yet.
+            const [locs, quants] = await Promise.all([
+                RpcService.call('stock.location', 'search_read',
+                    [[['usage','=','internal']]], { fields: ['id','complete_name','name'], limit: 200 }),
+                RpcService.call('stock.quant', 'search_read',
+                    [[['product_id','=',this.props.recordId]]], { fields: ['id','location_id','quantity'], limit: 200 }),
+            ]);
+            const onHand = new Map();
+            for (const q of (Array.isArray(quants) ? quants : [])) {
+                const lid = Array.isArray(q.location_id) ? q.location_id[0] : q.location_id;
+                onHand.set(lid, (onHand.get(lid) || 0) + (Number(q.quantity) || 0));
+            }
+            this.state.adjust.rows = (Array.isArray(locs) ? locs : []).map(l => ({
+                location_id:   l.id,
+                location_name: l.complete_name || l.name,
+                on_hand:       onHand.get(l.id) || 0,
+                counted:       onHand.get(l.id) || 0,
+            }));
+        } catch (e) {
+            this.state.adjust.error = e.message || 'Failed to load locations';
+        }
+    }
+
+    onAdjustInput(ev) {
+        const lid = parseInt(ev.target.dataset.loc);
+        const row = this.state.adjust.rows.find(r => r.location_id === lid);
+        if (row) row.counted = parseFloat(ev.target.value);
+    }
+
+    onAdjustBackdrop(ev) { if (ev.target === ev.currentTarget) this.state.adjust.open = false; }
+
+    async onApplyAdjust() {
+        this.state.adjust.saving = true;
+        this.state.adjust.error  = '';
+        try {
+            // Only the rows whose count actually moved — set_on_hand books a
+            // stock move per call, and an unchanged line would book a zero move.
+            const changed = this.state.adjust.rows.filter(
+                r => Number.isFinite(r.counted) && Math.abs(r.counted - r.on_hand) > 1e-6);
+            for (const r of changed) {
+                await RpcService.call('stock.quant', 'set_on_hand',
+                    [{ product_id: this.props.recordId, location_id: r.location_id, quantity: r.counted }], {});
+            }
+            this.state.adjust.open = false;
+            await this.loadStock();
+            const mc = await RpcService.call('stock.move', 'search_count',
+                                             [[['product_id','=',this.props.recordId]]]);
+            this.state.moveCount = typeof mc === 'number' ? mc : this.state.moveCount;
+        } catch (e) {
+            this.state.adjust.error = e.message || 'Failed to apply the adjustment';
+        } finally {
+            this.state.adjust.saving = false;
+        }
+    }
+
+    async onReplenish() {
+        if (this.state.stock.orderpoint_count === 0) {
+            alert('This product has no reordering rule yet. Add one first — the Reordering Rules button opens the list.');
+            return;
+        }
+        this.state.replenishing = true;
+        try {
+            const res = await RpcService.call('stock.warehouse.orderpoint', 'run_scheduler',
+                                              [{ product_id: this.props.recordId }], {});
+            const made    = (res && res.replenishments_created) || 0;
+            const noVend  = (res && res.skipped_no_vendor) || 0;
+            if (made)        alert(`Replenishment drafted: ${made} order(s) created.`);
+            else if (noVend) alert('Stock is below the minimum, but this product has no vendor — '
+                                 + 'set one on the reordering rule or in the vendor pricelist.');
+            else             alert('Nothing to replenish — forecasted stock is at or above the minimum.');
+            await this.loadStock();
+        } catch (e) {
+            alert('Replenish failed: ' + (e.message || e));
+        } finally {
+            this.state.replenishing = false;
+        }
+    }
+
+    onViewOnHand() {
+        if (this.props.onNavigate) this.props.onNavigate('stock.quant', [['product_id','=',this.props.recordId]]);
+    }
+    onViewForecast() {
+        // The forecast is on-hand plus pending moves — the moves are what a
+        // user drills into to see why the number is what it is.
+        if (this.props.onNavigate) this.props.onNavigate('stock.move', [['product_id','=',this.props.recordId]]);
+    }
+    onViewOrderpoints() {
+        if (this.props.onNavigate) this.props.onNavigate('stock.warehouse.orderpoint', [['product_id','=',this.props.recordId]]);
+    }
+    onViewPutaway() {
+        if (this.props.onNavigate) this.props.onNavigate('stock.putaway.rule', [['product_id','=',this.props.recordId]]);
     }
 
     onViewMoves() {
@@ -6876,6 +7399,12 @@ class DocumentLayoutEditor extends Component {
                     </t>
                 </div>
                 <div class="dle-topbar-actions">
+                    <span t-if="state.isCustomized" class="dle-badge-custom"
+                          title="This template differs from the one shipped in the source tree">Customized</span>
+                    <span t-else="" class="dle-badge-stock"
+                          title="This template matches the one shipped in the source tree">Default</span>
+                    <button class="btn" t-on-click="onCompareShipped">&#9776; Compare</button>
+                    <button class="btn" t-on-click="onAskReset" t-att-disabled="state.resetting">Reset to default</button>
                     <button class="btn" t-on-click="onRefreshPreview">&#8635; Refresh</button>
                     <button class="btn btn-primary" t-on-click="onSave" t-att-disabled="state.saving">
                         <t t-if="state.saving">Saving&#8230;</t><t t-else="">Save</t>
@@ -6883,6 +7412,56 @@ class DocumentLayoutEditor extends Component {
                     <span t-if="state.saved" class="dle-saved-msg">&#10003; Saved</span>
                 </div>
             </div>
+
+            <!-- Reset confirmation -->
+            <t t-if="state.confirmReset">
+                <div class="gf-modal" t-on-click="onResetBackdrop">
+                    <div class="gf-modal-card" t-on-click.stop="">
+                        <h3 class="gf-modal-title">Reset to the shipped template?</h3>
+                        <p class="dle-reset-text">
+                            <t t-esc="currentDocLabel"/> goes back to the template that ships with
+                            this version of the software. The saved block layout for this document
+                            is discarded too, so it cannot re-apply itself on the next save.
+                        </p>
+                        <p class="dle-reset-text dle-reset-warn" t-if="state.isCustomized">
+                            Your customisations to this template will be lost.
+                        </p>
+                        <div class="gf-modal-actions">
+                            <button class="btn" t-on-click="() => this.state.confirmReset = false">Cancel</button>
+                            <button class="btn btn-primary" t-on-click="onResetDefault"
+                                    t-att-disabled="state.resetting">
+                                <t t-if="state.resetting">Resetting&#8230;</t><t t-else="">Reset</t>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </t>
+
+            <!-- Compare with the shipped template -->
+            <t t-if="state.showDiff">
+                <div class="gf-modal" t-on-click="onDiffBackdrop">
+                    <div class="dle-diff-card" t-on-click.stop="">
+                        <div class="dle-diff-head">
+                            <h3 class="gf-modal-title" style="margin:0;">
+                                <t t-esc="currentDocLabel"/> &#8212; yours vs. shipped
+                            </h3>
+                            <span class="dle-diff-stat" t-esc="diffSummary"/>
+                            <button class="btn" t-on-click="() => this.state.showDiff = false">Close</button>
+                        </div>
+                        <div class="dle-diff-body">
+                            <div t-if="!state.diffRows.length" class="dle-diff-same">
+                                Identical to the shipped template.
+                            </div>
+                            <t t-foreach="state.diffRows" t-as="dr" t-key="dr_index">
+                                <div t-attf-class="dle-diff-row dle-diff-{{dr.kind}}">
+                                    <span class="dle-diff-gutter" t-esc="dr.mark"/>
+                                    <span class="dle-diff-text" t-esc="dr.text"/>
+                                </div>
+                            </t>
+                        </div>
+                    </div>
+                </div>
+            </t>
 
             <!-- 3-panel main area -->
             <div class="dle-main">
@@ -7311,6 +7890,13 @@ class DocumentLayoutEditor extends Component {
             // Log window
             logOpen:         false,
             logLines:        [],
+            // Shipped-template baseline (ir_report_template.default_html)
+            defaultHtml:     '',
+            isCustomized:    false,
+            confirmReset:    false,
+            resetting:       false,
+            showDiff:        false,
+            diffRows:        [],
         });
         this.shellRef = useRef('shell');
         this._updateHeight = () => {
@@ -7558,6 +8144,92 @@ class DocumentLayoutEditor extends Component {
 
     onRefreshPreview() { this.rebuildHtml(); }
 
+    // ---- shipped-template baseline: compare & reset ----------------
+    // template_html is owned by the database; default_html is what the source
+    // tree ships. Keeping the two side by side is what lets a template be
+    // reset without a hand-written SQL migration (docs/089, docs/090).
+
+    get currentDocLabel() {
+        const dt = DLE_DOC_TYPES.find(d => d.model === this.state.docModel);
+        return dt ? dt.label : this.state.docModel;
+    }
+
+    get diffSummary() {
+        let add = 0, del = 0;
+        for (const r of this.state.diffRows) {
+            if (r.kind === 'add') add++;
+            else if (r.kind === 'del') del++;
+        }
+        return add || del ? `+${add} / -${del} lines` : 'no differences';
+    }
+
+    // Line diff, longest-common-subsequence. Templates are a few hundred lines,
+    // so the O(n·m) table is not worth avoiding. Unchanged runs longer than
+    // six lines collapse to a single "…" row to keep the panel readable.
+    buildDiff(mine, shipped) {
+        const A = (shipped || '').split('\n');
+        const B = (mine    || '').split('\n');
+        const n = A.length, m = B.length;
+        const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+        for (let i = n - 1; i >= 0; i--)
+            for (let j = m - 1; j >= 0; j--)
+                lcs[i][j] = A[i] === B[j] ? lcs[i + 1][j + 1] + 1
+                                          : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+        const raw = [];
+        let i = 0, j = 0;
+        while (i < n && j < m) {
+            if (A[i] === B[j])                       { raw.push({ kind: 'same', mark: ' ', text: A[i] }); i++; j++; }
+            else if (lcs[i + 1][j] >= lcs[i][j + 1]) { raw.push({ kind: 'del',  mark: '-', text: A[i] }); i++; }
+            else                                     { raw.push({ kind: 'add',  mark: '+', text: B[j] }); j++; }
+        }
+        while (i < n) raw.push({ kind: 'del', mark: '-', text: A[i++] });
+        while (j < m) raw.push({ kind: 'add', mark: '+', text: B[j++] });
+
+        const out = [];
+        let run = 0;
+        for (let k = 0; k < raw.length; k++) {
+            if (raw[k].kind !== 'same') { run = 0; out.push(raw[k]); continue; }
+            // keep 3 lines of context either side of a change
+            const nearChange = raw.slice(Math.max(0, k - 3), k + 4).some(r => r.kind !== 'same');
+            if (nearChange) { run = 0; out.push(raw[k]); }
+            else if (run++ === 0) out.push({ kind: 'skip', mark: '…', text: '' });
+        }
+        return out.every(r => r.kind === 'same' || r.kind === 'skip') ? [] : out;
+    }
+
+    onCompareShipped() {
+        if (!this.state.defaultHtml) {
+            this.addLog('No shipped baseline recorded for this template yet — restart the server once.');
+            return;
+        }
+        // Compare what is stored, not the unsaved buffer, so the panel matches
+        // the Customized badge.
+        this.state.diffRows = this.buildDiff(this.storedHtml || this.state.templateHtml,
+                                             this.state.defaultHtml);
+        this.state.showDiff = true;
+    }
+
+    onDiffBackdrop(ev)  { if (ev.target === ev.currentTarget) this.state.showDiff    = false; }
+    onResetBackdrop(ev) { if (ev.target === ev.currentTarget) this.state.confirmReset = false; }
+
+    onAskReset() { this.state.confirmReset = true; }
+
+    async onResetDefault() {
+        if (!this.state.templateId) return;
+        this.state.resetting = true;
+        try {
+            await RpcService.call('ir.report.template', 'action_reset_default',
+                                  [[this.state.templateId]], {});
+            this.addLog(`Reset ${this.currentDocLabel} to the shipped template.`);
+            this.state.confirmReset = false;
+            await this.onDocTypeChange(this.state.docModel);   // reload blocks + html
+        } catch (e) {
+            this.addLog(`Reset failed: ${e.message || e}`);
+        } finally {
+            this.state.resetting = false;
+        }
+    }
+
     onOpenRealPreview() {
         const id = parseInt(this.state.previewRecordId);
         if (id > 0) window.open(`/report/html/${this.state.docModel}/${id}`, '_blank');
@@ -7606,6 +8278,10 @@ class DocumentLayoutEditor extends Component {
         this.state.templateId    = null;
         this.state.templateHtml  = '';
         this.state.previewDoc    = '';
+        this.state.defaultHtml   = '';
+        this.state.isCustomized  = false;
+        this.state.showDiff      = false;
+        this.state.confirmReset  = false;
         // Load template record (for paper_format, orientation, and templateId)
         try {
             const tpls = await RpcService.call('ir.report.template', 'search_read',
@@ -7626,6 +8302,13 @@ class DocumentLayoutEditor extends Component {
                 this.state.docSettings.font_color        = tpls[0].font_color        || '#333333';
                 this.state.docSettings.line_height       = tpls[0].line_height       ?? 1.5;
                 this.state.docSettings.footer_text       = tpls[0].footer_text       || '';
+                // default_html only comes back from read(), not search_read()
+                const full = await RpcService.call('ir.report.template', 'read', [[tpls[0].id]], {});
+                if (Array.isArray(full) && full.length) {
+                    this.state.defaultHtml  = full[0].default_html || '';
+                    this.state.isCustomized = !!full[0].is_customized;
+                    this.storedHtml         = full[0].template_html || '';
+                }
             }
         } catch (e) { console.error(e); }
         // Load block config
@@ -7729,6 +8412,16 @@ class DocumentLayoutEditor extends Component {
                 }
             }
             this.state.saved = true;
+            // Refresh the Customized badge against the shipped baseline.
+            if (this.state.templateId) {
+                try {
+                    const full = await RpcService.call('ir.report.template', 'read', [[this.state.templateId]], {});
+                    if (Array.isArray(full) && full.length) {
+                        this.state.isCustomized = !!full[0].is_customized;
+                        this.storedHtml         = full[0].template_html || '';
+                    }
+                } catch (e) {}
+            }
             const docLabel = DLE_DOC_TYPES.find(d => d.model === this.state.docModel)?.label || this.state.docModel;
             this.addLog(`Saved: ${docLabel} template (${this.state.blocks.length} blocks)`);
             setTimeout(() => { if (this.state) this.state.saved = false; }, 3000);
@@ -10230,6 +10923,424 @@ class AccountSettings extends Component {
 }
 
 // ----------------------------------------------------------------
+// ExpenseSheetFormView — hr.expense.sheet: the claim, its receipts, and the
+// approval chain that turns them into a journal entry (docs/090).
+//
+// Draft → Submitted → Approved → Posted → Paid. The expense lines are only
+// editable while the report is a draft: once it has been submitted, the totals
+// are what somebody is approving, and after posting they are in the ledger.
+// ----------------------------------------------------------------
+class ExpenseSheetFormView extends Component {
+    static components = { DatePicker, AttachmentPanel };
+    static template = xml`
+        <div class="so-shell" t-on-change="onChange" t-on-input="onInput">
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Expense Reports</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.name || 'New Expense Report'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <t t-if="isNew"><button class="btn btn-primary" t-on-click.stop="onCreate">Create</button></t>
+                        <t t-else="">
+                            <button t-if="isDraft" class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                            <button t-if="isDraft" class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
+                        </t>
+                        <button class="btn" t-on-click.stop="onBack">Back</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="so-statusbar">
+                <div class="so-sb-left">
+                    <button t-if="!isNew and state.record.state === 'draft'" class="btn btn-primary so-wf-btn"
+                            t-on-click.stop="onSubmit">Submit to Manager</button>
+                    <t t-if="state.record.state === 'submit'">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onApprove">Approve</button>
+                        <button class="btn ghost so-wf-btn"       t-on-click.stop="onRefuse">Refuse</button>
+                        <button class="btn ghost so-wf-btn"       t-on-click.stop="onDraft">Reset to Draft</button>
+                    </t>
+                    <t t-if="state.record.state === 'approve'">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onPost">Post Journal Entry</button>
+                        <button class="btn ghost so-wf-btn"       t-on-click.stop="onRefuse">Refuse</button>
+                    </t>
+                    <button t-if="state.record.state === 'post' and !isCompanyPaid" class="btn btn-primary so-wf-btn"
+                            t-on-click.stop="onPay">Register Reimbursement</button>
+                    <span t-if="state.record.state === 'post' and isCompanyPaid" class="exp-note">
+                        Paid by the company — nothing to reimburse.
+                    </span>
+                    <button t-if="state.record.state === 'cancel'" class="btn ghost so-wf-btn"
+                            t-on-click.stop="onDraft">Reset to Draft</button>
+                </div>
+                <div class="so-stepper">
+                    <div t-attf-class="so-step{{stepClass('draft')}}">Draft</div>
+                    <div t-attf-class="so-step{{stepClass('submit')}}">Submitted</div>
+                    <div t-attf-class="so-step{{stepClass('approve')}}">Approved</div>
+                    <div t-attf-class="so-step{{stepClass('post')}}">Posted</div>
+                    <div t-attf-class="so-step{{stepClass('done')}}">Paid</div>
+                </div>
+            </div>
+
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="so-card">
+                    <div class="so-card-head">
+                        <h1 class="so-doc-id" t-esc="state.record.name || 'New Expense Report'"/>
+                        <div class="so-stat-btns">
+                            <div class="so-stat-btn so-stat-btn-disabled">
+                                <span class="so-stat-num" t-esc="formatMoney(sheetTotal)"/>
+                                <span class="so-stat-lbl">Total</span>
+                            </div>
+                            <div t-if="state.record.move_id" class="so-stat-btn" t-on-click.stop="onOpenMove">
+                                <span class="so-stat-num">📄</span>
+                                <span class="so-stat-lbl">Journal Entry</span>
+                            </div>
+                            <div t-if="state.record.payment_move_id" class="so-stat-btn" t-on-click.stop="onOpenPayment">
+                                <span class="so-stat-num">💵</span>
+                                <span class="so-stat-lbl">Reimbursement</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="so-info-grid">
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl">Report Name</label>
+                                <input class="form-input" data-field="name" placeholder="e.g. March client visits"
+                                       t-att-value="state.record.name || ''" t-att-readonly="isDraft ? undefined : true"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Employee</label>
+                                <select class="form-input" data-field="employee_id" t-att-disabled="isDraft ? undefined : true">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.employees" t-as="o" t-key="o.id">
+                                        <option t-att-value="o.id"
+                                                t-att-selected="getM2oId(state.record.employee_id) === o.id ? true : undefined"
+                                                t-esc="o.display"/>
+                                    </t>
+                                </select></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Date</label>
+                                <DatePicker value="formatDate(state.record.date)" onSelect.bind="setDate"/></div>
+                        </div>
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl">Paid By</label>
+                                <select class="form-input" data-field="payment_mode" t-att-disabled="isDraft ? undefined : true">
+                                    <option value="own_account"
+                                            t-att-selected="!isCompanyPaid ? true : undefined">Employee (to reimburse)</option>
+                                    <option value="company_account"
+                                            t-att-selected="isCompanyPaid ? true : undefined">Company</option>
+                                </select></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Journal</label>
+                                <select class="form-input" data-field="journal_id" t-att-disabled="isDraft ? undefined : true">
+                                    <option value="0">— default —</option>
+                                    <t t-foreach="state.journals" t-as="o" t-key="o.id">
+                                        <option t-att-value="o.id"
+                                                t-att-selected="getM2oId(state.record.journal_id) === o.id ? true : undefined"
+                                                t-esc="o.display"/>
+                                    </t>
+                                </select></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Notes</label>
+                                <input class="form-input" data-field="note"
+                                       t-att-value="state.record.note === false ? '' : (state.record.note || '')"
+                                       t-att-readonly="isDraft ? undefined : true"/></div>
+                        </div>
+                    </div>
+
+                    <div class="so-tabs"><span class="so-tab active">Expenses</span></div>
+                    <table class="so-lines-table">
+                        <thead>
+                            <tr>
+                                <th style="width:26%">Description</th>
+                                <th style="width:12%">Date</th>
+                                <th style="width:20%">Expense Account</th>
+                                <th class="so-col-num" style="width:8%">Qty</th>
+                                <th class="so-col-num" style="width:12%">Unit Price</th>
+                                <th style="width:12%">Tax</th>
+                                <th class="so-col-num" style="width:10%">Total</th>
+                                <th t-if="isDraft" style="width:34px"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <t t-foreach="state.lines" t-as="l" t-key="l._key">
+                                <tr>
+                                    <td><input class="o2m-input" data-lf="name" t-att-data-line="l._key"
+                                               t-att-value="l.name || ''" t-att-readonly="isDraft ? undefined : true"
+                                               placeholder="What was bought"/></td>
+                                    <td><input class="o2m-input" type="date" data-lf="date" t-att-data-line="l._key"
+                                               t-att-value="formatDate(l.date)" t-att-readonly="isDraft ? undefined : true"/></td>
+                                    <td>
+                                        <select class="o2m-input" data-lf="account_id" t-att-data-line="l._key"
+                                                t-att-disabled="isDraft ? undefined : true">
+                                            <option value="0">— default —</option>
+                                            <t t-foreach="state.accounts" t-as="a" t-key="a.id">
+                                                <option t-att-value="a.id"
+                                                        t-att-selected="getM2oId(l.account_id) === a.id ? true : undefined"
+                                                        t-esc="a.display"/>
+                                            </t>
+                                        </select>
+                                    </td>
+                                    <td class="so-col-num"><input class="o2m-input" type="number" step="0.01"
+                                               data-lf="quantity" t-att-data-line="l._key"
+                                               t-att-value="l.quantity !== undefined ? l.quantity : 1"
+                                               t-att-readonly="isDraft ? undefined : true"/></td>
+                                    <td class="so-col-num"><input class="o2m-input" type="number" step="0.01"
+                                               data-lf="unit_amount" t-att-data-line="l._key"
+                                               t-att-value="l.unit_amount !== undefined ? l.unit_amount : 0"
+                                               t-att-readonly="isDraft ? undefined : true"/></td>
+                                    <td>
+                                        <select class="o2m-input" data-lf="tax_id" t-att-data-line="l._key"
+                                                t-att-disabled="isDraft ? undefined : true">
+                                            <option value="0">— none —</option>
+                                            <t t-foreach="state.taxes" t-as="tx" t-key="tx.id">
+                                                <option t-att-value="tx.id"
+                                                        t-att-selected="getM2oId(l.tax_id) === tx.id ? true : undefined"
+                                                        t-esc="tx.display"/>
+                                            </t>
+                                        </select>
+                                    </td>
+                                    <td class="so-col-num" t-esc="formatMoney(lineTotal(l))"/>
+                                    <td t-if="isDraft" class="so-col-del">
+                                        <button class="btn btn-sm btn-danger"
+                                                t-on-click.stop="() => this.removeLine(l._key)">✕</button>
+                                    </td>
+                                </tr>
+                            </t>
+                            <tr t-if="!state.lines.length">
+                                <td t-att-colspan="isDraft ? 8 : 7" class="trn-empty-row">
+                                    No expenses on this report yet.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div t-if="isDraft" class="so-line-adds">
+                        <button class="btn so-add-line" t-on-click.stop="addLine">+ Add an expense</button>
+                    </div>
+
+                    <div class="so-footer">
+                        <div class="so-notes-wrap">
+                            <p class="exp-note">
+                                SST paid on an expense is not recoverable input tax, so the full
+                                tax-inclusive amount is charged to the expense account.
+                            </p>
+                        </div>
+                        <div class="so-totals">
+                            <div class="so-total-row"><span class="so-total-lbl">Tax included</span>
+                                 <span class="so-total-val" t-esc="formatMoney(taxTotal)"/></div>
+                            <div class="so-total-row so-total-grand"><span class="so-total-lbl">Total</span>
+                                 <span class="so-total-val" t-esc="formatMoney(sheetTotal)"/></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Receipts. Read-only once the report leaves draft: what the
+                     approver saw is part of the record from that point on. -->
+                <AttachmentPanel model="'hr.expense.sheet'"
+                                 recordId="props.recordId"
+                                 title="'Receipts'"
+                                 readonly="!isDraft"/>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({ loading: true, error: '', record: {}, lines: [], deleted: [],
+                                employees: [], journals: [], accounts: [], taxes: [] });
+        this._key = 1;
+        onMounted(() => this.load());
+    }
+
+    get isNew()         { return !this.props.recordId; }
+    get isDraft()       { return this.isNew || (this.state.record.state || 'draft') === 'draft'; }
+    get isCompanyPaid() { return this.state.record.payment_mode === 'company_account'; }
+
+    get sheetTotal() { return this.state.lines.reduce((s, l) => s + this.lineTotal(l), 0); }
+    get taxTotal()   { return this.state.lines.reduce((s, l) => s + this.lineTax(l), 0); }
+
+    stepClass(s) {
+        const order = { draft: 0, submit: 1, approve: 2, post: 3, done: 4 };
+        const st = this.state.record.state || 'draft';
+        if (st === 'cancel') return s === 'draft' ? ' active' : '';
+        const cur = order[st] ?? 0, x = order[s];
+        return x === cur ? ' active' : (x < cur ? ' done' : '');
+    }
+
+    getM2oId(v) {
+        if (!v && v !== 0) return 0;
+        if (typeof v === 'number') return v;
+        if (Array.isArray(v) && v.length) return typeof v[0] === 'number' ? v[0] : 0;
+        if (typeof v === 'string') return parseInt(v) || 0;
+        return 0;
+    }
+    formatMoney(v) { return (parseFloat(v) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+    formatDate(v)  { return (!v || v === false) ? '' : String(v).substring(0, 10); }
+
+    // Mirrors the server's computation so the totals move as the user types,
+    // instead of only after a round trip.
+    lineTax(l) {
+        const base = (parseFloat(l.quantity) || 0) * (parseFloat(l.unit_amount) || 0);
+        const tax  = this.state.taxes.find(t => t.id === this.getM2oId(l.tax_id));
+        if (!tax) return 0;
+        if (tax.fixed) return tax.priceInclude ? 0 : tax.rate;
+        return tax.priceInclude ? base - (base * 100) / (100 + tax.rate)
+                                : (base * tax.rate) / 100;
+    }
+    lineTotal(l) {
+        const base = (parseFloat(l.quantity) || 0) * (parseFloat(l.unit_amount) || 0);
+        const tax  = this.state.taxes.find(t => t.id === this.getM2oId(l.tax_id));
+        return (tax && !tax.priceInclude) ? base + this.lineTax(l) : base;
+    }
+
+    async load() {
+        this.state.loading = true; this.state.error = '';
+        try {
+            const [emps, journals, accounts, taxes] = await Promise.all([
+                RpcService.call('hr.employee', 'search_read', [[]], { fields: ['id','name'], limit: 300 }).catch(() => []),
+                RpcService.call('account.journal', 'search_read', [[]], { fields: ['id','name','code'], limit: 100 }).catch(() => []),
+                RpcService.call('account.account', 'search_read', [[]], { fields: ['id','name','code'], limit: 500 }).catch(() => []),
+                RpcService.call('account.tax', 'search_read', [[]], { fields: ['id','name','amount','amount_type','price_include'], limit: 100 }).catch(() => []),
+            ]);
+            this.state.employees = (emps || []).map(e => ({ id: e.id, display: e.name }));
+            this.state.journals  = (journals || []).map(j => ({ id: j.id, display: (j.code ? j.code + ' — ' : '') + j.name }));
+            this.state.accounts  = (accounts || []).map(a => ({ id: a.id, display: (a.code ? a.code + ' ' : '') + a.name }));
+            this.state.taxes     = (taxes || []).map(t => ({
+                id: t.id, display: t.name, rate: parseFloat(t.amount) || 0,
+                fixed: t.amount_type === 'fixed', priceInclude: !!t.price_include,
+            }));
+
+            if (this.props.recordId) {
+                const r = await RpcService.call('hr.expense.sheet', 'read', [[this.props.recordId]],
+                    { fields: ['name','employee_id','date','total_amount','payment_mode','state',
+                               'journal_id','move_id','payment_move_id','note'] });
+                this.state.record = (Array.isArray(r) ? r[0] : r) || {};
+                const lines = await RpcService.call('hr.expense', 'search_read',
+                    [[['sheet_id','=',this.props.recordId]]],
+                    { fields: ['id','name','date','account_id','quantity','unit_amount',
+                               'tax_id','tax_amount','total_amount','state'], limit: 200 });
+                this.state.lines = (Array.isArray(lines) ? lines : [])
+                    .map(l => ({ _key: String(this._key++), ...l }));
+            } else {
+                this.state.record = { state: 'draft', payment_mode: 'own_account',
+                                      date: new Date().toISOString().substring(0, 10) };
+                this.state.lines  = [];
+            }
+            this.state.deleted = [];
+        } catch (e) { this.state.error = e.message || 'Failed to load the expense report'; }
+        this.state.loading = false;
+    }
+
+    onChange(e) {
+        const key = e.target.dataset.line;
+        if (key) return this.setLineField(key, e.target.dataset.lf, e.target.value);
+        const f = e.target.dataset.field;
+        if (!f) return;
+        this.state.record[f] = (f === 'employee_id' || f === 'journal_id')
+            ? (parseInt(e.target.value) || 0) : e.target.value;
+    }
+    onInput(e) {
+        const key = e.target.dataset.line;
+        if (key) return this.setLineField(key, e.target.dataset.lf, e.target.value);
+        const f = e.target.dataset.field;
+        if (f && e.target.tagName !== 'SELECT') this.state.record[f] = e.target.value;
+    }
+    setLineField(key, field, value) {
+        const l = this.state.lines.find(x => x._key === key);
+        if (!l || !field) return;
+        l[field] = (field === 'account_id' || field === 'tax_id') ? (parseInt(value) || 0) : value;
+    }
+    setDate(v) { this.state.record.date = v; }
+
+    addLine() {
+        this.state.lines.push({ _key: String(this._key++), name: '', quantity: 1, unit_amount: 0,
+                                account_id: 0, tax_id: 0,
+                                date: this.state.record.date || new Date().toISOString().substring(0, 10) });
+    }
+    removeLine(key) {
+        const i = this.state.lines.findIndex(x => x._key === key);
+        if (i < 0) return;
+        if (this.state.lines[i].id) this.state.deleted.push(this.state.lines[i].id);
+        this.state.lines.splice(i, 1);
+    }
+
+    _vals() {
+        const r = this.state.record;
+        return {
+            name:         r.name || '',
+            employee_id:  this.getM2oId(r.employee_id) || false,
+            date:         r.date || false,
+            payment_mode: r.payment_mode || 'own_account',
+            journal_id:   this.getM2oId(r.journal_id) || false,
+            note:         r.note === false ? '' : (r.note || ''),
+        };
+    }
+
+    async syncLines(sheetId) {
+        if (this.state.deleted.length) {
+            await RpcService.call('hr.expense', 'unlink', [this.state.deleted], {});
+            this.state.deleted = [];
+        }
+        for (const l of this.state.lines) {
+            const vals = {
+                sheet_id:     sheetId,
+                name:         l.name || 'Expense',
+                date:         l.date || false,
+                employee_id:  this.getM2oId(this.state.record.employee_id) || false,
+                account_id:   this.getM2oId(l.account_id) || false,
+                quantity:     parseFloat(l.quantity) || 0,
+                unit_amount:  parseFloat(l.unit_amount) || 0,
+                tax_id:       this.getM2oId(l.tax_id) || false,
+                payment_mode: this.state.record.payment_mode || 'own_account',
+            };
+            if (!l.id) await RpcService.call('hr.expense', 'create', [vals], {});
+            else       await RpcService.call('hr.expense', 'write', [[l.id], vals], {});
+        }
+    }
+
+    async onCreate() {
+        try {
+            const id = await RpcService.call('hr.expense.sheet', 'create', [this._vals()], {});
+            await this.syncLines(id);
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message || String(e); }
+    }
+    async onSave() {
+        try {
+            await RpcService.call('hr.expense.sheet', 'write', [[this.props.recordId], this._vals()], {});
+            await this.syncLines(this.props.recordId);
+            await this.load();
+        } catch (e) { alert('Save failed: ' + (e.message || e)); }
+    }
+    async onDelete() {
+        if (!confirm('Delete this expense report and its expenses?')) return;
+        try {
+            const ids = this.state.lines.filter(l => l.id).map(l => l.id);
+            if (ids.length) await RpcService.call('hr.expense', 'unlink', [ids], {});
+            await RpcService.call('hr.expense.sheet', 'unlink', [[this.props.recordId]], {});
+            this.props.onBack();
+        } catch (e) { alert(e.message || e); }
+    }
+
+    // Unsaved line edits are flushed before a workflow step, so what gets
+    // approved is what is on screen.
+    async _wf(method, confirmMsg) {
+        if (confirmMsg && !confirm(confirmMsg)) return;
+        try {
+            if (this.isDraft) { await this.syncLines(this.props.recordId); }
+            await RpcService.call('hr.expense.sheet', method, [[this.props.recordId]], {});
+            await this.load();
+        } catch (e) { alert(e.message || e); }
+    }
+    async onSubmit()  { await this._wf('action_submit'); }
+    async onApprove() { await this._wf('action_approve'); }
+    async onRefuse()  { await this._wf('action_refuse', 'Refuse this expense report?'); }
+    async onDraft()   { await this._wf('action_reset_draft'); }
+    async onPost()    { await this._wf('action_post', 'Post the journal entry for this expense report?'); }
+    async onPay()     { await this._wf('action_register_payment', 'Register the reimbursement payment?'); }
+
+    onOpenMove()    { const id = this.getM2oId(this.state.record.move_id);         if (id) window.open('/report/html/account.move/' + id, '_blank'); }
+    onOpenPayment() { const id = this.getM2oId(this.state.record.payment_move_id); if (id) window.open('/report/html/account.move/' + id, '_blank'); }
+    onBack() { this.props.onBack(); }
+}
+
+// ----------------------------------------------------------------
 // CUSTOM_VIEWS — models that replace ActionView entirely
 //
 // These take over the whole action regardless of list/form mode, so they
@@ -10381,6 +11492,10 @@ class ActionView extends Component {
                     <BankAccountFormView recordId="state.recordId"
                                          onBack.bind="backToList"/>
                 </t>
+                <t t-elif="isExpenseSheetModel">
+                    <ExpenseSheetFormView recordId="state.recordId"
+                                          onBack.bind="backToList"/>
+                </t>
                 <t t-else="">
                     <FormView action="currentAction"
                               viewDef="state.formView"
@@ -10391,7 +11506,7 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor, PortalUserListView, UserFormView, GroupsListView, ProductCategoryTree, ProductCategoryListView, AssetFormView, BudgetFormView, BankAccountFormView };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor, PortalUserListView, UserFormView, GroupsListView, ProductCategoryTree, ProductCategoryListView, AssetFormView, BudgetFormView, BankAccountFormView, ExpenseSheetFormView };
 
     // Use overrideAction when navigateTo() has been called, else fall back to props.action
     get currentAction()          { return this.state.overrideAction || this.props.action; }
@@ -10406,6 +11521,7 @@ class ActionView extends Component {
     get isAssetModel()           { return this.currentAction.res_model === 'account.asset'; }
     get isBudgetModel()          { return this.currentAction.res_model === 'account.budget'; }
     get isBankAccountModel()     { return this.currentAction.res_model === 'account.bank.account'; }
+    get isExpenseSheetModel()    { return this.currentAction.res_model === 'hr.expense.sheet'; }
     get isBomModel()             { return this.currentAction.res_model === 'mrp.bom'; }
     get isPartnerModel()         { return this.currentAction.res_model === 'res.partner'; }
     get isUsersModel()           { return this.currentAction.res_model === 'res.users'; }

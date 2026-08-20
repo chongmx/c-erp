@@ -576,6 +576,7 @@ public:
         REGISTER_METHOD("web_search_read", handleSearchRead)
         REGISTER_METHOD("read",            handleRead)
         REGISTER_MUTATOR("write",           handleWrite)
+        REGISTER_MUTATOR("action_reset_default", handleResetDefault)
         REGISTER_METHOD("fields_get",      handleFieldsGet)
     }
 
@@ -610,7 +611,8 @@ private:
                 "COALESCE(margin_top,15)::float AS margin_top, COALESCE(margin_right,18)::float AS margin_right, "
                 "COALESCE(margin_bottom,18)::float AS margin_bottom, COALESCE(margin_left,18)::float AS margin_left, "
                 "COALESCE(font_size,10) AS font_size, COALESCE(font_color,'#333333') AS font_color, "
-                "COALESCE(line_height,1.5)::float AS line_height, COALESCE(footer_text,'') AS footer_text "
+                "COALESCE(line_height,1.5)::float AS line_height, COALESCE(footer_text,'') AS footer_text, "
+                "(template_html IS DISTINCT FROM default_html) AS is_customized "
                 "FROM ir_report_template WHERE active=true ORDER BY id");
         } else {
             rows = txn.exec(
@@ -619,7 +621,8 @@ private:
                 "COALESCE(margin_top,15)::float AS margin_top, COALESCE(margin_right,18)::float AS margin_right, "
                 "COALESCE(margin_bottom,18)::float AS margin_bottom, COALESCE(margin_left,18)::float AS margin_left, "
                 "COALESCE(font_size,10) AS font_size, COALESCE(font_color,'#333333') AS font_color, "
-                "COALESCE(line_height,1.5)::float AS line_height, COALESCE(footer_text,'') AS footer_text "
+                "COALESCE(line_height,1.5)::float AS line_height, COALESCE(footer_text,'') AS footer_text, "
+                "(template_html IS DISTINCT FROM default_html) AS is_customized "
                 "FROM ir_report_template WHERE active=true AND model=$1 ORDER BY id LIMIT 1",
                 pqxx::params{modelFilter});
         }
@@ -644,6 +647,7 @@ private:
             rec["font_color"]       = safeStr(row["font_color"]);
             rec["line_height"]      = row["line_height"].as<double>(1.5);
             rec["footer_text"]      = safeStr(row["footer_text"]);
+            rec["is_customized"]    = row["is_customized"].is_null() ? false : row["is_customized"].as<bool>();
             result.push_back(rec);
         }
         return result;
@@ -684,7 +688,9 @@ private:
             "COALESCE(footer_page_num_fmt,'Page {p} of {t}') AS footer_page_num_fmt, "
             "COALESCE(footer_text_source,'custom') AS footer_text_source, "
             "COALESCE(footer_line_color,'#cccccc') AS footer_line_color, "
-            "COALESCE(footer_line_width,0.5)::float AS footer_line_width "
+            "COALESCE(footer_line_width,0.5)::float AS footer_line_width, "
+            "COALESCE(default_html,'') AS default_html, "
+            "(template_html IS DISTINCT FROM default_html) AS is_customized "
             "FROM ir_report_template WHERE id IN (" + inClause + ") ORDER BY id");
 
         nlohmann::json result = nlohmann::json::array();
@@ -713,6 +719,8 @@ private:
             rec["footer_text_source"]   = safeStr(row["footer_text_source"]);
             rec["footer_line_color"]    = safeStr(row["footer_line_color"]);
             rec["footer_line_width"]    = row["footer_line_width"].as<double>(0.5);
+            rec["default_html"]         = safeStr(row["default_html"]);
+            rec["is_customized"]        = row["is_customized"].is_null() ? false : row["is_customized"].as<bool>();
             result.push_back(rec);
         }
         return result;
@@ -808,12 +816,66 @@ private:
         return true;
     }
 
+    // action_reset_default — restore the shipped template.
+    //
+    // Copies default_html (owned by the source tree, refreshed on every start)
+    // over template_html (owned by the database). Also clears the saved block
+    // layout for the template's model, because the Document Templates editor
+    // regenerates template_html from those blocks on its next Save and would
+    // otherwise put the customisation straight back.
+    nlohmann::json handleResetDefault(const CallKwArgs& call) {
+        const auto& idArg = call.arg(0);
+        std::vector<int> ids;
+        if (idArg.is_array()) {
+            for (const auto& v : idArg) {
+                if (v.is_number_integer()) ids.push_back(v.get<int>());
+                else if (v.is_array() && !v.empty() && v[0].is_number_integer()) ids.push_back(v[0].get<int>());
+            }
+        } else if (idArg.is_number_integer()) {
+            ids.push_back(idArg.get<int>());
+        }
+        if (ids.empty())
+            throw odoo::infrastructure::ValidationError("No template selected to reset.");
+
+        std::string inClause;
+        for (size_t i = 0; i < ids.size(); ++i) {
+            if (i > 0) inClause += ",";
+            inClause += std::to_string(ids[i]);
+        }
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        auto missing = txn.exec(
+            "SELECT count(*) AS n FROM ir_report_template "
+            "WHERE id IN (" + inClause + ") AND COALESCE(default_html,'') = ''");
+        if (!missing.empty() && missing[0]["n"].as<int>(0) > 0)
+            throw odoo::infrastructure::ValidationError(
+                "This template has no shipped default recorded yet — restart the server once so it can be captured.");
+
+        auto res = txn.exec(
+            "UPDATE ir_report_template SET template_html = default_html "
+            "WHERE id IN (" + inClause + ") RETURNING model");
+        // Drop the block layout so the editor's next Save does not re-apply it.
+        for (const auto& row : res) {
+            txn.exec("DELETE FROM ir_config_parameter WHERE key = $1",
+                     pqxx::params{"layout.blocks." + safeStr(row["model"])});
+        }
+        txn.commit();
+
+        nlohmann::json out;
+        out["reset"] = static_cast<int>(res.size());
+        return out;
+    }
+
     nlohmann::json handleFieldsGet(const CallKwArgs&) {
         return {
             {"id",            {{"type","integer"}, {"string","ID"}}},
             {"name",          {{"type","char"},    {"string","Template Name"}}},
             {"model",         {{"type","char"},    {"string","Model"}}},
             {"template_html", {{"type","text"},    {"string","Template HTML"}}},
+            {"default_html",  {{"type","text"},    {"string","Shipped Template"}}},
+            {"is_customized", {{"type","boolean"}, {"string","Customized"}}},
             {"paper_format",  {{"type","char"},    {"string","Paper Format"}}},
             {"orientation",   {{"type","char"},    {"string","Orientation"}}},
             {"active",        {{"type","boolean"}, {"string","Active"}}},
@@ -2431,6 +2493,11 @@ void ReportModule::ensureSchema_() {
     txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS footer_text_source   TEXT         NOT NULL DEFAULT 'custom'");
     txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS footer_line_color    TEXT         NOT NULL DEFAULT '#cccccc'");
     txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS footer_line_width    NUMERIC(4,2) NOT NULL DEFAULT 0.5");
+    // The template as it ships in the source tree. Kept alongside the (database-
+    // owned) template_html so a customised template can be compared against, and
+    // reset to, the shipped one — and so an *untouched* template can be upgraded
+    // automatically when the shipped version changes. See seedTemplates_().
+    txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS default_html         TEXT         NOT NULL DEFAULT ''");
     txn.commit();
 }
 
@@ -2438,15 +2505,44 @@ void ReportModule::seedTemplates_() {
     auto conn = db_->acquire();
     pqxx::work txn{conn.get()};
 
-    // Use pqxx params to safely insert large HTML templates
+    // Use pqxx params to safely insert large HTML templates.
+    //
+    // template_html is owned by the database once the row exists — the Document
+    // Templates editor writes to it. default_html is owned by the source tree and
+    // is refreshed on every start. Keeping both lets us do three things that a
+    // plain "seed once" cannot:
+    //
+    //   1. backfill  — a row that predates default_html gets a baseline without
+    //                  its (possibly customised) template_html being touched;
+    //   2. upgrade   — a template nobody has edited (template_html = default_html)
+    //                  follows the source tree automatically, so improving a
+    //                  template in code reaches existing databases with no
+    //                  hand-written migration (docs/089);
+    //   3. reset     — a customised template can be diffed against, and restored
+    //                  to, the shipped one from the UI.
     auto seed = [&](int id, const std::string& name, const std::string& model,
                     const std::string& html, const std::string& paper, const std::string& orient)
     {
         txn.exec(
-            "INSERT INTO ir_report_template (id, name, model, template_html, paper_format, orientation) "
-            "VALUES ($1,$2,$3,$4,$5,$6) "
+            "INSERT INTO ir_report_template (id, name, model, template_html, default_html, paper_format, orientation) "
+            "VALUES ($1,$2,$3,$4,$4,$5,$6) "
             "ON CONFLICT (id) DO NOTHING",
             pqxx::params{id, name, model, html, paper, orient});
+        // (1) baseline for rows seeded before default_html existed. template_html
+        //     is deliberately left alone: we cannot know whether it was edited.
+        txn.exec(
+            "UPDATE ir_report_template SET default_html=$2 WHERE id=$1 AND default_html=''",
+            pqxx::params{id, html});
+        // (2) untouched template follows the source tree.
+        txn.exec(
+            "UPDATE ir_report_template SET template_html=$2, default_html=$2 "
+            "WHERE id=$1 AND template_html=default_html AND default_html<>$2",
+            pqxx::params{id, html});
+        // (3) customised template keeps a *current* baseline, so Reset and the
+        //     diff both compare against what the code ships today.
+        txn.exec(
+            "UPDATE ir_report_template SET default_html=$2 WHERE id=$1 AND default_html<>$2",
+            pqxx::params{id, html});
     };
 
     seed(1, "Sales Order",    "sale.order",     SALE_ORDER_TEMPLATE,    "A4", "portrait");
@@ -2459,6 +2555,10 @@ void ReportModule::seedTemplates_() {
     // sections/notes to render. Idempotent — matches only the plain product
     // line row and skips templates that already carry the class (or were
     // customised to include it).
+    //
+    // This is the last migration of its kind. It survives because it also
+    // repairs *customised* templates, which no baseline can do; untouched ones
+    // are now upgraded by seed() above and never reach this statement.
     txn.exec(R"(
         UPDATE ir_report_template
         SET template_html = regexp_replace(template_html,
