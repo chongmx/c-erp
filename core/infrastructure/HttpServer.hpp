@@ -112,6 +112,25 @@ struct HttpConfig {
      * config/system.cfg:  log_level = info
      */
     std::string logLevel = "warn";
+
+    /**
+     * @brief How many rotated log files to keep. 0 = keep every one.
+     *
+     * trantor rolls the log by size and, on its own, keeps every roll forever:
+     * a long-lived checkout had accumulated 1,807 files (29 MB) with nothing
+     * pruning them. setMaxFiles() existed and was simply never called
+     * (docs/092).
+     *
+     * config/system.cfg:  log_max_files = 30
+     */
+    size_t logMaxFiles = 30;
+
+    /**
+     * @brief Roll the log once it reaches this many bytes. 0 = trantor default.
+     *
+     * config/system.cfg:  log_size_limit_mb = 20
+     */
+    uint64_t logSizeLimitBytes = 20ULL * 1024 * 1024;
 };
 
 
@@ -165,14 +184,23 @@ public:
             if (logPath.has_parent_path())
                 std::filesystem::create_directories(logPath.parent_path());
 
-            // trantor uses the path as a base name and appends ".log" if
-            // no extension is present; strip ".log" to avoid "system.log.log"
-            std::string baseName = cfg_.logFile;
-            if (baseName.size() > 4 &&
-                baseName.substr(baseName.size() - 4) == ".log")
-                baseName = baseName.substr(0, baseName.size() - 4);
+            // setFileName takes the directory and the base name SEPARATELY.
+            // Passing "log/system" as the base name writes to the right place
+            // — fileFullName_ is just path + base + ext — but the rotation
+            // bookkeeping scans `path` for files beginning with `base`, so it
+            // looked in "./" for names starting with "log/system" and found
+            // none. Retention could never have worked, whatever the limit was
+            // set to (docs/092).
+            const std::string dir  = logPath.has_parent_path()
+                                   ? logPath.parent_path().string() : std::string(".");
+            std::string       base = logPath.stem().string();      // "system.log" → "system"
+            if (base.empty()) base = "system";
 
-            asyncLogger_.setFileName(baseName);
+            asyncLogger_.setFileName(base, ".log", dir);
+            // Retention. Without these two the logger rolls forever and nothing
+            // ever deletes a roll — 1,807 files had accumulated (docs/092).
+            if (cfg_.logSizeLimitBytes > 0) asyncLogger_.setFileSizeLimit(cfg_.logSizeLimitBytes);
+            if (cfg_.logMaxFiles > 0)       asyncLogger_.setMaxFiles(cfg_.logMaxFiles);
             asyncLogger_.startLogging();
             trantor::Logger::setOutputFunction(
                 [this](const char* msg, const uint64_t len) {

@@ -954,6 +954,21 @@ private:
      *
      * @returns total tax in micro-units.
      */
+    // Which side a document's PRODUCT lines sit on.
+    //
+    //   out_invoice  Dr receivable / Cr revenue + tax     → product = credit
+    //   out_refund   Cr receivable / Dr revenue + tax     → product = debit
+    //   in_invoice   Cr payable    / Dr expense + tax     → product = debit
+    //   in_refund    Dr payable    / Cr expense + tax     → product = credit
+    //
+    // Everything below used to assume the out_invoice shape unconditionally,
+    // which is why a hand-entered credit note came out with a zero total and
+    // its counterparty line untouched: its revenue lines are debits, so the
+    // "sum the credits" pass found nothing (docs/082 follow-up, docs/092).
+    static bool productLinesAreCredit_(const std::string& moveType) {
+        return moveType == "out_invoice" || moveType == "in_refund";
+    }
+
     long long recomputeTaxLines_(pqxx::work& txn, int moveId) {
         // Rebuild, do not append.
         txn.exec("DELETE FROM account_move_line "
@@ -961,9 +976,13 @@ private:
                  pqxx::params{moveId});
 
         auto hdr = txn.exec(
-            "SELECT journal_id, company_id, date, COALESCE(line_precision, 0) AS lp "
+            "SELECT journal_id, company_id, date, COALESCE(line_precision, 0) AS lp, "
+            "       COALESCE(move_type,'entry') AS move_type "
             "  FROM account_move WHERE id = $1", pqxx::params{moveId});
         if (hdr.empty()) return 0;
+        // A tax line follows its product lines onto the same side, or the
+        // entry cannot balance.
+        const bool taxOnCredit = productLinesAreCredit_(hdr[0]["move_type"].c_str());
         const int journalId = hdr[0]["journal_id"].is_null() ? 0 : hdr[0]["journal_id"].as<int>();
         const int companyId = hdr[0]["company_id"].is_null() ? 1 : hdr[0]["company_id"].as<int>();
         const std::string date = hdr[0]["date"].is_null() ? "" : hdr[0]["date"].c_str();
@@ -1008,7 +1027,8 @@ private:
             }
         }
 
-        // One credit line per tax, posted to that tax's account.
+        // One line per tax, posted to that tax's account, on the same side as
+        // the product lines it was computed from.
         for (const auto& [taxId, amount] : byTax) {
             if (amount.isZero()) continue;
             auto ta = txn.exec("SELECT account_id FROM account_tax WHERE id = $1",
@@ -1031,10 +1051,15 @@ private:
             p.append(taxNames[taxId]); p.append(taxId);
             p.append(amount.toDb());
             txn.exec(
-                "INSERT INTO account_move_line "
-                "(move_id, account_id, journal_id, company_id, date, name, "
-                " tax_line_id, credit, debit, display_type) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,'')", p);
+                taxOnCredit
+                    ? "INSERT INTO account_move_line "
+                      "(move_id, account_id, journal_id, company_id, date, name, "
+                      " tax_line_id, credit, debit, display_type) "
+                      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,'')"
+                    : "INSERT INTO account_move_line "
+                      "(move_id, account_id, journal_id, company_id, date, name, "
+                      " tax_line_id, debit, credit, display_type) "
+                      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,'')", p);
         }
         return grandTotal.toDb();
     }
@@ -1047,14 +1072,27 @@ private:
         pqxx::work txn{conn.get()};
 
         for (int id : ids) {
-            // tax_line_id IS NULL excludes the generated tax lines. They are
-            // credit lines too, so without this filter the tax would be
-            // counted as revenue and then added again as tax — inflating the
-            // invoice by the tax amount on every recompute.
+            auto typeRow = txn.exec(
+                "SELECT COALESCE(move_type,'entry') FROM account_move WHERE id=$1",
+                pqxx::params{id});
+            if (typeRow.empty()) continue;
+            // A credit note's product lines are DEBITS. Summing credits on one
+            // gave zero, so a hand-entered credit note showed a zero total and
+            // its counterparty line was never updated (docs/092).
+            const bool prodCredit = productLinesAreCredit_(typeRow[0][0].c_str());
+
+            // tax_line_id IS NULL excludes the generated tax lines. They sit on
+            // the same side as the product lines, so without this filter the tax
+            // would be counted as revenue and then added again as tax —
+            // inflating the document by the tax amount on every recompute.
             auto incRow = txn.exec(
-                "SELECT COALESCE(SUM(credit),0) FROM account_move_line "
-                "WHERE move_id=$1 AND credit>0 AND display_type='' "
-                "  AND tax_line_id IS NULL",
+                prodCredit
+                    ? "SELECT COALESCE(SUM(credit),0) FROM account_move_line "
+                      "WHERE move_id=$1 AND credit>0 AND display_type='' "
+                      "  AND tax_line_id IS NULL"
+                    : "SELECT COALESCE(SUM(debit),0) FROM account_move_line "
+                      "WHERE move_id=$1 AND debit>0 AND display_type='' "
+                      "  AND tax_line_id IS NULL",
                 pqxx::params{id});
             // P2: every value in this block is micro-units — SUM() over
             // micro-unit columns, added to a micro-unit column, written back to
@@ -1090,10 +1128,15 @@ private:
                 "WHERE id=$5",
                 pqxx::params{untaxed, tax, total, residual, id});
 
-            // Update the AR/AP line (debit > 0) to match new total
+            // Update the counterparty (AR/AP) line to match the new total. It
+            // is always on the side OPPOSITE the product lines, which is what
+            // makes it identifiable without knowing the account.
             txn.exec(
-                "UPDATE account_move_line SET debit=$1, write_date=now() "
-                "WHERE move_id=$2 AND debit>0",
+                prodCredit
+                    ? "UPDATE account_move_line SET debit=$1, write_date=now() "
+                      "WHERE move_id=$2 AND debit>0"
+                    : "UPDATE account_move_line SET credit=$1, write_date=now() "
+                      "WHERE move_id=$2 AND credit>0",
                 pqxx::params{total, id});
         }
 

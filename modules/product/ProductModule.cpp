@@ -531,10 +531,25 @@ public:
         return result;
     }
 
+    // A category's name is its whole identity — it is the label in the tree and
+    // in every product's category picker. This handler writes raw SQL and so
+    // never reaches ProductCategory::validate(), which meant `create({})`
+    // quietly inserted a nameless row that rendered as a blank line in the
+    // sidebar and could not be told apart from any other blank one. 29 of them
+    // had accumulated, one per test-suite run (docs/092).
+    static std::string requireName_(const nlohmann::json& v) {
+        std::string name = v.is_string() ? v.get<std::string>() : std::string();
+        const auto b = name.find_first_not_of(" \t\r\n");
+        if (b == std::string::npos)
+            throw infrastructure::ValidationError("Category name is required.");
+        const auto e = name.find_last_not_of(" \t\r\n");
+        return name.substr(b, e - b + 1);
+    }
+
     nlohmann::json handleCreate(const core::CallKwArgs& call) {
         const auto vals = call.arg(0);
         if (!vals.is_object()) throw std::runtime_error("create: args[0] must be a dict");
-        std::string name   = vals.value("name", std::string(""));
+        std::string name   = requireName_(vals.contains("name") ? vals["name"] : nlohmann::json());
         bool        active = vals.value("active", true);
         int parentId = 0;
         if (vals.contains("parent_id")) {
@@ -588,9 +603,10 @@ public:
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
         for (int id : ids) {
-            if (vals.contains("name") && vals["name"].is_string())
+            // Renaming to blank is the same defect as creating blank.
+            if (vals.contains("name"))
                 txn.exec("UPDATE product_category SET name=$1, write_date=now() WHERE id=$2",
-                         pqxx::params{vals["name"].get<std::string>(), id});
+                         pqxx::params{requireName_(vals["name"]), id});
             if (vals.contains("active") && vals["active"].is_boolean())
                 txn.exec("UPDATE product_category SET active=$1, write_date=now() WHERE id=$2",
                          pqxx::params{vals["active"].get<bool>(), id});
@@ -1237,6 +1253,36 @@ void ProductModule::ensureSchema_() {
             write_date  TIMESTAMP DEFAULT now()
         )
     )");
+    // A nameless category renders as a blank row in the sidebar tree and cannot
+    // be told apart from any other blank one. The create handler now refuses an
+    // empty name, but rows already written that way have to go, and the
+    // constraint below stops any future path — a raw INSERT, a bad import —
+    // putting one back. Both steps are safe to repeat.
+    //
+    // Only unreferenced blanks are removed: a blank category that somehow owns
+    // products or children is a data problem to look at, not something to
+    // delete underneath them. Those get a name instead.
+    txn.exec(R"(
+        DELETE FROM product_category c
+         WHERE (c.name IS NULL OR btrim(c.name) = '')
+           AND NOT EXISTS (SELECT 1 FROM product_product  p  WHERE p.categ_id  = c.id)
+           AND NOT EXISTS (SELECT 1 FROM product_category ch WHERE ch.parent_id = c.id)
+    )");
+    txn.exec(R"(
+        UPDATE product_category
+           SET name = 'Unnamed category ' || id
+         WHERE name IS NULL OR btrim(name) = ''
+    )");
+    txn.exec(R"(
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'product_category_name_chk') THEN
+                ALTER TABLE product_category
+                    ADD CONSTRAINT product_category_name_chk CHECK (btrim(name) <> '');
+            END IF;
+        END $$;
+    )");
+
     // Costing GL config on the category (optional overrides; NULL → seeded defaults).
     txn.exec("ALTER TABLE product_category ADD COLUMN IF NOT EXISTS property_stock_valuation_account_id INTEGER REFERENCES account_account(id) ON DELETE SET NULL");
     txn.exec("ALTER TABLE product_category ADD COLUMN IF NOT EXISTS property_stock_journal_id           INTEGER REFERENCES account_journal(id) ON DELETE SET NULL");

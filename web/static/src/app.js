@@ -1027,7 +1027,7 @@ class AuditLogPanel extends Component {
 // InvoiceFormView — Odoo 14-style Invoice (account.move) form
 // ----------------------------------------------------------------
 class InvoiceFormView extends Component {
-    static components = { DatePicker, ChatterPanel };
+    static components = { DatePicker, ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -1356,6 +1356,13 @@ class InvoiceFormView extends Component {
                         </div>
                     </div>
                 </div>
+
+                <!-- Supporting documents -->
+                <t t-if="!isNew">
+                    <AttachmentPanel model="'account.move'"
+                                     recordId="props.recordId"
+                                     title="'Supporting Documents'"/>
+                </t>
 
                 <!-- Chatter -->
                 <t t-if="!isNew">
@@ -1879,7 +1886,7 @@ class InvoiceFormView extends Component {
 // SaleOrderFormView — Odoo 14-style Sales Order form
 // ----------------------------------------------------------------
 class SaleOrderFormView extends Component {
-    static components = { DatePicker, InvoiceFormView, ChatterPanel };
+    static components = { DatePicker, InvoiceFormView, ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -2297,6 +2304,13 @@ class SaleOrderFormView extends Component {
                         </div>
                     </t>
                 </div>
+
+                <!-- Signed quotations, customer purchase orders -->
+                <t t-if="!state.isNew">
+                    <AttachmentPanel model="'sale.order'"
+                                     recordId="props.recordId"
+                                     title="'Documents'"/>
+                </t>
 
                 <!-- Chatter -->
                 <t t-if="!state.isNew">
@@ -2847,7 +2861,7 @@ class SaleOrderFormView extends Component {
 // PurchaseOrderFormView — Odoo 14-style Purchase Order form
 // ----------------------------------------------------------------
 class PurchaseOrderFormView extends Component {
-    static components = { DatePicker, ChatterPanel };
+    static components = { DatePicker, ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -3127,6 +3141,13 @@ class PurchaseOrderFormView extends Component {
                         </div>
                     </t>
                 </div>
+
+                <!-- Supplier quotes, order confirmations -->
+                <t t-if="!state.isNew">
+                    <AttachmentPanel model="'purchase.order'"
+                                     recordId="props.recordId"
+                                     title="'Documents'"/>
+                </t>
 
                 <!-- Chatter -->
                 <t t-if="!state.isNew">
@@ -3510,7 +3531,7 @@ class PurchaseOrderFormView extends Component {
 // TransferFormView — stock.picking detail (Odoo 14-style)
 // ----------------------------------------------------------------
 class TransferFormView extends Component {
-    static components = { DatePicker, ChatterPanel };
+    static components = { DatePicker, ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -3776,6 +3797,13 @@ class TransferFormView extends Component {
                         </div>
                     </t>
                 </div>
+
+                <!-- Delivery notes, signed PODs, packing lists -->
+                <t t-if="!isNew">
+                    <AttachmentPanel model="'stock.picking'"
+                                     recordId="props.recordId"
+                                     title="'Documents'"/>
+                </t>
 
                 <!-- Chatter / audit log -->
                 <t t-if="!isNew">
@@ -4422,14 +4450,21 @@ class ProductFormView extends Component {
                                 </div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Product Category</label>
-                                    <select class="form-input" data-field="categ_id">
-                                        <option value="0">—</option>
-                                        <t t-foreach="categoriesByPath" t-as="cat" t-key="cat.id">
-                                            <option t-att-value="cat.id"
-                                                    t-att-selected="m2oId(state.record.categ_id)===cat.id?true:undefined"
-                                                    t-esc="cat.fullPath"/>
-                                        </t>
-                                    </select>
+                                    <!-- The generic form has had this ＋ since docs/078; the
+                                         bespoke Product form did not, so adding a category
+                                         meant leaving the product half-filled. -->
+                                    <div class="prd-combo">
+                                        <select class="form-input" data-field="categ_id">
+                                            <option value="0">—</option>
+                                            <t t-foreach="categoriesByPath" t-as="cat" t-key="cat.id">
+                                                <option t-att-value="cat.id"
+                                                        t-att-selected="m2oId(state.record.categ_id)===cat.id?true:undefined"
+                                                        t-esc="cat.fullPath"/>
+                                            </t>
+                                        </select>
+                                        <button class="prd-combo-add" title="New category"
+                                                t-on-click.stop.prevent="() => this.openAddNew('product.category', 'Category', 'categ_id')">＋</button>
+                                    </div>
                                 </div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Internal Reference</label>
@@ -4468,13 +4503,17 @@ class ProductFormView extends Component {
                                 </div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Unit of Measure</label>
-                                    <select class="form-input" data-field="uom_id">
-                                        <t t-foreach="state.uoms" t-as="uom" t-key="uom.id">
-                                            <option t-att-value="uom.id"
-                                                    t-att-selected="m2oId(state.record.uom_id)===uom.id?true:undefined"
-                                                    t-esc="uom.name"/>
-                                        </t>
-                                    </select>
+                                    <div class="prd-combo">
+                                        <select class="form-input" data-field="uom_id">
+                                            <t t-foreach="state.uoms" t-as="uom" t-key="uom.id">
+                                                <option t-att-value="uom.id"
+                                                        t-att-selected="m2oId(state.record.uom_id)===uom.id?true:undefined"
+                                                        t-esc="uom.name"/>
+                                            </t>
+                                        </select>
+                                        <button class="prd-combo-add" title="New unit of measure"
+                                                t-on-click.stop.prevent="() => this.openAddNew('uom.uom', 'Unit of Measure', 'uom_id')">＋</button>
+                                    </div>
                                 </div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Purchase UoM</label>
@@ -4703,6 +4742,24 @@ class ProductFormView extends Component {
 
                 </div><!-- /.so-card -->
 
+                <!-- Inline create for the Category / UoM pickers (docs/092) -->
+                <t t-if="state.addNew">
+                    <div class="gf-modal" t-on-click="onAddNewBackdrop">
+                        <div class="gf-modal-card" t-on-click.stop="">
+                            <h3 class="gf-modal-title">New <t t-esc="state.addNew.label"/></h3>
+                            <label class="gf-modal-lbl">Name</label>
+                            <input class="gf-modal-input" t-att-value="state.addNew.name"
+                                   t-on-input="onAddNewNameInput" t-on-keydown="onAddNewKey"/>
+                            <div t-if="state.addNew.error" class="gf-modal-err" t-esc="state.addNew.error"/>
+                            <div class="gf-modal-actions">
+                                <button class="btn" t-on-click="closeAddNew">Cancel</button>
+                                <button class="btn btn-primary" t-on-click="submitAddNew"
+                                        t-att-disabled="state.addNew.saving">Create</button>
+                            </div>
+                        </div>
+                    </div>
+                </t>
+
                 <!-- ── Datasheets & documents ──────────────────── -->
                 <t t-if="!isNew">
                     <AttachmentPanel model="'product.product'"
@@ -4739,9 +4796,55 @@ class ProductFormView extends Component {
                      virtual_available: 0, orderpoint_count: 0, putaway_count: 0 },
             replenishing: false,
             adjust: { open: false, rows: [], saving: false, error: '' },
+            // Inline create for the Category / UoM comboboxes
+            addNew: null,   // { model, label, field, name, error, saving }
         });
         this._orig = {};
         onMounted(() => this.load());
+    }
+
+    // ---- Inline create (＋ beside a picker) --------------------------
+    // The generic FormView has had this since docs/078. Without it here, adding
+    // a missing category meant abandoning a half-filled product form.
+    openAddNew(model, label, field) {
+        this.state.addNew = { model, label, field, name: '', error: '', saving: false };
+    }
+    closeAddNew() { this.state.addNew = null; }
+    onAddNewBackdrop(ev) { if (ev.target === ev.currentTarget) this.state.addNew = null; }
+    onAddNewNameInput(ev) { if (this.state.addNew) this.state.addNew.name = ev.target.value; }
+    onAddNewKey(ev) {
+        if (ev.key === 'Enter')  { ev.preventDefault(); this.submitAddNew(); }
+        if (ev.key === 'Escape') { this.closeAddNew(); }
+    }
+
+    async submitAddNew() {
+        const ctx = this.state.addNew;
+        if (!ctx || ctx.saving) return;
+        const name = (ctx.name || '').trim();
+        if (!name) { ctx.error = 'A name is required.'; return; }
+        ctx.saving = true;
+        ctx.error  = '';
+        try {
+            const id = await RpcService.call(ctx.model, 'create', [{ name }], {});
+            // Refresh the list the picker reads from, then select the new row —
+            // the point of the ＋ is not having to go and find it.
+            if (ctx.model === 'product.category') {
+                const cats = await RpcService.call('product.category', 'search_read',
+                    [[]], { fields: ['id','name','parent_id'], limit: 500 });
+                this.state.categories = Array.isArray(cats) ? cats : [];
+            } else {
+                const uoms = await RpcService.call('uom.uom', 'search_read',
+                    [[]], { fields: ['id','name'], limit: 100 });
+                this.state.uoms = Array.isArray(uoms) ? uoms : [];
+            }
+            this.state.record[ctx.field] = id;
+            this.state.addNew = null;
+        } catch (e) {
+            // Surface the server's message — "Category name is required." is
+            // more use than a silent failure.
+            ctx.error  = e.message || String(e);
+            ctx.saving = false;
+        }
     }
 
     // Storable products carry stock. A consumable that already has quants or a

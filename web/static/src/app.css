@@ -966,6 +966,17 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 .prd-adjust-input:focus { outline: none; border-color: var(--accent); }
 .prd-adjust-empty { text-align: center; color: var(--muted); padding: 20px; }
 
+/* Combobox with an inline-create ＋, matching the generic form (docs/078) */
+.prd-combo { display: flex; align-items: center; gap: 6px; }
+.prd-combo .form-input { flex: 1; min-width: 0; }
+.prd-combo-add {
+    flex-shrink: 0; width: 28px; height: 28px; line-height: 1;
+    background: transparent; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--muted); cursor: pointer; font-size: .85rem;
+    transition: color .15s, border-color .15s;
+}
+.prd-combo-add:hover { color: var(--accent); border-color: var(--accent); }
+
 /* Expense reports — the one note the form needs to explain its tax treatment */
 .exp-note {
     margin: 0; font-size: .78rem; line-height: 1.5; color: var(--muted);

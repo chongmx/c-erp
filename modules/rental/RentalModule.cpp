@@ -518,7 +518,10 @@ public:
         fieldRegistry_.add({"recurrence_end_date",  FieldType::Date,     "Until"});
         fieldRegistry_.add({"recurrence_parent_id", FieldType::Many2one, "Generated From", false, false, true, false, "rental.expense"});
         fieldRegistry_.add({"company_id",           FieldType::Many2one, "Company", false, false, true, false, "res.company"});
-        // attachment_id exists in the DB but is deliberately NOT registered:
+        // Receipts attach through ir.attachment's polymorphic (res_model,
+        // res_id) link, not a column here — the placeholder attachment_id was
+        // dropped in migration 814 (docs/092). Historical note follows:
+        // attachment_id existed in the DB but was deliberately NOT registered:
         // there is no ir.attachment model yet, so nothing can write it, and
         // registering a field with no model behind it invites a UI that
         // pretends receipts can be uploaded (docs/054 §7).

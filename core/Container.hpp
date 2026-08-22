@@ -673,6 +673,12 @@ inline AppConfig AppConfig::fromFile(const std::string& path) {
         for (auto& c : lvl) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         cfg.http.logLevel = lvl;
     }
+    // Log retention. Defaults keep ~30 rolls of 20 MB; 0 means "keep them all",
+    // which is what the code did implicitly before anyone chose (docs/092).
+    try { cfg.http.logMaxFiles = static_cast<size_t>(std::stoul(get("log_max_files", "30"))); }
+    catch (...) { cfg.http.logMaxFiles = 30; }
+    try { cfg.http.logSizeLimitBytes = std::stoull(get("log_size_limit_mb", "20")) * 1024ULL * 1024ULL; }
+    catch (...) { cfg.http.logSizeLimitBytes = 20ULL * 1024 * 1024; }
 
     // Multi-company (docs/072): load tenant databases from a `tenants.json`
     // sibling of the main config. Absent → single-tenant, unchanged. Each entry
