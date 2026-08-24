@@ -5,6 +5,7 @@
 #include "ProcessRunner.hpp"
 #include "Money.hpp"
 #include "ClientIp.hpp"
+#include "CompanyIdentity.hpp"
 #include "BaseViewModel.hpp"
 #include "modules/base/Domain.hpp"
 #include "interfaces/IViewModel.hpp"
@@ -525,13 +526,8 @@ static std::string portalRenderDoc(
     std::vector<std::map<std::string, std::string>> lines;
     int companyId = 1;
 
-    auto loadCfg = [&](const std::string& key, const std::string& def = "") -> std::string {
-        try {
-            auto r = txn.exec("SELECT value FROM ir_config_parameter WHERE key=$1", pqxx::params{key});
-            if (!r.empty() && !r[0]["value"].is_null()) return r[0]["value"].c_str();
-        } catch (...) {}
-        return def;
-    };
+    // (the ir_config_parameter reader that used to live here is gone —
+    //  company identity comes from core::CompanyIdentity now, see docs/094)
 
     if (model == "account.move") {
         // is_rental is derived from rental_invoice_link rather than from
@@ -681,28 +677,10 @@ static std::string portalRenderDoc(
         return "";
     }
 
-    // Company info
-    auto crows = txn.exec(
-        "SELECT rc.name, COALESCE(rc.website,'') AS website, "
-        "COALESCE(rp.street,'') AS street, COALESCE(rp.city,'') AS city "
-        "FROM res_company rc LEFT JOIN res_partner rp ON rp.id = rc.partner_id WHERE rc.id=$1",
-        pqxx::params{companyId});
-    if (!crows.empty()) {
-        vars["company_name"]         = portalSafeStr(crows[0]["name"]);
-        vars["company_website"]      = portalSafeStr(crows[0]["website"]);
-        vars["company_addr1"]        = loadCfg("report.addr1", portalSafeStr(crows[0]["street"]));
-        vars["company_city_country"] = loadCfg("report.city_country", portalSafeStr(crows[0]["city"]));
-    }
-    vars["company_reg"]          = loadCfg("report.reg_number");
-    vars["company_addr2"]        = loadCfg("report.addr2");
-    vars["company_addr3"]        = loadCfg("report.addr3");
-    vars["currency_code"]        = loadCfg("report.currency_code", "MYR");
-    vars["payment_term_days"]    = loadCfg("report.payment_term_days", "30");
-    vars["bank_account_name"]    = loadCfg("report.bank.account_name");
-    vars["bank_account_no"]      = loadCfg("report.bank.account_no");
-    vars["bank_name"]            = loadCfg("report.bank.bank_name");
-    vars["bank_address"]         = loadCfg("report.bank.bank_address");
-    vars["bank_swift"]           = loadCfg("report.bank.swift_code");
+    // Company info (docs/094) — same loader as the back-office PDF, so a
+    // customer looking at a document in the portal sees the same letterhead
+    // the invoice carries.
+    core::CompanyIdentity::load(txn, companyId).fillVars(vars);
 
     // Partner info
     auto prows = txn.exec(

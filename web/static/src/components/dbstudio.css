@@ -1,0 +1,323 @@
+/* =============================================================
+   dbstudio.css — Settings ▸ Database Tools (docs/093)
+
+   Rides the app.css tokens (--bg/--surface/--border/--accent/...) so the
+   screen belongs to the product rather than looking like a bolted-on tool.
+
+   The eight --m* hues below identify MODULES, and they are the same eight
+   everywhere on the screen: the dot beside a table in the sidebar, the bar
+   in "storage by module", the node in the schema map. Colour therefore
+   follows the entity, never its rank in whatever list is on screen.
+
+   They were not picked by eye. Each is >= 3:1 against --surface, and every
+   adjacent pair clears dE 8 under simulated protanopia, deuteranopia and
+   tritanopia (and 15 for normal vision). A ninth module folds into --m-other
+   rather than inventing a hue that would fail that check.
+   ============================================================= */
+
+.db-studio {
+    --m0: #6ea8fe;  --m1: #f0a868;  --m2: #4ec9b0;  --m3: #e94560;
+    --m4: #b48ead;  --m5: #7fd3f7;  --m6: #e8d44d;  --m7: #d98880;
+    --m-other: #7a8ba3;
+
+    --grid-line: #22345c;
+    --chip-bg:   #1b2b4d;
+
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    color: var(--text);
+}
+
+/* ---- header ---------------------------------------------------------- */
+
+.dbs-head {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 12px 18px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+}
+.dbs-title   { font-size: 1.05rem; font-weight: 700; color: var(--accent); margin: 0; }
+.dbs-meta    { color: var(--muted); font-size: .82rem; display: flex; gap: 10px; flex-wrap: wrap; }
+.dbs-meta b  { color: var(--text); font-weight: 600; }
+.dbs-ro {
+    margin-left: auto;
+    font-size: .72rem;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--ok);
+    border: 1px solid var(--ok);
+    border-radius: 999px;
+    padding: 3px 10px;
+    white-space: nowrap;
+}
+
+.dbs-tabs { display: flex; gap: 4px; padding: 0 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.dbs-tab {
+    background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--muted); padding: 9px 14px; cursor: pointer;
+    font-size: .88rem; font-family: inherit;
+}
+.dbs-tab:hover  { color: var(--text); }
+.dbs-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.dbs-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.dbs-body { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+
+/* ---- sidebar --------------------------------------------------------- */
+
+.dbs-side {
+    width: 268px; flex: 0 0 268px;
+    display: flex; flex-direction: column;
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+    min-height: 0;
+}
+.dbs-search { padding: 10px; border-bottom: 1px solid var(--border); }
+.dbs-search input {
+    width: 100%; padding: 7px 9px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 5px;
+    font-family: inherit; font-size: .84rem;
+}
+.dbs-search input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.dbs-tree { flex: 1; overflow-y: auto; padding-bottom: 12px; }
+
+.dbs-group {
+    display: flex; align-items: center; gap: 7px;
+    width: 100%; padding: 7px 10px;
+    background: none; border: none; cursor: pointer;
+    color: var(--muted); font-family: inherit; font-size: .74rem;
+    letter-spacing: .07em; text-transform: uppercase;
+}
+.dbs-group:hover { color: var(--text); }
+.dbs-dot   { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 9px; }
+.dbs-gcount { margin-left: auto; font-variant-numeric: tabular-nums; opacity: .75; }
+
+.dbs-item {
+    display: flex; align-items: center; gap: 8px;
+    width: 100%; padding: 5px 10px 5px 26px;
+    background: none; border: none; cursor: pointer;
+    color: var(--text); font-family: inherit; font-size: .83rem; text-align: left;
+}
+.dbs-item:hover    { background: var(--chip-bg); }
+.dbs-item.active   { background: var(--border); color: #fff; }
+.dbs-item-name     { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dbs-item-rows     { margin-left: auto; color: var(--muted); font-size: .76rem; font-variant-numeric: tabular-nums; }
+.dbs-item.is-view .dbs-item-name { font-style: italic; }
+
+/* ---- main panel ------------------------------------------------------ */
+
+.dbs-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+.dbs-thead {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 12px 18px 10px;
+    border-bottom: 1px solid var(--border);
+}
+.dbs-tname { font-size: 1rem; font-weight: 700; margin: 0; font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; }
+.dbs-tmeta { color: var(--muted); font-size: .8rem; display: flex; gap: 10px; font-variant-numeric: tabular-nums; }
+.dbs-thead .dbs-spacer { margin-left: auto; }
+
+.dbs-chip {
+    font-size: .68rem; letter-spacing: .05em; text-transform: uppercase;
+    background: var(--chip-bg); color: var(--muted);
+    border-radius: 3px; padding: 2px 6px;
+}
+
+.dbs-subtabs { display: flex; gap: 2px; padding: 0 18px; border-bottom: 1px solid var(--border); }
+.dbs-subtab {
+    background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--muted); padding: 7px 12px; cursor: pointer; font-size: .82rem; font-family: inherit;
+}
+.dbs-subtab:hover  { color: var(--text); }
+.dbs-subtab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+.dbs-pane { flex: 1; overflow: auto; min-height: 0; padding: 14px 18px 24px; }
+.dbs-pane.no-pad { padding: 0; }
+
+/* ---- filter row ------------------------------------------------------ */
+
+.dbs-filter {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    padding: 10px 18px; border-bottom: 1px solid var(--border);
+    background: var(--surface);
+}
+.dbs-filter select, .dbs-filter input {
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 6px 8px; font-family: inherit; font-size: .82rem;
+}
+.dbs-filter input { min-width: 170px; }
+.dbs-filter select:focus-visible,
+.dbs-filter input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.dbs-btn {
+    background: var(--border); color: var(--text);
+    border: 1px solid transparent; border-radius: 5px;
+    padding: 6px 12px; cursor: pointer; font-family: inherit; font-size: .82rem;
+}
+.dbs-btn:hover:not(:disabled) { background: #164a86; }
+.dbs-btn:disabled  { opacity: .5; cursor: default; }
+.dbs-btn.primary   { background: var(--accent); color: #fff; font-weight: 600; }
+.dbs-btn.primary:hover:not(:disabled) { background: #f25c75; }
+.dbs-btn.ghost     { background: none; border-color: var(--border); color: var(--muted); }
+.dbs-btn.ghost:hover:not(:disabled) { color: var(--text); border-color: var(--muted); background: none; }
+.dbs-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---- data grid ------------------------------------------------------- */
+
+.dbs-gridwrap { flex: 1; overflow: auto; min-height: 0; }
+table.dbs-grid { border-collapse: collapse; width: max-content; min-width: 100%; font-size: .82rem; }
+table.dbs-grid th, table.dbs-grid td {
+    border-bottom: 1px solid var(--grid-line);
+    border-right: 1px solid var(--grid-line);
+    padding: 6px 10px; text-align: left; white-space: nowrap;
+    max-width: 380px; overflow: hidden; text-overflow: ellipsis;
+}
+table.dbs-grid th {
+    position: sticky; top: 0; z-index: 1;
+    background: var(--surface); color: var(--muted);
+    font-weight: 600; font-size: .76rem; cursor: pointer; user-select: none;
+}
+table.dbs-grid th:hover      { color: var(--text); }
+table.dbs-grid th.sorted     { color: var(--accent); }
+table.dbs-grid tbody tr:hover { background: #1b2b4d; }
+table.dbs-grid td.num        { text-align: right; font-variant-numeric: tabular-nums; }
+table.dbs-grid td.null       { color: #55688a; font-style: italic; }
+table.dbs-grid td.masked     { color: var(--muted); letter-spacing: .12em; }
+.dbs-th-type { display: block; font-weight: 400; opacity: .6; font-size: .68rem; text-transform: none; }
+.dbs-fklink  { color: var(--m0); text-decoration: none; border-bottom: 1px dotted currentColor; cursor: pointer; }
+.dbs-fklink:hover { color: #a9caff; }
+
+.dbs-foot {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 8px 18px; border-top: 1px solid var(--border);
+    background: var(--surface); color: var(--muted); font-size: .78rem;
+    font-variant-numeric: tabular-nums;
+}
+.dbs-foot .dbs-spacer { margin-left: auto; }
+.dbs-sqlpeek {
+    font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+    font-size: .72rem; color: #55688a;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46ch;
+}
+
+/* ---- columns / constraints lists ------------------------------------- */
+
+table.dbs-list { border-collapse: collapse; width: 100%; font-size: .83rem; }
+table.dbs-list th {
+    text-align: left; color: var(--muted); font-weight: 600; font-size: .74rem;
+    letter-spacing: .05em; text-transform: uppercase;
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+}
+table.dbs-list td { padding: 6px 10px; border-bottom: 1px solid var(--grid-line); vertical-align: top; }
+table.dbs-list tr.clickable      { cursor: pointer; }
+table.dbs-list tr.clickable:hover { background: #1b2b4d; }
+table.dbs-list tr.selected       { background: var(--border); }
+.dbs-mono { font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; font-size: .78rem; }
+.dbs-type { color: var(--m2); }
+.dbs-badge {
+    display: inline-block; font-size: .64rem; letter-spacing: .05em; text-transform: uppercase;
+    border-radius: 3px; padding: 1px 5px; margin-left: 6px; vertical-align: middle;
+}
+.dbs-badge.pk     { background: rgba(232,212,77,.16);  color: var(--m6); }
+.dbs-badge.fk     { background: rgba(110,168,254,.16); color: var(--m0); }
+.dbs-badge.nn     { background: rgba(122,139,163,.16); color: var(--muted); }
+.dbs-badge.secret { background: rgba(233,69,96,.16);   color: var(--accent); }
+
+.dbs-split { display: grid; grid-template-columns: minmax(0,1fr) 320px; gap: 18px; align-items: start; }
+@media (max-width: 1100px) { .dbs-split { grid-template-columns: minmax(0,1fr); } }
+
+.dbs-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px;
+}
+.dbs-card h4 { margin: 0 0 10px; font-size: .82rem; color: var(--muted); letter-spacing: .05em; text-transform: uppercase; }
+
+.dbs-rel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+.dbs-rel-item { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--grid-line); }
+.dbs-rel-item:last-child { border-bottom: none; }
+.dbs-rel-def { color: var(--muted); font-size: .72rem; }
+
+/* ---- charts ---------------------------------------------------------- */
+
+.dbs-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.dbs-tile  { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+.dbs-tile-n { font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.dbs-tile-l { color: var(--muted); font-size: .74rem; letter-spacing: .06em; text-transform: uppercase; margin-top: 4px; }
+
+.dbs-bars { display: flex; flex-direction: column; gap: 7px; }
+.dbs-bar-row { display: grid; grid-template-columns: 150px minmax(0,1fr) 74px; gap: 10px; align-items: center; font-size: .8rem; }
+.dbs-bar-label {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; font-size: .76rem;
+}
+.dbs-bar-track { display: block; background: var(--bg); border-radius: 3px; height: 15px; overflow: hidden; }
+/* display:block matters — these are <span>s, and width/height do nothing on an
+   inline box, which silently renders every bar as an empty track. */
+.dbs-bar-fill  { display: block; height: 100%; border-radius: 0 4px 4px 0; min-width: 2px; transition: width .18s ease; }
+.dbs-bar-val   { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; font-size: .76rem; }
+
+.dbs-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 14px; font-size: .76rem; color: var(--muted); }
+.dbs-legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ---- schema map ------------------------------------------------------ */
+
+.dbs-map-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.dbs-mapwrap  { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; }
+.dbs-map      { display: block; width: 100%; height: auto; }
+.dbs-map text { font-family: 'Segoe UI', system-ui, sans-serif; }
+.dbs-node     { cursor: pointer; }
+.dbs-node:hover .dbs-node-shape { filter: brightness(1.35); }
+.dbs-node-label { font-size: 11px; fill: var(--text); pointer-events: none; }
+.dbs-node-sub   { font-size: 9px;  fill: var(--muted); pointer-events: none; }
+.dbs-edge       { fill: none; stroke: #3a4f7a; }
+.dbs-edge.hot   { stroke: var(--accent); }
+.dbs-edge-label { font-size: 9px; fill: var(--muted); pointer-events: none; }
+.dbs-map-empty  { padding: 40px; text-align: center; color: var(--muted); }
+
+/* ---- SQL console ----------------------------------------------------- */
+
+.dbs-sql { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.dbs-sql-editor { display: flex; flex-direction: column; padding: 12px 18px 0; }
+.dbs-sql textarea {
+    width: 100%; min-height: 132px; resize: vertical;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px;
+    font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+    font-size: .84rem; line-height: 1.5;
+}
+.dbs-sql textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.dbs-sql-bar  { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 18px; }
+.dbs-sql-bar .dbs-spacer { margin-left: auto; }
+.dbs-hint     { color: var(--muted); font-size: .75rem; }
+.dbs-kbd {
+    font-family: ui-monospace, Consolas, monospace; font-size: .7rem;
+    border: 1px solid var(--border); border-bottom-width: 2px;
+    border-radius: 3px; padding: 1px 5px; color: var(--text);
+}
+.dbs-err {
+    margin: 0 18px 12px; padding: 10px 12px;
+    background: rgba(244,71,71,.1); border: 1px solid rgba(244,71,71,.45);
+    border-left-width: 3px; border-radius: 5px;
+    color: #ffb4b4; font-family: ui-monospace, Consolas, monospace;
+    font-size: .78rem; white-space: pre-wrap;
+}
+.dbs-notice {
+    margin: 0 18px 12px; padding: 8px 12px;
+    background: rgba(78,201,176,.08); border: 1px solid rgba(78,201,176,.35);
+    border-radius: 5px; color: var(--ok); font-size: .8rem;
+}
+.dbs-snips { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 18px 10px; }
+.dbs-snip {
+    background: var(--chip-bg); border: 1px solid var(--border); border-radius: 999px;
+    color: var(--muted); padding: 3px 11px; font-size: .74rem; cursor: pointer; font-family: inherit;
+}
+.dbs-snip:hover { color: var(--text); border-color: var(--muted); }
+
+.dbs-loading, .dbs-empty { padding: 28px 18px; color: var(--muted); font-size: .86rem; }

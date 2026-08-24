@@ -131,6 +131,16 @@
 .ca-del { background: transparent; color: var(--accent, #e5484d); border: 1px solid rgba(229,72,77,.4); padding: 5px 10px; }
 .ca-error { color: #ff8a8a; margin-bottom: 12px; }
 
+/* ── Company access matrix (docs/094) ──────────────────────────────── */
+.ca-matrix th:not(:first-child) { text-align: center; }
+.ca-matrix .ca-cell { text-align: center; }
+.ca-matrix input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent, #e5484d); }
+.ca-matrix input[type="checkbox"]:disabled { cursor: default; opacity: .5; }
+.ca-active-tag { color: var(--muted, #9aa0aa); font-size: 12px; }
+
+/* The switcher lists two kinds of switch; the headings separate them. */
+.company-dropdown-err { color: #ff8a8a; font-size: 12px; padding: 8px 12px; }
+
 /* ── Database & backups (docs/075) ─────────────────────────────────── */
 .db-screen { padding: 24px 28px; max-width: 960px; }
 .db-screen h2 { margin: 0 0 4px; }

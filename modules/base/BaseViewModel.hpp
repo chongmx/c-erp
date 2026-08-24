@@ -229,6 +229,13 @@ protected:
         if (c.contains("group_ids")  && c["group_ids"].is_array())
             for (const auto& g : c["group_ids"])
                 if (g.is_number_integer()) ctx.groupIds.push_back(g.get<int>());
+        // docs/094 — the companies this user may act for. The dispatcher fills
+        // this from the session, never from the client body: it arrives in the
+        // same context object a caller could try to forge, and the dispatcher
+        // overwrites every one of these keys before the model sees them.
+        if (c.contains("allowed_company_ids") && c["allowed_company_ids"].is_array())
+            for (const auto& a : c["allowed_company_ids"])
+                if (a.is_number_integer()) ctx.allowedCompanyIds.push_back(a.get<int>());
         return ctx;
     }
 

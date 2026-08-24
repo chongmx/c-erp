@@ -96,6 +96,7 @@ public:
     int create(const nlohmann::json& values) override {
         nlohmann::json vals = values;
         coerceNumericStrings_(vals);   // "330" -> 330 before the member round-trip
+        const int stampedCompany = stampCompany_(vals);   // docs/094
         fromJson(vals);
         const auto errors = static_cast<TDerived*>(this)->validate();
         if (!errors.empty())
@@ -118,6 +119,19 @@ public:
             colList      += col;
             placeholders += "$" + std::to_string(idx++);
             appendParam_(params, normalizeForDb_(full[col], col));
+            first = false;
+        }
+
+        // docs/094: most models with a company_id column never register it as a
+        // field, so the loop above — which walks the field registry — would drop
+        // the stamp and insert NULL, which under the NULL-is-shared rule means
+        // the record would be visible to every company. Add the column here when
+        // the registry did not carry it.
+        if (stampedCompany > 0 && !fieldRegistry_.has("company_id")) {
+            if (!first) { colList += ","; placeholders += ","; }
+            colList      += "company_id";
+            placeholders += "$" + std::to_string(idx++);
+            params.append(stampedCompany);
             first = false;
         }
 
@@ -174,6 +188,7 @@ public:
 
         // S-30: inject record-rule filter after the ids param ($2+)
         appendRuleClause_(sql, params, RuleOp::Read, 1);
+        appendCompanyClause_(sql);   // docs/094
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
@@ -234,6 +249,8 @@ public:
 
         // S-30: inject record-rule filter after all explicit params
         appendRuleClause_(sql, params, RuleOp::Write, paramCount);
+        appendCompanyClause_(sql);   // docs/094 — an id from another company
+                                     // must not be updatable by guessing it
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
@@ -258,6 +275,7 @@ public:
 
         // S-30: inject record-rule filter after the ids param
         appendRuleClause_(sql, params, RuleOp::Unlink, 1);
+        appendCompanyClause_(sql);   // docs/094 — likewise for delete
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
@@ -279,6 +297,7 @@ public:
         std::string sql =
             "SELECT id FROM " + std::string(TDerived::TABLE_NAME) +
             " WHERE " + where;
+        appendCompanyClause_(sql);   // docs/094
         if (!order.empty()) sql += " ORDER BY " + order;
         if (limit  > 0)     sql += " LIMIT "  + std::to_string(limit);
         if (offset > 0)     sql += " OFFSET " + std::to_string(offset);
@@ -316,6 +335,7 @@ public:
         std::string sql =
             "SELECT " + cols + " FROM " + std::string(TDerived::TABLE_NAME) +
             " WHERE " + where;
+        appendCompanyClause_(sql);   // docs/094
         if (!order.empty()) sql += " ORDER BY " + order;
         if (limit  > 0)     sql += " LIMIT "  + std::to_string(limit);
         if (offset > 0)     sql += " OFFSET " + std::to_string(offset);
@@ -336,9 +356,11 @@ public:
         // S-30: merge rule domain
         const nlohmann::json merged = mergeRuleDomain_(domainJson, RuleOp::Read);
         auto [where, paramVec] = domainFromJson(merged).toSql(&filterableColumns_());
-        const std::string sql =
+        std::string sql =
             "SELECT COUNT(*) FROM " + std::string(TDerived::TABLE_NAME) +
             " WHERE " + where;
+        appendCompanyClause_(sql);   // docs/094 — a count must not reveal rows
+                                     // the same domain would refuse to return
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
         pqxx::result res;
@@ -380,6 +402,143 @@ private:
             return std::set<std::string>(v.begin(), v.end());
         }();
         return cols;
+    }
+
+    // ── docs/094: multi-company scoping ────────────────────────
+    //
+    // Every table that carries a company_id is filtered to the caller's ACTIVE
+    // company, plus rows whose company_id IS NULL — those are shared records
+    // (a product available to the whole group, a country, a currency), which is
+    // the same convention Odoo uses.
+    //
+    // This deliberately does NOT go through ir.rule, for two reasons:
+    //
+    //  1. RuleEngine::buildRuleDomain returns immediately for ctx.isAdmin, so a
+    //     company rule expressed as an ir.rule would not apply to the admin —
+    //     which is the account nearly everyone actually uses. Company scoping
+    //     that the main user bypasses is not scoping.
+    //  2. Rules are per-model rows someone has to remember to add. This applies
+    //     to every model with a company_id automatically, so a new module cannot
+    //     forget to opt in.
+    //
+    // It is applied on read, search, write AND unlink. Read-side filtering alone
+    // would still let a caller who guesses an id modify or delete another
+    // company's row, because write/unlink address rows by id, not by domain.
+    //
+    // uid == 0 means an internal caller (migrations, cron, startup seeding) that
+    // never had a session; those legitimately operate across companies. Every
+    // HTTP path is authenticated before it reaches a model, so uid == 0 is not
+    // reachable from outside.
+    // Whether this model's TABLE has a company_id column.
+    //
+    // Deliberately not `fieldRegistry_.has("company_id")`. The registry lists
+    // the fields a model chose to declare, and most models with a company_id
+    // column never declare it — res.partner is one — so keying on the registry
+    // left scoping switched off for exactly the models that carry the column.
+    // The table is the ground truth; one catalogue query answers it for every
+    // model at once and is cached for the process lifetime.
+    static const std::set<std::string>& companyTables_(infrastructure::DbConnection& db) {
+        static const std::set<std::string> tables = [&db] {
+            std::set<std::string> t;
+            try {
+                auto conn = db.acquire();
+                pqxx::work txn{conn.get()};
+                for (const auto& r : txn.exec(
+                         "SELECT table_name FROM information_schema.columns "
+                         "WHERE table_schema='public' AND column_name='company_id'"))
+                    t.insert(r[0].c_str());
+            } catch (const std::exception&) {
+                // Leave empty; hasCompanyColumn_ falls back to the registry.
+            }
+            return t;
+        }();
+        return tables;
+    }
+
+    bool hasCompanyColumn_() const {
+        if (!db_) return false;
+        const auto& t = companyTables_(*db_);
+        if (t.empty()) return fieldRegistry_.has("company_id");   // catalogue unavailable
+        return t.count(std::string(TDerived::TABLE_NAME)) > 0;
+    }
+
+    // The context to scope by. ctx_ is what the ViewModel handed us; when it is
+    // anonymous we fall back to the request-scoped CurrentUser, so a ViewModel
+    // that forgets to call setUserContext cannot switch company scoping off.
+    const UserContext& scopeCtx_() const {
+        return ctx_.uid > 0 ? ctx_ : CurrentUser::get();
+    }
+
+    bool companyScoped_() const {
+        return scopeCtx_().uid > 0 && hasCompanyColumn_();
+    }
+
+    // SQL fragment, already parenthesised, or "" when no scoping applies.
+    // The company id is a C++ int taken from the session, never client text, so
+    // interpolating it cannot inject; doing so keeps every caller's $N numbering
+    // untouched, which is what makes this safe to bolt onto five different
+    // query builders.
+    std::string companyClause_() const {
+        if (!companyScoped_()) return {};
+        const int cid = scopeCtx_().companyId;
+        if (cid > 0)
+            return "(company_id IS NULL OR company_id = " + std::to_string(cid) + ")";
+        // Authenticated but with no company: they may only ever see shared rows.
+        return "(company_id IS NULL)";
+    }
+
+    // Appends " AND (...)" to a WHERE that already has at least one condition.
+    void appendCompanyClause_(std::string& sql) const {
+        const std::string c = companyClause_();
+        if (!c.empty()) sql += " AND " + c;
+    }
+
+    // Decide the company of a record being created.
+    //
+    // Unstamped, a new record would land with company_id NULL, which under the
+    // NULL-is-shared rule above means "visible to every company" — so simply
+    // not filling the field in would quietly publish it group-wide. Records
+    // therefore belong to the company that created them unless someone says
+    // otherwise, and only an admin can say otherwise.
+    /// Returns the company the new row must carry, or 0 for "leave it NULL"
+    /// (a shared record, or no scoping in force). Also validates any
+    /// company_id the caller supplied.
+    int stampCompany_(nlohmann::json& vals) const {
+        if (!companyScoped_()) return 0;
+        const UserContext& u = scopeCtx_();
+
+        const bool supplied = vals.contains("company_id") &&
+                              !vals["company_id"].is_null() &&
+                              !(vals["company_id"].is_boolean() && !vals["company_id"].get<bool>());
+
+        if (supplied) {
+            int want = 0;
+            if (vals["company_id"].is_number()) want = vals["company_id"].get<int>();
+            else if (vals["company_id"].is_string()) {
+                try { want = std::stoi(vals["company_id"].get<std::string>()); } catch (...) { want = 0; }
+            }
+            // Writing into a company you are not a member of is how records get
+            // planted where their owner cannot see them; refuse rather than
+            // silently rewrite, so the caller learns the request was wrong.
+            if (want > 0 && want != u.companyId && !u.mayUseCompany(want))
+                throw odoo::infrastructure::ValidationError(
+                    "You cannot create records for another company.");
+            return want > 0 ? want : u.companyId;
+        }
+
+        // Explicit null/false = "shared across all companies". Reserved for
+        // admins; for anyone else an omitted company means their own.
+        const bool explicitlyShared =
+            vals.contains("company_id") &&
+            (vals["company_id"].is_null() ||
+             (vals["company_id"].is_boolean() && !vals["company_id"].get<bool>()));
+        if (explicitlyShared && u.isAdmin) { vals.erase("company_id"); return 0; }
+
+        if (u.companyId > 0) {
+            vals["company_id"] = u.companyId;
+            return u.companyId;
+        }
+        return 0;
     }
 
     // ── S-30: Record-rule helpers ──────────────────────────────

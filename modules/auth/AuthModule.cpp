@@ -320,6 +320,7 @@ void AuthModule::initialize() {
     seedGroups_();
     seedGroupPermissions_();
     seedAdminUser_();
+    migrateCompanyIdentity_();
 }
 
 // ----------------------------------------------------------
@@ -349,6 +350,24 @@ void AuthModule::ensureSchema_() {
              "partner_id  INTEGER REFERENCES res_partner(id)  ON DELETE SET NULL");
     txn.exec("ALTER TABLE res_company ADD COLUMN IF NOT EXISTS "
              "currency_id INTEGER REFERENCES res_currency(id) ON DELETE SET NULL");
+
+    // ── docs/094: the company's own identity lives HERE ────────────────────
+    // Letterhead, registration and bank details used to sit in
+    // ir_config_parameter under report.* / company.*. That table has
+    // UNIQUE(key) and no company_id, so it is single-company *by
+    // construction* — it could never hold a second company's bank account.
+    // Moving these onto the row that already IS the company is what makes
+    // more than one of them possible.
+    for (const char* col : {
+            "reg_number VARCHAR", "street VARCHAR", "street2 VARCHAR",
+            "street3 VARCHAR", "city_country VARCHAR",
+            "bank_name VARCHAR", "bank_account_name VARCHAR",
+            "bank_account_no VARCHAR", "bank_address VARCHAR",
+            "bank_swift VARCHAR",
+            "payment_term_days INTEGER DEFAULT 30" })
+        txn.exec(std::string("ALTER TABLE res_company ADD COLUMN IF NOT EXISTS ") + col);
+
+    // (res_company_users_rel is created below, after res_users exists.)
 
     // ── ir_sequence + ir_cron — foundational infrastructure ───────────────
     // Created HERE (auth, module #2, right after res_company which ir_sequence
@@ -443,6 +462,105 @@ void AuthModule::ensureSchema_() {
         )
     )");
 
+    // docs/094 — which companies a user may act for. res_users.company_id stays
+    // the ACTIVE company; this is the set they are permitted to switch between.
+    // Declared after res_users because it references it.
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS res_company_users_rel (
+            company_id INTEGER NOT NULL REFERENCES res_company(id) ON DELETE CASCADE,
+            user_id    INTEGER NOT NULL REFERENCES res_users(id)   ON DELETE CASCADE,
+            PRIMARY KEY (company_id, user_id)
+        )
+    )");
+    // Every existing user is allowed into the company they already belong to,
+    // so an upgrade never locks anyone out of their own data.
+    txn.exec(R"(
+        INSERT INTO res_company_users_rel (company_id, user_id)
+        SELECT u.company_id, u.id FROM res_users u WHERE u.company_id IS NOT NULL
+        ON CONFLICT DO NOTHING
+    )");
+
+    txn.commit();
+}
+
+// ----------------------------------------------------------
+// migrateCompanyIdentity_ — docs/094
+//
+// Move the company's own identity out of ir_config_parameter and onto
+// res_company. Runs on every start and is idempotent twice over: a value is
+// only copied when the company's column is still empty, so an edit made on
+// the company form is never overwritten by a stale config row; and the config
+// rows are deleted once copied, so there is exactly one home afterwards.
+//
+// Guarded on ir_config_parameter existing at all: on a fresh database this
+// module runs before IrModule creates that table, and there is nothing to
+// migrate anyway.
+// ----------------------------------------------------------
+void AuthModule::migrateCompanyIdentity_() {
+    auto conn = services_.db()->acquire();
+    pqxx::work txn{conn.get()};
+
+    if (txn.exec("SELECT to_regclass('public.ir_config_parameter')")[0][0].is_null()) {
+        txn.commit();
+        return;
+    }
+    auto cr = txn.exec("SELECT id, partner_id FROM res_company ORDER BY id LIMIT 1");
+    if (cr.empty()) { txn.commit(); return; }
+    const int companyId = cr[0][0].as<int>();
+
+    // config key -> res_company column
+    static const std::vector<std::pair<const char*, const char*>> kMap = {
+        {"company.name",              "name"},
+        {"company.email",             "email"},
+        {"company.phone",             "phone"},
+        {"company.website",           "website"},
+        {"report.reg_number",         "reg_number"},
+        {"report.addr1",              "street"},
+        {"report.addr2",              "street2"},
+        {"report.addr3",              "street3"},
+        {"report.city_country",       "city_country"},
+        {"report.bank.bank_name",     "bank_name"},
+        {"report.bank.account_name",  "bank_account_name"},
+        {"report.bank.account_no",    "bank_account_no"},
+        {"report.bank.bank_address",  "bank_address"},
+        {"report.bank.swift_code",    "bank_swift"},
+    };
+    for (const auto& [key, col] : kMap) {
+        // COALESCE(...,'') <> '' on both sides: copy only a non-empty value,
+        // and only into a column that is still empty.
+        txn.exec(
+            std::string("UPDATE res_company c SET ") + col + " = p.value "
+            "FROM ir_config_parameter p "
+            "WHERE c.id = $1 AND p.key = $2 "
+            "  AND COALESCE(p.value,'') <> '' AND COALESCE(c." + col + ",'') = ''",
+            pqxx::params{companyId, std::string(key)});
+    }
+    // payment_term_days is an integer, and only digits are meaningful.
+    txn.exec(
+        "UPDATE res_company c SET payment_term_days = p.value::int "
+        "FROM ir_config_parameter p "
+        "WHERE c.id = $1 AND p.key = 'report.payment_term_days' "
+        "  AND p.value ~ '^[0-9]+$' AND c.payment_term_days IS NULL",
+        pqxx::params{companyId});
+    txn.exec("UPDATE res_company SET payment_term_days = 30 WHERE payment_term_days IS NULL");
+
+    // The company's own partner carried a different name ("My Company") from the
+    // company itself ("Easy Locker Space"). They are the same legal entity; the
+    // company row is the authority.
+    txn.exec(
+        "UPDATE res_partner p SET name = c.name "
+        "FROM res_company c WHERE c.partner_id = p.id AND p.name IS DISTINCT FROM c.name");
+
+    // One home from here on.
+    txn.exec(R"(
+        DELETE FROM ir_config_parameter WHERE key IN (
+            'company.name','company.email','company.phone','company.website',
+            'report.reg_number','report.addr1','report.addr2','report.addr3',
+            'report.city_country','report.payment_term_days','report.currency_code',
+            'report.bank.bank_name','report.bank.account_name',
+            'report.bank.account_no','report.bank.bank_address','report.bank.swift_code'
+        )
+    )");
     txn.commit();
 }
 

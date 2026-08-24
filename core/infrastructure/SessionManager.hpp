@@ -47,6 +47,12 @@ struct Session {
     std::string       companyName;        ///< res_company.name
     bool              isAdmin    = false; ///< member of Administrator group (id=3)
     std::vector<int>  groupIds;           ///< all res_groups ids this user belongs to
+    /// docs/094 — companies this user may switch between (res_company_users_rel).
+    /// `companyId` above is whichever one is active right now; it is always a
+    /// member of this list.
+    std::vector<int>  allowedCompanyIds;
+    /// Parallel to allowedCompanyIds — names, so the switcher needs no extra call.
+    std::vector<std::string> allowedCompanyNames;
 
     using Clock     = std::chrono::steady_clock;
     using TimePoint = Clock::time_point;
@@ -68,10 +74,25 @@ struct Session {
         return false;
     }
 
+    /// docs/094 — may this session switch to / act for company `cid`?
+    /// Note isAdmin is NOT a shortcut here: an administrator of company A is
+    /// not thereby a member of company B.
+    bool mayUseCompanyId(int cid) const {
+        return cid > 0 &&
+               std::find(allowedCompanyIds.begin(), allowedCompanyIds.end(), cid)
+                   != allowedCompanyIds.end();
+    }
+
     nlohmann::json toJson() const {
         nlohmann::json gArr = nlohmann::json::array();
         for (int g : groupIds) gArr.push_back(g);
+        nlohmann::json cArr = nlohmann::json::array();
+        for (std::size_t i = 0; i < allowedCompanyIds.size(); ++i)
+            cArr.push_back({{"id",   allowedCompanyIds[i]},
+                            {"name", i < allowedCompanyNames.size()
+                                         ? allowedCompanyNames[i] : std::string{}}});
         return {
+            {"allowed_companies", cArr},
             {"session_id",   sessionId},
             {"uid",          uid},
             {"login",        login},

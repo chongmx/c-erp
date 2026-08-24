@@ -236,10 +236,47 @@ const RpcService = (() => {
         '/web/db/download?file=' + encodeURIComponent(file) +
         '&session_id=' + encodeURIComponent(_session.sessionId);
 
+    // In-database multi-company (docs/094). Distinct from switchCompany() above,
+    // which moves the session to a different tenant DATABASE (docs/072); these
+    // stay in the same database and change which company's records are visible.
+    async function myCompanies() {
+        const info = await _dbPost('/web/session/my_companies');
+        if (info && info.error) throw new Error(info.error);
+        return info || { companies: [], active: 0 };
+    }
+    async function setActiveCompany(companyId) {
+        const info = await _dbPost('/web/session/set_active_company', { company_id: companyId });
+        if (info && info.error) throw new Error(info.error);
+        return info;
+    }
+    async function companyAccess(op, args = {}) {
+        const info = await _dbPost('/web/company/access', Object.assign({ op }, args));
+        if (info && info.error) throw new Error(info.error);
+        return info;
+    }
+
+    // Database Tools (docs/093) — read-only browser / console / schema map.
+    // Every op is admin-gated and runs inside a READ ONLY transaction server-side.
+    // Errors come back as {error}; throwing here keeps the callers to try/catch.
+    // The payload arrives under `data`, not `result`. _dbPost above ends with
+    // `data.result ?? data` to peel a JSON-RPC envelope; when this endpoint also
+    // used `result` that line peeled it, and the unwrap below peeled it a second
+    // time, so every call returned {} and the whole screen rendered blank.
+    async function dbTool(op, args = {}) {
+        const info = await _dbPost('/web/dbtool', Object.assign({ op }, args));
+        if (info && info.error) {
+            const err = new Error(info.error);
+            err.isSqlError = !!info.sql_error;   // console shows these verbatim
+            throw err;
+        }
+        return (info && info.data) || {};
+    }
+
     return { call, authenticate, logout, restoreSession,
              isAuthenticated, getSession,
              loadMenus, loadAction, getViews,
              health, sessionInfo,
              listCompanies, switchCompany, lookupCompanies, controlAdmin,
-             dbList, dbBackup, dbRestore, dbDelete, dbUpload, dbDownloadUrl };
+             dbList, dbBackup, dbRestore, dbDelete, dbUpload, dbDownloadUrl,
+             dbTool, myCompanies, setActiveCompany, companyAccess };
 })();

@@ -57,6 +57,7 @@ private:
     void seedGroups_();
     void seedGroupPermissions_();
     void seedAdminUser_();
+    void migrateCompanyIdentity_();   ///< docs/094 — config params -> res_company
 };
 
 } // namespace odoo::modules::auth

@@ -11473,6 +11473,7 @@ const CUSTOM_VIEWS = {
     'bank.reconcile':     BankReconcile,
     'company.admin':      CompanyAdmin,
     'db.backups':         DbBackups,
+    'db.studio':          DbStudio,
     'account.report':     AccountReports,
     'account.dashboard':  AccountDashboard,
     'account.settings':   AccountSettings,

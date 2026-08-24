@@ -7,6 +7,7 @@
 #include "../../core/factories/Factories.hpp"
 #include "../../core/ControlPlane.hpp"
 #include "../../core/DbBackup.hpp"
+#include "../../core/DbExplorer.hpp"
 #include "../../core/interfaces/IViewModel.hpp"
 #include "AuthService.hpp"          // password re-verification for destructive DB ops
 #include "AuditService.hpp"
@@ -287,6 +288,180 @@ public:
             [this](const HttpRequestPtr& req, std::function<void(const HttpResponsePtr&)>&& cb) {
                 cb(handleDbDownload_(req));
             }, {drogon::Get});
+
+        // Database Tools (docs/093) — read-only browser, SQL console and schema
+        // map. One endpoint, `op` selects the query. Admin-gated and scoped to
+        // the caller's own tenant, exactly like /web/db/* above.
+        http.addJsonPost("/web/dbtool", [this](const HttpRequestPtr& r, const nlohmann::json& b) {
+            return handleDbTool_(r, b);
+        });
+        http.addCorsOptions("/web/dbtool");
+
+        // docs/094 — in-DATABASE company switching. Distinct from
+        // /web/session/switch_company above, which moves the session to another
+        // tenant database entirely (docs/072). This one stays in the same
+        // database and changes which company's records are visible.
+        http.addJsonPost("/web/session/my_companies",
+            [this](const HttpRequestPtr& r, const nlohmann::json& b) { return handleMyCompanies_(r, b); });
+        http.addJsonPost("/web/session/set_active_company",
+            [this](const HttpRequestPtr& r, const nlohmann::json& b) { return handleSetActiveCompany_(r, b); });
+        http.addJsonPost("/web/company/access",
+            [this](const HttpRequestPtr& r, const nlohmann::json& b) { return handleCompanyAccess_(r, b); });
+        http.addCorsOptions("/web/session/my_companies");
+        http.addCorsOptions("/web/session/set_active_company");
+        http.addCorsOptions("/web/company/access");
+    }
+
+    // ── docs/094: company switcher + access administration ────────
+
+    /// The companies this user may work in, and which one is active.
+    nlohmann::json handleMyCompanies_(const HttpRequestPtr& req, const nlohmann::json& body) {
+        core::CallKwArgs call;
+        if (body.contains("params") && body["params"].is_object()) call.kwargs = body["params"];
+        const std::string sid = resolveSessionId_(req, call);
+        auto opt = sessions_->get(sid);
+        if (!opt || !opt->isAuthenticated()) return {{"error", "not authenticated"}};
+
+        // Re-read rather than trust the session copy, so a membership granted or
+        // revoked since login takes effect without a re-login.
+        Session s = *opt;
+        loadAllowedCompanies_(s);
+        sessions_->update(sid, [&s](Session& t) {
+            t.allowedCompanyIds   = s.allowedCompanyIds;
+            t.allowedCompanyNames = s.allowedCompanyNames;
+            t.companyId           = s.companyId;
+            t.companyName         = s.companyName;
+        });
+
+        nlohmann::json arr = nlohmann::json::array();
+        for (std::size_t i = 0; i < s.allowedCompanyIds.size(); ++i)
+            arr.push_back({{"id",   s.allowedCompanyIds[i]},
+                           {"name", i < s.allowedCompanyNames.size() ? s.allowedCompanyNames[i] : ""}});
+        return {{"ok", true}, {"active", s.companyId}, {"companies", arr}};
+    }
+
+    /// Switch the active company. Only ever to one this user is a member of.
+    nlohmann::json handleSetActiveCompany_(const HttpRequestPtr& req, const nlohmann::json& body) {
+        core::CallKwArgs call;
+        const nlohmann::json& p = body.contains("params") ? body["params"] : body;
+        if (p.is_object()) call.kwargs = p;
+        const std::string sid = resolveSessionId_(req, call);
+        auto opt = sessions_->get(sid);
+        if (!opt || !opt->isAuthenticated()) return {{"error", "not authenticated"}};
+
+        int want = 0;
+        if (p.is_object() && p.contains("company_id") && p["company_id"].is_number_integer())
+            want = p["company_id"].get<int>();
+        if (want <= 0) return {{"error", "company_id is required"}};
+
+        Session s = *opt;
+        loadAllowedCompanies_(s);          // authoritative, from the database
+        if (!s.mayUseCompanyId(want))
+            // Deliberately the same wording whether the company does not exist
+            // or the user simply is not in it — probing this endpoint should not
+            // enumerate the companies in the database.
+            return {{"error", "You do not have access to that company."}};
+
+        std::string name;
+        try {
+            TenantScope scope(db_.get(), s.db);
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            auto r = txn.exec("SELECT name FROM res_company WHERE id=$1", pqxx::params{want});
+            if (!r.empty() && !r[0][0].is_null()) name = r[0][0].c_str();
+            // Remember it, so the next login lands in the same place.
+            txn.exec("UPDATE res_users SET company_id=$1 WHERE id=$2",
+                     pqxx::params{want, s.uid});
+            txn.commit();
+        } catch (const std::exception& ex) {
+            LOG_ERROR << "[company/switch] " << ex.what();
+            return {{"error", "Could not switch company."}};
+        }
+
+        sessions_->update(sid, [want, &name, &s](Session& t) {
+            t.companyId           = want;
+            t.companyName         = name;
+            t.allowedCompanyIds   = s.allowedCompanyIds;
+            t.allowedCompanyNames = s.allowedCompanyNames;
+        });
+        if (AuditService::ready())
+            AuditService::instance().log("res.company", "switch:" + std::to_string(want),
+                                         std::vector<int>{want}, s.uid);
+        LOG_INFO << "[company/switch] uid=" << s.uid << " -> company " << want;
+        return {{"ok", true}, {"company_id", want}, {"company_name", name}};
+    }
+
+    /// Admin: read and change which users may act for which companies.
+    nlohmann::json handleCompanyAccess_(const HttpRequestPtr& req, const nlohmann::json& body) {
+        Session s; nlohmann::json err;
+        if (!dbAdmin_(req, body, s, err)) return err;
+        const nlohmann::json& p = body.contains("params") ? body["params"] : body;
+        const std::string op = p.is_object() ? p.value("op", std::string{}) : std::string{};
+        auto I = [&](const char* k) {
+            return (p.is_object() && p.contains(k) && p[k].is_number_integer()) ? p[k].get<int>() : 0;
+        };
+        try {
+            TenantScope scope(db_.get(), s.db);
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+
+            if (op == "list") {
+                nlohmann::json companies = nlohmann::json::array(), users = nlohmann::json::array();
+                for (const auto& r : txn.exec(
+                         "SELECT id, name, COALESCE(active,true) FROM res_company ORDER BY id"))
+                    companies.push_back({{"id", r[0].as<int>()}, {"name", r[1].is_null() ? "" : r[1].c_str()},
+                                         {"active", r[2].as<bool>(true)}});
+                // Two flat queries stitched in C++ rather than array_agg —
+                // pqxx has no typed array accessor, and parsing "{1,2}" back
+                // out of a text column is more code than this.
+                std::map<int, nlohmann::json> allowedBy;
+                for (const auto& r : txn.exec(
+                         "SELECT user_id, company_id FROM res_company_users_rel ORDER BY user_id, company_id")) {
+                    const int uid = r[0].as<int>();
+                    if (!allowedBy.count(uid)) allowedBy[uid] = nlohmann::json::array();
+                    allowedBy[uid].push_back(r[1].as<int>());
+                }
+                for (const auto& r : txn.exec(
+                         "SELECT id, login, company_id FROM res_users WHERE active ORDER BY id")) {
+                    const int uid = r[0].as<int>();
+                    users.push_back({{"id", uid}, {"login", r[1].c_str()},
+                                     {"active_company", r[2].is_null() ? 0 : r[2].as<int>()},
+                                     {"allowed", allowedBy.count(uid) ? allowedBy[uid]
+                                                                      : nlohmann::json::array()}});
+                }
+                txn.commit();
+                return {{"ok", true}, {"companies", companies}, {"users", users}};
+            }
+            if (op == "grant") {
+                if (!I("user_id") || !I("company_id")) return {{"error", "user_id and company_id are required"}};
+                txn.exec("INSERT INTO res_company_users_rel (company_id, user_id) VALUES ($1,$2) "
+                         "ON CONFLICT DO NOTHING", pqxx::params{I("company_id"), I("user_id")});
+                txn.commit();
+                return {{"ok", true}};
+            }
+            if (op == "revoke") {
+                if (!I("user_id") || !I("company_id")) return {{"error", "user_id and company_id are required"}};
+                // A user with no companies at all can see nothing and cannot log
+                // in usefully, so the last one is not removable.
+                auto n = txn.exec("SELECT count(*) FROM res_company_users_rel WHERE user_id=$1",
+                                  pqxx::params{I("user_id")});
+                if (n[0][0].as<int>(0) <= 1)
+                    return {{"error", "A user must belong to at least one company."}};
+                txn.exec("DELETE FROM res_company_users_rel WHERE company_id=$1 AND user_id=$2",
+                         pqxx::params{I("company_id"), I("user_id")});
+                // If that was their active company, move them to one they still have.
+                txn.exec("UPDATE res_users u SET company_id = ("
+                         "  SELECT company_id FROM res_company_users_rel WHERE user_id=u.id ORDER BY company_id LIMIT 1) "
+                         "WHERE u.id=$1 AND u.company_id=$2", pqxx::params{I("user_id"), I("company_id")});
+                txn.commit();
+                return {{"ok", true}};
+            }
+            txn.commit();
+            return {{"error", "unknown op"}};
+        } catch (const std::exception& ex) {
+            LOG_ERROR << "[company/access] " << ex.what();
+            return {{"error", devMode_ ? ex.what() : "An internal error occurred"}};
+        }
     }
 
     // ── Multi-company: company chooser + cross-tenant switch (docs/072) ──────
@@ -317,7 +492,63 @@ public:
             auto cn = txn.exec("SELECT name FROM res_company WHERE id=$1", pqxx::params{out.companyId});
             if (!cn.empty() && !cn[0][0].is_null()) out.companyName = cn[0][0].c_str();
         }
+        loadAllowedCompaniesTxn_(txn, out);
         return true;
+    }
+
+    // ── docs/094: in-database multi-company ───────────────────────
+    //
+    // Which companies this session may act for. Read from the database on every
+    // login and every switch, never from anything the client sends.
+    //
+    // A user with no rows in res_company_users_rel falls back to the company on
+    // their own record: an upgraded database has no rel rows for users created
+    // before this feature, and locking those people out of their own data would
+    // be a worse failure than the one this prevents.
+    void loadAllowedCompaniesTxn_(pqxx::transaction_base& txn, Session& s) {
+        s.allowedCompanyIds.clear();
+        s.allowedCompanyNames.clear();
+        try {
+            auto r = txn.exec(
+                "SELECT c.id, c.name FROM res_company_users_rel rel "
+                "JOIN res_company c ON c.id = rel.company_id "
+                "WHERE rel.user_id = $1 AND c.active ORDER BY c.id",
+                pqxx::params{s.uid});
+            for (const auto& row : r) {
+                s.allowedCompanyIds.push_back(row[0].as<int>());
+                s.allowedCompanyNames.push_back(row[1].is_null() ? "" : row[1].c_str());
+            }
+        } catch (const std::exception&) { /* table not created yet on first boot */ }
+
+        if (s.allowedCompanyIds.empty() && s.companyId > 0) {
+            s.allowedCompanyIds.push_back(s.companyId);
+            s.allowedCompanyNames.push_back(s.companyName);
+        }
+        // The active company must be one the user is allowed into. If it is not
+        // — the membership was revoked while they were logged in — fall back to
+        // the first allowed one rather than leaving them pointed at data they
+        // may no longer read.
+        if (!s.allowedCompanyIds.empty()) {
+            bool ok = false;
+            for (int c : s.allowedCompanyIds) if (c == s.companyId) { ok = true; break; }
+            if (!ok) {
+                s.companyId   = s.allowedCompanyIds.front();
+                s.companyName = s.allowedCompanyNames.empty() ? "" : s.allowedCompanyNames.front();
+            }
+        }
+    }
+
+    void loadAllowedCompanies_(Session& s) {
+        if (!db_ || s.uid <= 0) return;
+        try {
+            TenantScope scope(db_.get(), s.db);
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            loadAllowedCompaniesTxn_(txn, s);
+        } catch (const std::exception& ex) {
+            LOG_WARN << "[company] could not load allowed companies for uid="
+                     << s.uid << ": " << ex.what();
+        }
     }
 
     nlohmann::json handleListCompanies_(const HttpRequestPtr& req, const nlohmann::json& body) {
@@ -638,6 +869,84 @@ public:
         return drogon::HttpResponse::newFileResponse(path, file, drogon::CT_APPLICATION_OCTET_STREAM);
     }
 
+    // ── Database Tools (docs/093) ──────────────────────────────────
+    // The browser, SQL console and schema map behind Settings ▸ Database Tools.
+    //
+    // Three things make this safe to expose in-app, in order of how much work
+    // they do:
+    //
+    //  1. pqxx::read_transaction — a genuine `BEGIN READ ONLY`. Every write is
+    //     refused by PostgreSQL, including the ones a keyword filter misses: a
+    //     data-modifying CTE (`WITH x AS (DELETE …) SELECT …`), a volatile
+    //     function that writes, DDL. The transaction is never committed.
+    //  2. statement_timeout — a cartesian join cannot pin a pool connection.
+    //  3. DbExplorer's own checks — one statement per box, an allowlisted
+    //     leading keyword, and identifiers resolved against pg_catalog before
+    //     they are quoted into SQL (S-49).
+    //
+    // Plus the same envelope as /web/db/*: authenticated admin only, and scoped
+    // to the caller's own tenant, so one company can never read another's rows.
+    nlohmann::json handleDbTool_(const HttpRequestPtr& req, const nlohmann::json& body) {
+        Session s; nlohmann::json err;
+        if (!dbAdmin_(req, body, s, err)) return err;
+
+        const nlohmann::json& p = body.contains("params") ? body["params"] : body;
+        const std::string op = p.is_object() ? p.value("op", std::string{}) : std::string{};
+
+        try {
+            TenantScope scope(db_.get(), s.db);
+            auto conn = db_->acquire();
+            pqxx::read_transaction txn{conn.get()};
+            // Bound every statement. The console can time out; it cannot hang.
+            txn.exec("SET LOCAL statement_timeout = '15s'");
+
+            // The payload key is "data", NOT "result". RpcService._dbPost ends
+            // with `data.result ?? data` to peel a JSON-RPC envelope, so a
+            // top-level "result" here gets peeled by that line and then peeled
+            // AGAIN by dbTool() — which returned {} for every call and made the
+            // whole screen render blank. Keeping the key distinct from the
+            // JSON-RPC one removes the collision instead of relying on the two
+            // unwraps cancelling out.
+            if (op == "overview") return {{"ok", true}, {"data", core::DbExplorer::overview(txn)}};
+            if (op == "tables")   return {{"ok", true}, {"data", core::DbExplorer::tables(txn)}};
+            if (op == "graph")    return {{"ok", true}, {"data", core::DbExplorer::graph(txn)}};
+            if (op == "table")    return {{"ok", true}, {"data", core::DbExplorer::table(txn, p.value("table", std::string{}))}};
+            if (op == "rows")     return {{"ok", true}, {"data", core::DbExplorer::rows(txn, p)}};
+            if (op == "profile")  return {{"ok", true}, {"data", core::DbExplorer::profile(txn, p)}};
+            if (op == "query") {
+                auto r = core::DbExplorer::query(txn, p);
+                LOG_INFO << "[dbtool] query uid=" << s.uid << " db=" << s.db
+                         << " rows=" << r.value("row_count", 0LL);
+                if (AuditService::ready())
+                    AuditService::instance().log("db.tool", "query", std::vector<int>{}, s.uid);
+                return {{"ok", true}, {"data", r}};
+            }
+            return {{"error", "unknown op"}};
+            // txn is destroyed un-committed: the read-only snapshot is discarded.
+        } catch (const ValidationError& ex) {
+            // Ours, and written for the user to read.
+            return {{"error", ex.what()}};
+        } catch (const pqxx::sql_error& ex) {
+            LOG_WARN << "[dbtool/" << op << "] sql: " << ex.what();
+            const std::string what = ex.what();
+            if (what.find("statement timeout") != std::string::npos)
+                return {{"error", "That took longer than 15 seconds and was cancelled. "
+                                  "Narrow it down with a WHERE clause or a smaller LIMIT."}};
+            // SEC-28 note: the console is the one place where the PostgreSQL
+            // error IS the product — "column x does not exist" is what the user
+            // came for, and an authenticated admin can already read the whole
+            // schema through this very screen. Everywhere else it is masked.
+            if (op == "query") return {{"error", what}, {"sql_error", true}};
+            return {{"error", devMode_ ? what : "The query could not be run."}};
+        } catch (const PoolExhaustedException& ex) {
+            LOG_ERROR << "[dbtool] pool: " << ex.what();
+            return {{"error", "The server is temporarily overloaded. Please retry."}};
+        } catch (const std::exception& ex) {
+            LOG_ERROR << "[dbtool/" << op << "] " << ex.what();
+            return {{"error", devMode_ ? ex.what() : "An internal error occurred"}};
+        }
+    }
+
 private:
     // ----------------------------------------------------------
     // Main handler — with response access for Set-Cookie
@@ -727,6 +1036,26 @@ private:
                 for (int g : session.groupIds) gArr.push_back(g);
                 call.kwargs["context"]["group_ids"] = std::move(gArr);
             }
+            // docs/094 — assigned, not merged: a client that puts its own
+            // allowed_company_ids in the request body has it overwritten here,
+            // before any model sees the context.
+            {
+                nlohmann::json cArr = nlohmann::json::array();
+                for (int c : session.allowedCompanyIds) cArr.push_back(c);
+                call.kwargs["context"]["allowed_company_ids"] = std::move(cArr);
+            }
+
+            // docs/094 — publish the caller for the rest of this request, so a
+            // model reached through a hand-written ViewModel that never calls
+            // setUserContext is still company-scoped. See core/UserContext.hpp.
+            core::UserContext ambient;
+            ambient.uid               = session.uid;
+            ambient.companyId         = session.companyId;
+            ambient.partnerId         = session.partnerId;
+            ambient.isAdmin           = session.isAdmin;
+            ambient.groupIds          = session.groupIds;
+            ambient.allowedCompanyIds = session.allowedCompanyIds;
+            core::CurrentUser::Scope userScope(ambient);
 
             // get_views is handled via ViewFactory when the ViewModel doesn't implement it
             if (call.method == "get_views" && viewFactory_) {
@@ -828,6 +1157,7 @@ private:
                             if (g.is_number_integer()) s.groupIds.push_back(g.get<int>());
                     }
                 });
+                sessions_->update(cookieSid, [this](Session& s) { loadAllowedCompanies_(s); });
                 LOG_INFO << "[auth] session sync for " << cookieSid
                          << " uid=" << result["uid"].get<int>()
                          << " updated=" << updated;

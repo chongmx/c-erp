@@ -4,6 +4,7 @@
 #include "infrastructure/HttpServer.hpp"
 #include "infrastructure/JsonRpcDispatcher.hpp"
 #include "CacheInvalidation.hpp"
+#include "CompanyIdentity.hpp"
 #include "ControlPlane.hpp"
 #include "IrCron.hpp"
 #include "infrastructure/MigrationRunner.hpp"
@@ -320,6 +321,12 @@ public:
             //            (already in schema_migrations) make this a no-op on an
             //            existing DB.
             runMigrations_();
+
+            // Stage 2d — docs/094: attribute unowned rows to the single company
+            //            while that is still unambiguous. After migrations,
+            //            because it walks whatever tables exist by then; a
+            //            no-op once a second company has been created.
+            core::backfillCompanyIds(*db);
         }
         db->clearCurrentTenant();
 

@@ -23,6 +23,7 @@
 #include "SessionManager.hpp"
 #include "ProcessRunner.hpp"
 #include "Money.hpp"
+#include "CompanyIdentity.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <drogon/drogon.h>
@@ -958,16 +959,8 @@ static std::string renderDoc_(
     vars["paper_format"] = paperFormat;
     vars["orientation"]  = orientation;
 
-    auto loadCfg = [&](const std::string& key, const std::string& def = "") -> std::string {
-        try {
-            auto r = txn.exec(
-                "SELECT value FROM ir_config_parameter WHERE key=$1",
-                pqxx::params{key});
-            if (!r.empty() && !r[0]["value"].is_null())
-                return r[0]["value"].c_str();
-        } catch (...) {}
-        return def;
-    };
+    // (the ir_config_parameter reader that used to live here is gone — company
+    //  identity comes from core::CompanyIdentity now, see docs/094)
 
     int companyId = 1;
     int partnerId = 0;
@@ -1194,57 +1187,11 @@ static std::string renderDoc_(
                     throw std::runtime_error("Unsupported model: " + model);
                 }
 
-                // ---- Company info ----
-                auto crows = txn.exec(
-                    "SELECT rc.name, COALESCE(rc.phone,'') AS phone, COALESCE(rc.email,'') AS email, "
-                    "COALESCE(rc.website,'') AS website, "
-                    "COALESCE(rp.street,'') AS street, COALESCE(rp.city,'') AS city "
-                    "FROM res_company rc "
-                    "LEFT JOIN res_partner rp ON rp.id = rc.partner_id "
-                    "WHERE rc.id = $1",
-                    pqxx::params{companyId});
-
-                std::string companyStreet, companyCity;
-                if (!crows.empty()) {
-                    vars["company_name"]    = safeStr(crows[0]["name"]);
-                    vars["company_phone"]   = safeStr(crows[0]["phone"]);
-                    vars["company_email"]   = safeStr(crows[0]["email"]);
-                    vars["company_website"] = safeStr(crows[0]["website"]);
-                    companyStreet           = safeStr(crows[0]["street"]);
-                    companyCity             = safeStr(crows[0]["city"]);
-                } else {
-                    vars["company_name"]    = "";
-                    vars["company_phone"]   = "";
-                    vars["company_email"]   = "";
-                    vars["company_website"] = "";
-                }
-
-                // ---- Load report config params ----
-                std::string regNumber   = loadCfg("report.reg_number");
-                std::string addr1       = loadCfg("report.addr1");
-                std::string addr2       = loadCfg("report.addr2");
-                std::string addr3       = loadCfg("report.addr3");
-                std::string cityCountry = loadCfg("report.city_country");
-                std::string currCode    = loadCfg("report.currency_code", "MYR");
-                std::string ptDays      = loadCfg("report.payment_term_days", "30");
-                std::string bankAccName = loadCfg("report.bank.account_name");
-                std::string bankAccNo   = loadCfg("report.bank.account_no");
-                std::string bankName    = loadCfg("report.bank.bank_name");
-                std::string bankAddr    = loadCfg("report.bank.bank_address");
-                std::string bankSwift   = loadCfg("report.bank.swift_code");
-
-                vars["company_reg"]          = regNumber;
-                vars["company_addr1"]        = addr1.empty() ? companyStreet : addr1;
-                vars["company_addr2"]        = addr2;
-                vars["company_addr3"]        = addr3;
-                vars["company_city_country"] = cityCountry.empty() ? companyCity : cityCountry;
-                vars["currency_code"]        = currCode;
-                vars["payment_term_days"]    = ptDays;
-                vars["bank_account_name"]    = bankAccName;
-                vars["bank_account_no"]      = bankAccNo;
-                vars["bank_name"]            = bankName;
-                vars["bank_address"]         = bankAddr;
-                vars["bank_swift"]           = bankSwift;
+                // ---- Company info (docs/094) ----
+                // One loader, shared with the preview route and the portal, so
+                // a document and its preview can never disagree about who the
+                // company is.
+                core::CompanyIdentity::load(txn, companyId).fillVars(vars);
 
                 // ---- Partner info ----
   if(partnerId > 0) {
@@ -1296,11 +1243,29 @@ static std::string renderDoc_(
 // ================================================================
 static std::string fmtMicros_(long long micros) { return fmtMoney(micros / 1000000.0); }
 
+// docs/094 — `companyId` scopes every figure in the report to one company.
+//
+// These are hand-written aggregate queries, so they do not pass through
+// BaseModel and get none of its scoping for free. Rather than appending a
+// predicate to twenty different WHERE clauses — where one missed branch is a
+// silent cross-company total — the two source tables are replaced by
+// company-scoped subqueries. Every branch is then scoped identically, and a
+// branch added later inherits it without anyone having to remember.
+//
+// companyId <= 0 means "no scoping": that is the internal/no-session case, not
+// something an HTTP caller can ask for.
 static nlohmann::json financialReport_(pqxx::work& txn,
                                        const std::string& report,
                                        const std::string& dateFrom,
-                                       const std::string& dateTo) {
+                                       const std::string& dateTo,
+                                       int companyId = 0) {
     using nlohmann::json;
+    const std::string AML = companyId > 0
+        ? "(SELECT * FROM account_move_line WHERE company_id=" + std::to_string(companyId) + ")"
+        : std::string("account_move_line");
+    const std::string AM = companyId > 0
+        ? "(SELECT * FROM account_move WHERE company_id=" + std::to_string(companyId) + ")"
+        : std::string("account_move");
     json out;
     out["report"]    = report;
     out["date_from"] = dateFrom;
@@ -1324,8 +1289,8 @@ static nlohmann::json financialReport_(pqxx::work& txn,
         auto r = txn.exec(
             "SELECT a.code, a.name, COALESCE(SUM(l.debit),0) d, COALESCE(SUM(l.credit),0) c "
             "FROM account_account a "
-            "LEFT JOIN account_move_line l ON l.account_id=a.id AND l.date <= $1 "
-            "  AND EXISTS (SELECT 1 FROM account_move m WHERE m.id=l.move_id AND m.state='posted') "
+            "LEFT JOIN " + AML + " l ON l.account_id=a.id AND l.date <= $1 "
+            "  AND EXISTS (SELECT 1 FROM " + AM + " m WHERE m.id=l.move_id AND m.state='posted') "
             "GROUP BY a.id, a.code, a.name "
             "HAVING COALESCE(SUM(l.debit),0)<>0 OR COALESCE(SUM(l.credit),0)<>0 "
             "ORDER BY a.code", pqxx::params{dateTo});
@@ -1347,8 +1312,8 @@ static nlohmann::json financialReport_(pqxx::work& txn,
             "SELECT a.code, a.name, a.account_type, "
             "COALESCE(SUM(l.credit),0)-COALESCE(SUM(l.debit),0) AS bal "
             "FROM account_account a "
-            "JOIN account_move_line l ON l.account_id=a.id AND l.date BETWEEN $1 AND $2 "
-            "JOIN account_move m ON m.id=l.move_id AND m.state='posted' "
+            "JOIN " + AML + " l ON l.account_id=a.id AND l.date BETWEEN $1 AND $2 "
+            "JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' "
             "WHERE a.account_type IN ('income','income_other','expense','expense_depreciation','expense_direct_cost') "
             "GROUP BY a.id, a.code, a.name, a.account_type ORDER BY a.account_type, a.code",
             pqxx::params{dateFrom, dateTo});
@@ -1385,8 +1350,8 @@ static nlohmann::json financialReport_(pqxx::work& txn,
             "COALESCE(SUM(l.debit),0)-COALESCE(SUM(l.credit),0) AS dr, "
             "COALESCE(SUM(l.credit),0)-COALESCE(SUM(l.debit),0) AS cr "
             "FROM account_account a "
-            "JOIN account_move_line l ON l.account_id=a.id AND l.date <= $1 "
-            "JOIN account_move m ON m.id=l.move_id AND m.state='posted' "
+            "JOIN " + AML + " l ON l.account_id=a.id AND l.date <= $1 "
+            "JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' "
             "GROUP BY a.id, a.code, a.name, a.account_type ORDER BY a.account_type, a.code",
             pqxx::params{dateTo});
         long long assets = 0, liab = 0, equity = 0, earnings = 0;
@@ -1425,19 +1390,19 @@ static nlohmann::json financialReport_(pqxx::work& txn,
         out["columns"]  = cols({"Date / Entry", "Debit", "Credit", "Balance"});
         auto accs = txn.exec(
             "SELECT DISTINCT a.id, a.code, a.name FROM account_account a "
-            "JOIN account_move_line l ON l.account_id=a.id "
-            "JOIN account_move m ON m.id=l.move_id AND m.state='posted' AND l.date<=$1 "
+            "JOIN " + AML + " l ON l.account_id=a.id "
+            "JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' AND l.date<=$1 "
             "ORDER BY a.code", pqxx::params{dateTo});
         for (const auto& a : accs) {
             int aid = a["id"].as<int>();
             long long opening = txn.exec(
-                "SELECT COALESCE(SUM(l.debit-l.credit),0) FROM account_move_line l "
-                "JOIN account_move m ON m.id=l.move_id AND m.state='posted' "
+                "SELECT COALESCE(SUM(l.debit-l.credit),0) FROM " + AML + " l "
+                "JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' "
                 "WHERE l.account_id=$1 AND l.date < $2", pqxx::params{aid, dateFrom})[0][0].as<long long>(0);
             auto lns = txn.exec(
                 "SELECT to_char(l.date,'YYYY-MM-DD') dt, COALESCE(m.name,'') ref, "
                 "COALESCE(l.name,'') lbl, l.debit d, l.credit c "
-                "FROM account_move_line l JOIN account_move m ON m.id=l.move_id AND m.state='posted' "
+                "FROM " + AML + " l JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' "
                 "WHERE l.account_id=$1 AND l.date BETWEEN $2 AND $3 ORDER BY l.date, l.id",
                 pqxx::params{aid, dateFrom, dateTo});
             if (lns.empty() && opening == 0) continue;
@@ -1463,7 +1428,7 @@ static nlohmann::json financialReport_(pqxx::work& txn,
         auto r = txn.exec(
             "SELECT COALESCE(p.name,'(no partner)') partner, m.amount_residual amt, "
             "GREATEST(0, ($1::date - COALESCE(m.due_date, m.invoice_date))) AS age "
-            "FROM account_move m LEFT JOIN res_partner p ON p.id=m.partner_id "
+            "FROM " + AM + " m LEFT JOIN res_partner p ON p.id=m.partner_id "
             "WHERE m.move_type='out_invoice' AND m.state='posted' AND m.amount_residual>0 "
             "AND m.invoice_date <= $1 ORDER BY p.name", pqxx::params{dateTo});
         // partner -> [notdue,1-30,31-60,61-90,90+]
@@ -1502,8 +1467,8 @@ static nlohmann::json financialReport_(pqxx::work& txn,
             "  CASE WHEN t.tax_group IN ('sales','service') THEN t.tax_group ELSE 'other' END AS grp, "
             "  COALESCE(SUM(aml.credit - aml.debit),0) AS tax_amt "
             "FROM account_tax t "
-            "JOIN account_move_line aml ON aml.tax_line_id = t.id "
-            "JOIN account_move m ON m.id = aml.move_id AND m.state='posted' "
+            "JOIN " + AML + " aml ON aml.tax_line_id = t.id "
+            "JOIN " + AM + " m ON m.id = aml.move_id AND m.state='posted' "
             "  AND m.date BETWEEN $1 AND $2 "
             "  AND m.move_type IN ('out_invoice','out_refund') "
             "GROUP BY t.id, t.name, t.amount, t.tax_group "
@@ -1549,7 +1514,7 @@ static nlohmann::json financialReport_(pqxx::work& txn,
         auto r = txn.exec(
             "SELECT COALESCE(p.name,'(no vendor)') partner, m.amount_residual amt, "
             "GREATEST(0, ($1::date - COALESCE(m.due_date, m.invoice_date))) AS age "
-            "FROM account_move m LEFT JOIN res_partner p ON p.id=m.partner_id "
+            "FROM " + AM + " m LEFT JOIN res_partner p ON p.id=m.partner_id "
             "WHERE m.move_type='in_invoice' AND m.state='posted' AND m.amount_residual>0 "
             "AND m.invoice_date <= $1 ORDER BY p.name", pqxx::params{dateTo});
         std::vector<std::pair<std::string, std::array<long long,5>>> agg;
@@ -1579,16 +1544,16 @@ static nlohmann::json financialReport_(pqxx::work& txn,
         out["columns"]  = cols({"Date / Entry", "Debit", "Credit", "Balance"});
         auto partners = txn.exec(
             "SELECT DISTINCT p.id, p.name FROM res_partner p "
-            "JOIN account_move_line l ON l.partner_id=p.id "
-            "JOIN account_move m ON m.id=l.move_id AND m.state='posted' AND l.date<=$1 "
+            "JOIN " + AML + " l ON l.partner_id=p.id "
+            "JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' AND l.date<=$1 "
             "JOIN account_account a ON a.id=l.account_id "
             "WHERE a.account_type IN ('asset_receivable','liability_payable') "
             "ORDER BY p.name", pqxx::params{dateTo});
         for (const auto& p : partners) {
             const int pid = p["id"].as<int>();
             long long opening = txn.exec(
-                "SELECT COALESCE(SUM(l.debit-l.credit),0) FROM account_move_line l "
-                "JOIN account_move m ON m.id=l.move_id AND m.state='posted' "
+                "SELECT COALESCE(SUM(l.debit-l.credit),0) FROM " + AML + " l "
+                "JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' "
                 "JOIN account_account a ON a.id=l.account_id "
                 "WHERE l.partner_id=$1 AND l.date < $2 "
                 "AND a.account_type IN ('asset_receivable','liability_payable')",
@@ -1596,7 +1561,7 @@ static nlohmann::json financialReport_(pqxx::work& txn,
             auto lns = txn.exec(
                 "SELECT to_char(l.date,'YYYY-MM-DD') dt, COALESCE(m.name,'') ref, "
                 "COALESCE(l.name,'') lbl, l.debit d, l.credit c "
-                "FROM account_move_line l JOIN account_move m ON m.id=l.move_id AND m.state='posted' "
+                "FROM " + AML + " l JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' "
                 "JOIN account_account a ON a.id=l.account_id "
                 "WHERE l.partner_id=$1 AND l.date BETWEEN $2 AND $3 "
                 "AND a.account_type IN ('asset_receivable','liability_payable') "
@@ -1625,8 +1590,8 @@ static nlohmann::json financialReport_(pqxx::work& txn,
             "SELECT j.id, j.name, j.code, COUNT(DISTINCT m.id) n, "
             "COALESCE(SUM(l.debit),0) d, COALESCE(SUM(l.credit),0) c "
             "FROM account_journal j "
-            "JOIN account_move m ON m.journal_id=j.id AND m.state='posted' AND m.date BETWEEN $1 AND $2 "
-            "JOIN account_move_line l ON l.move_id=m.id "
+            "JOIN " + AM + " m ON m.journal_id=j.id AND m.state='posted' AND m.date BETWEEN $1 AND $2 "
+            "JOIN " + AML + " l ON l.move_id=m.id "
             "GROUP BY j.id, j.name, j.code ORDER BY j.code",
             pqxx::params{dateFrom, dateTo});
         long long td = 0, tc = 0; long long tn = 0;
@@ -1639,7 +1604,7 @@ static nlohmann::json financialReport_(pqxx::work& txn,
             auto ms = txn.exec(
                 "SELECT to_char(m.date,'YYYY-MM-DD') dt, COALESCE(m.name,'') nm, "
                 "COALESCE(SUM(l.debit),0) d, COALESCE(SUM(l.credit),0) c "
-                "FROM account_move m JOIN account_move_line l ON l.move_id=m.id "
+                "FROM " + AM + " m JOIN " + AML + " l ON l.move_id=m.id "
                 "WHERE m.journal_id=$1 AND m.state='posted' AND m.date BETWEEN $2 AND $3 "
                 "GROUP BY m.id, m.date, m.name ORDER BY m.date, m.id LIMIT 500",
                 pqxx::params{j["id"].as<int>(), dateFrom, dateTo});
@@ -1659,7 +1624,7 @@ static nlohmann::json financialReport_(pqxx::work& txn,
             "SELECT COALESCE(p.name,'(no customer)') partner, COUNT(*) n, "
             "COALESCE(SUM(m.amount_untaxed),0) u, COALESCE(SUM(m.amount_tax),0) t, "
             "COALESCE(SUM(m.amount_total),0) g, COALESCE(SUM(m.amount_residual),0) res "
-            "FROM account_move m LEFT JOIN res_partner p ON p.id=m.partner_id "
+            "FROM " + AM + " m LEFT JOIN res_partner p ON p.id=m.partner_id "
             "WHERE m.move_type IN ('out_invoice','out_refund') AND m.state='posted' "
             "AND m.date BETWEEN $1 AND $2 "
             "GROUP BY p.name ORDER BY SUM(m.amount_total) DESC",
@@ -1779,6 +1744,17 @@ void ReportModule::registerRoutes() {
         return r;
     };
 
+    // docs/094: which company's letterhead a document should carry — the one
+    // the caller is currently working in. 0 means "the default company", which
+    // is what CompanyIdentity::load falls back to.
+    auto sessionCompany = [sessions](const drogon::HttpRequestPtr& req) -> int {
+        if (!sessions) return 0;
+        const std::string sid = req->getCookie(SessionManager::cookieName());
+        if (sid.empty()) return 0;
+        auto s = sessions->get(sid);
+        return (s.has_value() && s->isAuthenticated()) ? s->companyId : 0;
+    };
+
     // Accounting settings — read/write the config parameters behind the
     // Settings screen. GET returns them all; GET with ?key=&value= saves one.
     // Lock dates are enforced in AccountMoveViewModel::handleActionPost. (docs/088)
@@ -1844,7 +1820,7 @@ void ReportModule::registerRoutes() {
     // so the dashboard is adjustable and the choice is shared/persisted. (docs/087)
     drogon::app().registerHandler(
         "/web/account/dashboard",
-        [db, checkAuth, devMode](const drogon::HttpRequestPtr& req,
+        [db, checkAuth, devMode, sessionCompany](const drogon::HttpRequestPtr& req,
              std::function<void(const drogon::HttpResponsePtr&)>&& cb)
         {
             if (!checkAuth(req)) {
@@ -1869,7 +1845,14 @@ void ReportModule::registerRoutes() {
                         enabled = r[0]["value"].c_str();
                 }
 
-                auto one = [&](const char* sql) -> long long {
+                // docs/094 — these totals are hand-written SQL and bypass
+                // BaseModel, so without this every card summed every company.
+                // `C` is the predicate for a bare table, `CL` for one aliased l.
+                const int  cid = sessionCompany(req);
+                const std::string C  = cid > 0 ? " AND company_id="   + std::to_string(cid) : "";
+                const std::string CL = cid > 0 ? " AND l.company_id=" + std::to_string(cid) : "";
+
+                auto one = [&](const std::string& sql) -> long long {
                     try { auto r = txn.exec(sql); return r.empty() || r[0][0].is_null() ? 0 : r[0][0].as<long long>(0); }
                     catch (...) { return 0; }
                 };
@@ -1881,32 +1864,39 @@ void ReportModule::registerRoutes() {
                 };
                 card("invoices", "Customer Invoices", "Unpaid",
                      one("SELECT COALESCE(SUM(amount_residual),0) FROM account_move "
-                         "WHERE move_type='out_invoice' AND state='posted' AND amount_residual>0"),
+                         "WHERE move_type='out_invoice' AND state='posted' AND amount_residual>0" + C),
                      one("SELECT COUNT(*) FROM account_move "
-                         "WHERE move_type='out_invoice' AND state='posted' AND amount_residual>0"));
+                         "WHERE move_type='out_invoice' AND state='posted' AND amount_residual>0" + C));
                 card("bills", "Vendor Bills", "To pay",
                      one("SELECT COALESCE(SUM(amount_residual),0) FROM account_move "
-                         "WHERE move_type='in_invoice' AND state='posted' AND amount_residual>0"),
+                         "WHERE move_type='in_invoice' AND state='posted' AND amount_residual>0" + C),
                      one("SELECT COUNT(*) FROM account_move "
-                         "WHERE move_type='in_invoice' AND state='posted' AND amount_residual>0"));
+                         "WHERE move_type='in_invoice' AND state='posted' AND amount_residual>0" + C));
                 card("bank", "Bank", "Balance",
                      one("SELECT COALESCE(SUM(l.debit-l.credit),0) FROM account_move_line l "
                          "JOIN account_move m ON m.id=l.move_id AND m.state='posted' "
                          "JOIN account_account a ON a.id=l.account_id "
-                         "WHERE a.account_type='asset_cash'"),
-                     one("SELECT COUNT(*) FROM account_bank_account WHERE active"));
+                         "WHERE a.account_type='asset_cash'" + CL),
+                     one("SELECT COUNT(*) FROM account_bank_account WHERE active" + C));
                 card("cash", "Cash", "Balance",
                      one("SELECT COALESCE(SUM(l.debit-l.credit),0) FROM account_move_line l "
                          "JOIN account_move m ON m.id=l.move_id AND m.state='posted' "
                          "JOIN account_account a ON a.id=l.account_id "
-                         "JOIN account_journal j ON j.id=l.journal_id AND j.type='cash'"),
-                     one("SELECT COUNT(*) FROM account_journal WHERE type='cash'"));
+                         "JOIN account_journal j ON j.id=l.journal_id AND j.type='cash' "
+                         "WHERE TRUE" + CL),
+                     one("SELECT COUNT(*) FROM account_journal WHERE type='cash'" + C));
                 card("assets", "Assets", "Book value",
-                     one("SELECT COALESCE(SUM(value_residual),0) FROM account_asset WHERE state='open'"),
-                     one("SELECT COUNT(*) FROM account_asset WHERE state='open'"));
+                     one("SELECT COALESCE(SUM(value_residual),0) FROM account_asset WHERE state='open'" + C),
+                     one("SELECT COUNT(*) FROM account_asset WHERE state='open'" + C));
+                // account_budget_line has no company_id of its own — it inherits
+                // the company of the budget it belongs to, so it is scoped by
+                // joining rather than by a predicate that would not compile.
                 card("budgets", "Budgets", "Planned",
-                     one("SELECT COALESCE(SUM(planned_amount),0) FROM account_budget_line"),
-                     one("SELECT COUNT(*) FROM account_budget"));
+                     one("SELECT COALESCE(SUM(bl.planned_amount),0) FROM account_budget_line bl "
+                         "JOIN account_budget b ON b.id=bl.budget_id "
+                         "WHERE TRUE" + (cid > 0 ? " AND b.company_id=" + std::to_string(cid)
+                                                 : std::string())),
+                     one("SELECT COUNT(*) FROM account_budget WHERE TRUE" + C));
                 txn.commit();
 
                 nlohmann::json out;
@@ -1929,7 +1919,7 @@ void ReportModule::registerRoutes() {
     // GET /web/account/report?report=<type>&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
     drogon::app().registerHandler(
         "/web/account/report",
-        [db, checkAuth, devMode](const drogon::HttpRequestPtr& req,
+        [db, checkAuth, devMode, sessionCompany](const drogon::HttpRequestPtr& req,
              std::function<void(const drogon::HttpResponsePtr&)>&& cb)
         {
             if (!checkAuth(req)) {
@@ -1946,7 +1936,8 @@ void ReportModule::registerRoutes() {
             try {
                 auto conn = db->acquire();
                 pqxx::work txn{conn.get()};
-                nlohmann::json out = financialReport_(txn, report, dateFrom, dateTo);
+                nlohmann::json out = financialReport_(txn, report, dateFrom, dateTo,
+                                                      sessionCompany(req));
                 txn.commit();
                 auto resp = drogon::HttpResponse::newHttpResponse();
                 resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
@@ -1964,7 +1955,7 @@ void ReportModule::registerRoutes() {
     // Financial statement reports — printable HTML (browser → PDF). Same params.
     drogon::app().registerHandler(
         "/web/account/report/print",
-        [db, checkAuth, authRedirect, devMode](const drogon::HttpRequestPtr& req,
+        [db, checkAuth, authRedirect, devMode, sessionCompany](const drogon::HttpRequestPtr& req,
              std::function<void(const drogon::HttpResponsePtr&)>&& cb)
         {
             if (!checkAuth(req)) { cb(authRedirect()); return; }
@@ -1977,7 +1968,8 @@ void ReportModule::registerRoutes() {
             try {
                 auto conn = db->acquire();
                 pqxx::work txn{conn.get()};
-                nlohmann::json rep = financialReport_(txn, report, dateFrom, dateTo);
+                nlohmann::json rep = financialReport_(txn, report, dateFrom, dateTo,
+                                                      sessionCompany(req));
                 std::string company;
                 try {
                     auto c = txn.exec("SELECT value FROM ir_config_parameter WHERE key='report.company_name'");
@@ -2303,11 +2295,12 @@ void ReportModule::registerRoutes() {
     // NOTE: uses /report/preview/ (not /report/html/) to avoid collision with /report/html/{model}/{id}
     drogon::app().registerHandler(
         "/report/preview/{1}",
-        [db, devMode](const drogon::HttpRequestPtr& req,
+        [db, devMode, sessionCompany](const drogon::HttpRequestPtr& req,
              std::function<void(const drogon::HttpResponsePtr&)>&& cb,
              const std::string& model)
         {
             try {
+                const int previewCompanyId = sessionCompany(req);
                 auto conn = db->acquire();
                 pqxx::work txn{conn.get()};
 
@@ -2335,37 +2328,12 @@ void ReportModule::registerRoutes() {
                 vars["paper_format"] = paperFormat;
                 vars["orientation"]  = orientation;
 
-                // Helper: load a config param from ir_config_parameter
-                auto loadCfg = [&](const std::string& key, const std::string& def = "") -> std::string {
-                    try {
-                        auto r = txn.exec(
-                            "SELECT value FROM ir_config_parameter WHERE key=$1",
-                            pqxx::params{key});
-                        if (!r.empty() && !r[0]["value"].is_null()) {
-                            std::string v = r[0]["value"].c_str();
-                            if (!v.empty()) return v;
-                        }
-                    } catch (...) {}
-                    return def;
-                };
-
-                // ---- Company info from ir_config_parameter ----
-                vars["company_name"]         = loadCfg("company.name", "Demo Company Sdn. Bhd.");
-                vars["company_phone"]        = loadCfg("company.phone", "+603-2181 8000");
-                vars["company_email"]        = loadCfg("company.email", "info@democompany.com");
-                vars["company_website"]      = loadCfg("company.website", "www.democompany.com");
-                vars["company_reg"]          = loadCfg("report.reg_number", "123456-A");
-                vars["company_addr1"]        = loadCfg("report.addr1", "Level 10, Menara Demo");
-                vars["company_addr2"]        = loadCfg("report.addr2", "Jalan Ampang");
-                vars["company_addr3"]        = loadCfg("report.addr3", "");
-                vars["company_city_country"] = loadCfg("report.city_country", "50450 Kuala Lumpur, Malaysia");
-                vars["currency_code"]        = loadCfg("report.currency_code", "MYR");
-                vars["payment_term_days"]    = loadCfg("report.payment_term_days", "30");
-                vars["bank_account_name"]    = loadCfg("report.bank.account_name", "Demo Company Sdn. Bhd.");
-                vars["bank_account_no"]      = loadCfg("report.bank.account_no", "1234567890");
-                vars["bank_name"]            = loadCfg("report.bank.bank_name", "Maybank Berhad");
-                vars["bank_address"]         = loadCfg("report.bank.bank_address", "Jalan Tun Perak, Kuala Lumpur");
-                vars["bank_swift"]           = loadCfg("report.bank.swift_code", "MBBEMYKL");
+                // ---- Company info (docs/094) ----
+                // This block used to read ir_config_parameter and fall back to
+                // "Demo Company Sdn. Bhd." while the real PDF read res_company —
+                // so the preview showed different details from the document it
+                // claimed to be previewing. Same loader as renderDoc_ now.
+                core::CompanyIdentity::load(txn, previewCompanyId).fillVars(vars);
 
                 // ---- Dummy partner info ----
                 vars["partner_name"]   = "ABC Technology Sdn. Bhd.";
@@ -2573,27 +2541,19 @@ void ReportModule::seedTemplates_() {
     txn.commit();
 }
 
+// docs/094 — every key this used to seed (report.reg_number, report.addr*,
+// report.city_country, report.currency_code, report.payment_term_days,
+// report.bank.*) was company identity, and identity now lives on res_company.
+//
+// This is kept as an explicit no-op rather than deleted because the re-seeding
+// was the bug: AuthModule::migrateCompanyIdentity_ copies those values onto the
+// company and deletes the rows, and this function ran afterwards in the same
+// startup and put every one of them straight back — so the migration looked
+// like it had silently failed. Anyone tempted to re-add a company field here
+// should read that sentence first.
 void ReportModule::seedConfigParams_() {
-    auto conn = db_->acquire();
-    pqxx::work txn{conn.get()};
-
-    txn.exec(R"(
-        INSERT INTO ir_config_parameter (key, value) VALUES
-            ('report.reg_number',        ''),
-            ('report.addr1',             ''),
-            ('report.addr2',             ''),
-            ('report.addr3',             ''),
-            ('report.city_country',      ''),
-            ('report.currency_code',     'MYR'),
-            ('report.payment_term_days', '30'),
-            ('report.bank.account_name', ''),
-            ('report.bank.account_no',   ''),
-            ('report.bank.bank_name',    ''),
-            ('report.bank.bank_address', ''),
-            ('report.bank.swift_code',   '')
-        ON CONFLICT (key) DO NOTHING
-    )");
-    txn.commit();
+    // Intentionally empty. Installation-wide report settings (paper format,
+    // orientation, fonts, accent colour) are seeded in seedConfigParams_extra_.
 }
 
 void ReportModule::seedMenuEntries_() {
@@ -2682,6 +2642,23 @@ void ReportModule::seedMenuEntries_() {
         "(132, 'Database & Backups', 30, 45, 72) "
         "ON CONFLICT (id) DO UPDATE SET parent_id=30, sequence=45, action_id=72");
 
+    // Database Tools (docs/093) — the read-only browser / SQL console / schema
+    // map, next to Database & Backups because they answer adjacent questions
+    // ("what is in there" vs "keep a copy of it"). Renders the DbStudio custom
+    // view; every endpoint behind it is admin-gated and per-tenant server-side.
+    txn.exec(
+        "INSERT INTO ir_act_window (id, name, res_model, view_mode, path) VALUES "
+        "(101, 'Database Tools', 'db.studio', 'list', 'db-studio') "
+        "ON CONFLICT (id) DO UPDATE SET name='Database Tools', "
+        "res_model='db.studio', view_mode='list', path='db-studio'");
+    txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
+    txn.exec(
+        "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
+        "(74, 'Database Tools', 30, 46, 101) "
+        "ON CONFLICT (id) DO UPDATE SET name='Database Tools', parent_id=30, "
+        "sequence=46, action_id=101");
+    txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");
+
     txn.commit();
 }
 
@@ -2689,12 +2666,13 @@ void ReportModule::seedConfigParams_extra_() {
     auto conn = db_->acquire();
     pqxx::work txn{conn.get()};
 
+    // docs/094: company.* used to be seeded here. Company identity now lives on
+    // res_company — re-seeding these keys would resurrect them on every start,
+    // immediately after AuthModule::migrateCompanyIdentity_ removed them, and
+    // put the two-sources-of-truth bug straight back. What stays is genuinely
+    // installation-wide: how documents are *styled*, not who the company is.
     txn.exec(R"(
         INSERT INTO ir_config_parameter (key, value) VALUES
-            ('company.name',               ''),
-            ('company.phone',              ''),
-            ('company.email',              ''),
-            ('company.website',            ''),
             ('report.design.accent_color', '#4a4a4a'),
             ('report.design.font_family',  'Arial, sans-serif')
         ON CONFLICT (key) DO NOTHING
