@@ -2627,7 +2627,12 @@ void ReportModule::seedMenuEntries_() {
     txn.exec(
         "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
         "(131, 'Companies & Access', 30, 40, 71) "
-        "ON CONFLICT (id) DO UPDATE SET parent_id=30, sequence=40, action_id=71");
+        // name is restored too. Leaving it out meant that when another module
+        // briefly seeded this id (docs/101), its label stuck permanently and
+        // this menu read "Projects" while opening Companies & Access. A seed
+        // that owns the row should own its name.
+        "ON CONFLICT (id) DO UPDATE SET name='Companies & Access', parent_id=30, "
+        "  sequence=40, action_id=71");
 
     // Database & backups (docs/075) under Settings (id=30). Renders the DbBackups
     // custom view; every endpoint is admin-gated + per-tenant server-side.
@@ -2640,7 +2645,8 @@ void ReportModule::seedMenuEntries_() {
     txn.exec(
         "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
         "(132, 'Database & Backups', 30, 45, 72) "
-        "ON CONFLICT (id) DO UPDATE SET parent_id=30, sequence=45, action_id=72");
+        "ON CONFLICT (id) DO UPDATE SET name='Database & Backups', parent_id=30, "
+        "  sequence=45, action_id=72");
 
     // Database Tools (docs/093) — the read-only browser / SQL console / schema
     // map, next to Database & Backups because they answer adjacent questions

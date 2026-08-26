@@ -321,3 +321,55 @@ table.dbs-list tr.selected       { background: var(--border); }
 .dbs-snip:hover { color: var(--text); border-color: var(--muted); }
 
 .dbs-loading, .dbs-empty { padding: 28px 18px; color: var(--muted); font-size: .86rem; }
+
+
+/* ---- Reset tab (docs/102) ------------------------------------------------
+   Deliberately plain and slow to use. The destructive button does not exist
+   until a preview has been fetched, and stays disabled until the confirmation
+   word is typed exactly. */
+.dbs-tab.danger { color: #ff9d9d; }
+.dbs-tab.danger.active { color: #fff; background: var(--accent); }
+
+.dbs-danger { max-width: 760px; padding: 18px 20px; }
+.dbs-danger-h { margin: 0 0 8px; font-size: 1.05rem; color: var(--accent); }
+.dbs-danger-p { color: var(--muted); font-size: .85rem; line-height: 1.6; margin: 0 0 16px; max-width: 68ch; }
+
+.dbs-scopes { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.dbs-scope {
+    display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: baseline;
+    padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px;
+    cursor: pointer; background: var(--surface);
+}
+.dbs-scope.on { border-color: var(--accent); background: rgba(233,69,96,.06); }
+.dbs-scope input { margin: 0; }
+.dbs-scope-t { font-size: .86rem; font-weight: 600; }
+.dbs-scope-d { grid-column: 2; color: var(--muted); font-size: .78rem; line-height: 1.5; }
+.dbs-scope-d b { color: var(--ok, #4ec9b0); font-weight: 600; }
+
+.dbs-danger-act { margin-bottom: 14px; }
+.dbs-btn.destructive { background: var(--accent); color: #fff; font-weight: 600; }
+.dbs-btn.destructive:disabled { opacity: .35; }
+
+.dbs-rs-sum { font-size: .86rem; margin-bottom: 8px; }
+.dbs-rs-sum b { color: var(--accent); font-variant-numeric: tabular-nums; }
+.dbs-rs-extra { color: var(--muted); font-size: .75rem; margin-top: 8px; line-height: 1.5; }
+
+.dbs-confirm {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-top: 18px; padding: 12px 14px;
+    border: 1px solid rgba(233,69,96,.45); border-radius: 6px;
+    background: rgba(233,69,96,.06);
+}
+.dbs-confirm-l { font-size: .82rem; color: #ffb4b4; }
+.dbs-confirm-l code { background: var(--bg); padding: 1px 6px; border-radius: 3px; }
+.dbs-confirm-i {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 5px; padding: 6px 10px; font-family: inherit; font-size: .84rem; width: 130px;
+}
+.dbs-confirm-i:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.dbs-rs-ok {
+    margin-top: 16px; padding: 10px 12px; border-radius: 6px;
+    background: rgba(78,201,176,.09); border: 1px solid rgba(78,201,176,.35);
+    color: var(--ok, #4ec9b0); font-size: .85rem;
+}

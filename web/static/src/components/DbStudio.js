@@ -310,6 +310,8 @@ class DbStudio extends owl.Component {
                     t-on-click="() => this.setTab('sql')">SQL</button>
             <button t-attf-class="dbs-tab{{ state.tab === 'schema' ? ' active' : '' }}"
                     t-on-click="() => this.setTab('schema')">Schema</button>
+            <button t-attf-class="dbs-tab danger{{ state.tab === 'reset' ? ' active' : '' }}"
+                    t-on-click="() => this.setTab('reset')">Reset</button>
         </div>
 
         <t t-if="state.error"><div class="dbs-err" t-esc="state.error"/></t>
@@ -667,6 +669,93 @@ class DbStudio extends owl.Component {
             </div>
         </div>
 
+        <!-- ============ RESET ============ -->
+        <div class="dbs-pane" t-if="state.tab === 'reset'">
+            <div class="dbs-danger">
+                <h3 class="dbs-danger-h">Reset to a clean state</h3>
+                <p class="dbs-danger-p">
+                    Clears the data people have entered and keeps the configuration the
+                    system needs to run. Without companies, a chart of accounts, units and
+                    menus the application would not start, so "empty" cannot mean empty.
+                </p>
+
+                <div class="dbs-scopes">
+                    <label class="dbs-scope" t-att-class="{on: state.rsScope === 'transactions'}">
+                        <input type="radio" name="rsScope" t-att-checked="state.rsScope === 'transactions'"
+                               t-on-change="() => this.setResetScope('transactions')"/>
+                        <span class="dbs-scope-t">Transactions</span>
+                        <span class="dbs-scope-d">
+                            Invoices, payments, orders, stock moves, manufacturing, tasks,
+                            timesheets, rental activity, lookup proposals.
+                            <b>Keeps</b> products, contacts, projects and all configuration.
+                        </span>
+                    </label>
+                    <label class="dbs-scope" t-att-class="{on: state.rsScope === 'master'}">
+                        <input type="radio" name="rsScope" t-att-checked="state.rsScope === 'master'"
+                               t-on-change="() => this.setResetScope('master')"/>
+                        <span class="dbs-scope-t">Transactions + master data</span>
+                        <span class="dbs-scope-d">
+                            All of the above, plus products, part parameters, bills of
+                            materials, pricelist rules and rental units.
+                            <b>Keeps</b> contacts and configuration.
+                        </span>
+                    </label>
+                </div>
+
+                <div class="dbs-danger-act">
+                    <button class="dbs-btn" t-att-disabled="state.rsBusy" t-on-click="previewReset">
+                        Show me what would go
+                    </button>
+                </div>
+
+                <t t-if="state.rsPreview">
+                    <div class="dbs-rs-sum">
+                        <b t-esc="fmt(state.rsPreview.total_rows)"/> row(s) across
+                        <b t-esc="state.rsPreview.tables.length"/> populated table(s)
+                        of <t t-esc="state.rsPreview.table_count"/> that would be cleared.
+                    </div>
+                    <div class="dbs-scroll">
+                        <table class="dbs-table">
+                            <thead><tr><th>Table</th><th class="num">Rows</th></tr></thead>
+                            <tbody>
+                                <t t-foreach="state.rsPreview.tables" t-as="r" t-key="r.table">
+                                    <tr><td t-esc="r.table"/><td class="num" t-esc="fmt(r.rows)"/></tr>
+                                </t>
+                                <tr t-if="!state.rsPreview.tables.length">
+                                    <td colspan="2" class="dbs-empty">Already clean — nothing to remove.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="dbs-rs-extra" t-if="state.rsPreview.also_cleared.length">
+                        Also cleared, because they depend on the above:
+                        <t t-esc="state.rsPreview.also_cleared.join(', ')"/>
+                    </div>
+
+                    <div class="dbs-confirm">
+                        <label class="dbs-confirm-l">
+                            This cannot be undone. Type <code>RESET</code> to enable the button:
+                        </label>
+                        <input class="dbs-confirm-i" t-att-value="state.rsConfirm"
+                               t-on-input="(ev) => { state.rsConfirm = ev.target.value; }"
+                               placeholder="RESET"/>
+                        <button class="dbs-btn destructive"
+                                t-att-disabled="state.rsConfirm !== 'RESET' or state.rsBusy"
+                                t-on-click="runReset">
+                            <t t-esc="state.rsBusy ? 'Working…' : 'Reset the database'"/>
+                        </button>
+                    </div>
+                </t>
+
+                <t t-if="state.rsDone">
+                    <div class="dbs-rs-ok">
+                        Done — <b t-esc="fmt(state.rsDone.total_rows)"/> row(s) removed.
+                        Reference data and configuration were left in place.
+                    </div>
+                </t>
+            </div>
+        </div>
+
         <!-- ============ SCHEMA ============ -->
         <div class="dbs-pane" t-if="state.tab === 'schema'">
             <t t-if="state.overview">
@@ -773,6 +862,11 @@ class DbStudio extends owl.Component {
             filter: { col: '', op: 'contains', value: '' },
             profile: null, profileCol: '', profileBusy: false, profileError: '',
             sql: '', sqlResult: null, sqlError: '', sqlNotice: '', sqlBusy: false,
+            // Reset tab. rsPreview is required before the confirm box appears:
+            // nobody should be able to wipe data without first being shown a
+            // per-table count of exactly what goes.
+            rsScope: 'transactions', rsPreview: null, rsConfirm: '',
+            rsBusy: false, rsDone: null,
             sqlLimit: '200', history: [],
             mapMode: 'modules', mapFocus: '',
         });
@@ -833,6 +927,51 @@ class DbStudio extends owl.Component {
             this.state.mapFocus = id;
         }
     }
+    // ---- reset -------------------------------------------------------------
+    // Changing the scope throws away the preview and the typed confirmation on
+    // purpose: the confirmation must belong to the preview the user actually
+    // read, not to a different scope they glanced at first.
+    setResetScope(s) {
+        this.state.rsScope = s;
+        this.state.rsPreview = null;
+        this.state.rsConfirm = '';
+        this.state.rsDone = null;
+    }
+
+    async previewReset() {
+        this.state.rsBusy = true;
+        this.state.error = '';
+        this.state.rsDone = null;
+        this.state.rsConfirm = '';
+        try {
+            this.state.rsPreview = await RpcService.dbTool('reset',
+                { scope: this.state.rsScope, dry_run: true });
+        } catch (e) {
+            this.state.rsPreview = null;
+            this.state.error = (e && e.message) || 'Could not work out what would be removed.';
+        } finally {
+            this.state.rsBusy = false;
+        }
+    }
+
+    async runReset() {
+        if (this.state.rsConfirm !== 'RESET') return;
+        this.state.rsBusy = true;
+        this.state.error = '';
+        try {
+            this.state.rsDone = await RpcService.dbTool('reset',
+                { scope: this.state.rsScope, confirm: 'RESET' });
+            this.state.rsPreview = null;
+            this.state.rsConfirm = '';
+            // Row counts and the overview on every other tab are now stale.
+            await this.load();
+        } catch (e) {
+            this.state.error = (e && e.message) || 'The reset could not be completed.';
+        } finally {
+            this.state.rsBusy = false;
+        }
+    }
+
     jumpTo(name) { this.state.tab = 'browse'; this.selectTable(name); }
     mapThisTable() {
         this.state.mapFocus = this.state.sel;

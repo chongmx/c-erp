@@ -1,0 +1,223 @@
+/* =============================================================
+   help.css — the Help Centre (docs/101)
+
+   Layout is a fixed-height column: a tab bar, then three panes. Only the
+   article column and each rail's body scroll; the page itself never does, so
+   the tabs and the contents tree stay put while you read.
+   ============================================================= */
+
+.hc-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--text); }
+
+/* ---------- tab bar ----------
+   One tab per ERP module, so this list only grows. It scrolls sideways rather
+   than wrapping: a second row of tabs would push the article down every time
+   a module is added. */
+.hc-tabsrow {
+    display: flex; align-items: stretch; flex: 0 0 auto;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.hc-tabs {
+    display: flex; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+    flex: 1 1 auto; scroll-behavior: smooth;
+}
+/* The scrollbar is hidden because the ‹ › buttons are the affordance; a 3px
+   bar under the tabs reads as a rendering artefact. */
+.hc-tabs::-webkit-scrollbar { height: 0; }
+
+.hc-tab {
+    flex: 0 0 auto; white-space: nowrap;
+    background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--muted); padding: 10px 15px; cursor: pointer;
+    font-family: inherit; font-size: .84rem;
+    display: flex; align-items: center; gap: 6px;
+}
+.hc-tab:hover { color: var(--text); background: var(--bg); }
+.hc-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.hc-tab.empty  { color: #55688a; }
+.hc-tab-n {
+    background: var(--border); border-radius: 999px; padding: 0 6px;
+    font-size: .68rem; color: var(--text); font-variant-numeric: tabular-nums;
+}
+.hc-tab-soon { color: #55688a; font-size: .72rem; }
+.hc-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.hc-scroll {
+    flex: 0 0 auto; background: var(--surface); border: none;
+    border-right: 1px solid var(--border); color: var(--muted);
+    width: 28px; cursor: pointer; font-family: inherit; font-size: 1rem;
+}
+.hc-scroll:last-child { border-right: none; border-left: 1px solid var(--border); }
+.hc-scroll:hover:not(:disabled) { color: var(--text); background: var(--bg); }
+.hc-scroll:disabled { opacity: .25; cursor: default; }
+
+/* ---------- three panes ---------- */
+.hc-body { flex: 1 1 auto; min-height: 0; display: flex; align-items: stretch; }
+
+.hc-rail {
+    flex: 0 0 260px; min-width: 0; position: relative;
+    background: var(--surface); display: flex; flex-direction: column; min-height: 0;
+}
+.hc-rail.left  { border-right: 1px solid var(--border); }
+.hc-rail.right { border-left: 1px solid var(--border); }
+/* Collapsed is a fixed strip, not display:none — the reopen button has to stay
+   reachable, and a rail that vanishes entirely is hard to get back. */
+.hc-rail.collapsed { flex: 0 0 34px !important; }
+
+.hc-rail-h {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
+}
+.hc-rail-t {
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); font-weight: 600; white-space: nowrap; overflow: hidden;
+}
+.hc-rail.right .hc-rail-h { justify-content: flex-start; }
+.hc-icon {
+    background: none; border: 1px solid var(--border); border-radius: 4px;
+    color: var(--muted); width: 22px; height: 22px; flex: 0 0 auto;
+    cursor: pointer; font-family: inherit; font-size: .8rem; line-height: 1;
+}
+.hc-icon:hover { color: var(--text); border-color: var(--muted); }
+.hc-icon:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.hc-rail.left .hc-rail-h .hc-icon { margin-left: auto; }
+
+.hc-rail-b { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px; }
+.hc-rail-b::-webkit-scrollbar { width: 8px; }
+.hc-rail-b::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+/* the drag handle — a wide hit area over a hairline */
+.hc-grip {
+    position: absolute; top: 0; bottom: 0; right: -3px; width: 7px;
+    cursor: col-resize; z-index: 5;
+}
+.hc-grip.right { right: auto; left: -3px; }
+.hc-grip:hover { background: rgba(233,69,96,.35); }
+body.hc-resizing { cursor: col-resize; user-select: none; }
+
+/* ---------- contents tree ---------- */
+.hc-search {
+    width: 100%; box-sizing: border-box; margin-bottom: 8px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 6px 9px; font-family: inherit; font-size: .8rem;
+}
+.hc-search:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.hc-sec { margin-bottom: 4px; }
+.hc-sec-h {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    background: none; border: none; color: var(--text);
+    padding: 5px 4px; cursor: pointer; font-family: inherit;
+    font-size: .78rem; font-weight: 600; text-align: left;
+}
+.hc-sec-h:hover { color: var(--accent); }
+.hc-caret { color: var(--muted); font-size: .7rem; flex: 0 0 auto; }
+.hc-sec-n { margin-left: auto; color: var(--muted); font-size: .68rem; font-weight: 400; }
+
+.hc-art {
+    display: block; width: 100%; text-align: left;
+    background: none; border: none; border-left: 2px solid transparent;
+    color: var(--muted); padding: 5px 8px 5px 18px; cursor: pointer;
+    font-family: inherit; font-size: .79rem; line-height: 1.35;
+}
+.hc-art:hover { color: var(--text); background: var(--bg); }
+.hc-art.active {
+    color: var(--accent); border-left-color: var(--accent);
+    background: rgba(233,69,96,.08); font-weight: 600;
+}
+.hc-art:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.hc-hits-n { color: var(--muted); font-size: .7rem; margin-bottom: 6px; }
+.hc-hit {
+    display: block; width: 100%; text-align: left;
+    background: none; border: none; border-left: 2px solid transparent;
+    padding: 6px 8px; cursor: pointer; font-family: inherit; margin-bottom: 2px;
+}
+.hc-hit:hover { background: var(--bg); }
+.hc-hit.active { border-left-color: var(--accent); background: rgba(233,69,96,.08); }
+.hc-hit-t { display: block; color: var(--text); font-size: .79rem; font-weight: 600; }
+.hc-hit-x {
+    display: block; color: var(--muted); font-size: .71rem; line-height: 1.4; margin-top: 2px;
+    overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.hc-none { color: var(--muted); font-size: .78rem; padding: 8px 4px; }
+
+/* ---------- the article ---------- */
+.hc-main { flex: 1 1 auto; min-width: 0; overflow-y: auto; padding: 22px 34px 60px; }
+.hc-main::-webkit-scrollbar { width: 11px; }
+.hc-main::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+
+.hc-crumb { color: var(--muted); font-size: .74rem; margin-bottom: 6px; }
+.hc-sep { margin: 0 6px; opacity: .6; }
+.hc-h1 { margin: 0 0 18px; font-size: 1.5rem; font-weight: 700; color: var(--text); }
+.hc-welcome p { color: var(--muted); max-width: 60ch; }
+.hc-error {
+    margin-bottom: 14px; padding: 9px 12px; border-radius: 5px;
+    background: rgba(244,71,71,.1); border: 1px solid rgba(244,71,71,.45);
+    color: #ffb4b4; font-size: .85rem;
+}
+
+/* Prose is capped near 70 characters — a help article read edge-to-edge on a
+   wide monitor is genuinely harder to follow. */
+.hc-md { max-width: 74ch; font-size: .89rem; line-height: 1.68; color: #d3dcea; }
+.hc-md h2 { margin: 28px 0 10px; font-size: 1.12rem; color: var(--text); font-weight: 700; }
+.hc-md h3 { margin: 22px 0 8px; font-size: .98rem; color: var(--text); font-weight: 600; }
+.hc-md h4 { margin: 18px 0 6px; font-size: .89rem; color: var(--muted); font-weight: 600; }
+.hc-md p { margin: 0 0 13px; }
+.hc-md ul, .hc-md ol { margin: 0 0 13px; padding-left: 22px; }
+.hc-md li { margin-bottom: 5px; }
+.hc-md strong { color: var(--text); font-weight: 650; }
+.hc-md a { color: var(--m0, #6ea8fe); }
+.hc-md hr { border: none; border-top: 1px solid var(--border); margin: 22px 0; }
+.hc-md code {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 3px;
+    padding: 1px 5px; font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; font-size: .85em;
+}
+.hc-md pre {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px 14px; overflow-x: auto; margin: 0 0 15px;
+}
+.hc-md pre code { background: none; border: none; padding: 0; font-size: .84rem; line-height: 1.5; }
+.hc-md blockquote {
+    margin: 0 0 15px; padding: 9px 14px;
+    border-left: 3px solid var(--accent); background: rgba(233,69,96,.06);
+    color: #e6c9cf; border-radius: 0 5px 5px 0;
+}
+
+/* Tables scroll inside their own box so a wide one never scrolls the article. */
+.hc-tablewrap { overflow-x: auto; margin: 0 0 16px; border: 1px solid var(--border); border-radius: 6px; }
+.hc-md table { border-collapse: collapse; width: 100%; font-size: .84rem; }
+.hc-md th {
+    text-align: left; background: var(--surface); color: var(--muted);
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .04em;
+    padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.hc-md td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.hc-md tr:last-child td { border-bottom: none; }
+
+/* ---------- assistant rail ---------- */
+.hc-ai-note {
+    color: var(--muted); font-size: .76rem; line-height: 1.5;
+    padding: 9px 10px; margin-bottom: 10px;
+    background: var(--bg); border: 1px dashed var(--border); border-radius: 6px;
+}
+.hc-ai-box { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.hc-ai-in {
+    width: 100%; box-sizing: border-box; resize: vertical;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 8px 10px; font-family: inherit; font-size: .8rem;
+}
+.hc-ai-in:disabled { opacity: .55; }
+.hc-btn {
+    background: var(--border); color: var(--text); border: none; border-radius: 5px;
+    padding: 6px 12px; cursor: pointer; font-family: inherit; font-size: .8rem; align-self: flex-start;
+}
+.hc-btn:disabled { opacity: .4; cursor: default; }
+
+.hc-ai-h {
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); font-weight: 600; margin-bottom: 6px;
+}
+.hc-ai-rel .hc-art { padding-left: 8px; }
+.hc-ai-foot { color: #55688a; font-size: .7rem; line-height: 1.5; margin-top: 10px; }

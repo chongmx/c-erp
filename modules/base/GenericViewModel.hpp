@@ -49,6 +49,8 @@ public:
         REGISTER_METHOD("search_count",    handleSearchCount)
         REGISTER_METHOD("search",          handleSearch)
         REGISTER_METHOD("default_get",     handleDefaultGet)
+        REGISTER_METHOD("read_group",      handleReadGroup)      // docs/095
+        REGISTER_METHOD("web_read_group",  handleReadGroup)
     }
 
     std::string modelName() const override { return TModel::MODEL_NAME; }
@@ -106,6 +108,38 @@ protected:
         TModel proto(db_);
         return proto.fieldsGet(call.fields());  // no rule filter needed for metadata
     }
+    /**
+     * docs/095 — grouped aggregation.
+     *
+     * Odoo's call shape is read_group(domain, fields, groupby, ...), passed
+     * positionally in args, but the OWL client also sends the same three in
+     * kwargs. Both are accepted here because both turn up in practice and a
+     * silently-empty group list is a miserable thing to debug.
+     */
+    nlohmann::json handleReadGroup(const CallKwArgs& call) {
+        auto pick = [&](int argIdx, const char* kw) -> nlohmann::json {
+            const auto a = call.arg(argIdx);
+            if (!a.is_null() && !(a.is_array() && a.empty())) return a;
+            if (call.kwargs.contains(kw)) return call.kwargs[kw];
+            return a;
+        };
+        const nlohmann::json domain  = pick(0, "domain");
+        const nlohmann::json fields  = pick(1, "fields");
+        const nlohmann::json groupby = pick(2, "groupby");
+
+        int limit  = call.limit();
+        int offset = call.offset();
+        std::string order;
+        if (call.kwargs.contains("orderby") && call.kwargs["orderby"].is_string())
+            order = call.kwargs["orderby"].get<std::string>();
+        else if (call.kwargs.contains("order") && call.kwargs["order"].is_string())
+            order = call.kwargs["order"].get<std::string>();
+
+        TModel proto(db_);
+        proto.setUserContext(extractContext_(call));
+        return proto.readGroup(domain, fields, groupby, limit, offset, order);
+    }
+
     nlohmann::json handleSearchCount(const CallKwArgs& call) {
         TModel proto(db_);
         proto.setUserContext(extractContext_(call));

@@ -542,6 +542,10 @@ public:
         fieldRegistry_.add({"type",        core::FieldType::Char,    "Type"});
         fieldRegistry_.add({"url",         core::FieldType::Char,    "URL"});
         fieldRegistry_.add({"mimetype",    core::FieldType::Char,    "Mime Type"});
+        // docs/106 — what the file IS, not what bytes it holds. A fabrication
+        // package is a dozen files called top.gtl / bot.gbl; without this the
+        // panel can only ever be a directory listing.
+        fieldRegistry_.add({"document_type", core::FieldType::Char,  "Document Type"});
         fieldRegistry_.add({"file_size",   core::FieldType::Integer, "File Size"});
         fieldRegistry_.add({"checksum",    core::FieldType::Char,    "Checksum"});
         fieldRegistry_.add({"store_fname", core::FieldType::Char,    "Stored Filename"});
@@ -912,6 +916,62 @@ std::vector<std::string> IrModule::splitFields_(const std::string& csv) {
 // ---------------------------------------------------------------
 // registerRoutes — GET /web/export/{model}  POST /web/import/{model}
 // ---------------------------------------------------------------
+// docs/106 — classify an attachment from its filename.
+//
+// Auto-classification is the default because nobody labels sixteen Gerber layers
+// by hand, and an unlabelled fabrication package is exactly the pile this feature
+// exists to organise. An explicit document_type always overrides it, so the guess
+// is a starting point rather than a verdict.
+//
+// Ambiguous extensions deliberately fall through to "document": a PDF may be a
+// datasheet, an assembly drawing or a test report, and guessing between those is
+// worse than leaving it for a person to say.
+static std::string classifyDocument(const std::string& lowerName) {
+    struct Rule { const char* ext; const char* type; };
+    static const Rule kRules[] = {
+        // fabrication
+        {".gbr","gerber"}, {".ger","gerber"}, {".gtl","gerber"}, {".gbl","gerber"},
+        {".gto","gerber"}, {".gbo","gerber"}, {".gts","gerber"}, {".gbs","gerber"},
+        {".gm1","gerber"}, {".gko","gerber"}, {".gbp","gerber"}, {".gtp","gerber"},
+        {".gpt","gerber"}, {".gpb","gerber"},
+        {".drl","drill"},  {".xln","drill"},  {".drd","drill"},  {".tap","drill"},
+        {".pos","placement"}, {".xy","placement"},
+        // design source
+        {".kicad_pcb","pcb-design"}, {".brd","pcb-design"},
+        {".kicad_sch","schematic"},  {".sch","schematic"},
+        {".net","netlist"},
+        // mechanical
+        {".step","3d-model"}, {".stp","3d-model"}, {".iges","3d-model"},
+        {".igs","3d-model"},  {".stl","3d-model"}, {".3mf","3d-model"},
+        {".dxf","drawing"},
+        // generic
+        {".png","image"}, {".jpg","image"}, {".jpeg","image"},
+        {".gif","image"}, {".svg","image"},
+        {".csv","data"},  {".xlsx","data"},
+        {".zip","archive"},
+    };
+    auto ends = [&](const char* e) {
+        const std::string x(e);
+        return lowerName.size() > x.size() &&
+               lowerName.compare(lowerName.size() - x.size(), x.size(), x) == 0;
+    };
+    // .kicad_pcb must be tested before .pcb-like suffixes; the table order does
+    // that, and the first match wins.
+    for (const auto& r : kRules) if (ends(r.ext)) return r.type;
+    return "document";
+}
+
+/// The vocabulary the UI groups by. A value outside it is rejected rather than
+/// stored, so a typo cannot quietly create a group of one.
+static bool documentTypeAllowed(const std::string& t) {
+    static const std::set<std::string> k = {
+        "gerber","drill","placement","pcb-design","schematic","netlist",
+        "3d-model","drawing","datasheet","specification","image","data",
+        "archive","document","other"
+    };
+    return k.count(t) > 0;
+}
+
 void IrModule::registerRoutes() {
     auto db       = services_.db();
     auto sessions = services_.sessions();
@@ -1270,10 +1330,21 @@ void IrModule::registerRoutes() {
                     return lower.size() > e.size() &&
                            lower.compare(lower.size() - e.size(), e.size(), e) == 0;
                 };
-                // Datasheets and the usual attachments. Deliberately no
-                // executable/script types.
+                // (classifyDocument / documentTypeAllowed are defined above.)
+                //
+                // Datasheets, the usual attachments, and manufacturing data
+                // (docs/106). Deliberately no executable or script types — the
+                // allowlist is the control, so it is extended by naming formats
+                // rather than by loosening the rule.
+                //
+                // Every entry below is inert data: Gerber, Excellon drill, IPC
+                // pick-and-place, STEP/DXF/STL geometry and EDA project files
+                // are read by fabrication tools, never executed by the server or
+                // the browser. They are served as application/octet-stream so a
+                // browser downloads them instead of trying to render them.
                 struct Ext { const char* e; const char* mime; };
                 static const std::vector<Ext> kAllowed = {
+                    // documents and images
                     {".pdf","application/pdf"}, {".png","image/png"},
                     {".jpg","image/jpeg"}, {".jpeg","image/jpeg"},
                     {".gif","image/gif"}, {".svg","image/svg+xml"},
@@ -1281,12 +1352,39 @@ void IrModule::registerRoutes() {
                     {".xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
                     {".docx","application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
                     {".zip","application/zip"},
+                    // Gerber — the fab data itself. Extended (.gbr/.ger) and the
+                    // per-layer conventions Altium and KiCad emit.
+                    {".gbr","application/octet-stream"}, {".ger","application/octet-stream"},
+                    {".gbl","application/octet-stream"}, {".gtl","application/octet-stream"},
+                    {".gbs","application/octet-stream"}, {".gts","application/octet-stream"},
+                    {".gbo","application/octet-stream"}, {".gto","application/octet-stream"},
+                    {".gm1","application/octet-stream"}, {".gko","application/octet-stream"},
+                    {".gbp","application/octet-stream"}, {".gtp","application/octet-stream"},
+                    {".gpt","application/octet-stream"}, {".gpb","application/octet-stream"},
+                    // Excellon drill / route
+                    {".drl","application/octet-stream"}, {".xln","application/octet-stream"},
+                    {".drd","application/octet-stream"}, {".tap","application/octet-stream"},
+                    // assembly / placement
+                    {".pos","text/plain"}, {".xy","text/plain"},
+                    // mechanical geometry
+                    {".step","application/octet-stream"}, {".stp","application/octet-stream"},
+                    {".iges","application/octet-stream"}, {".igs","application/octet-stream"},
+                    {".stl","application/octet-stream"}, {".dxf","application/octet-stream"},
+                    {".3mf","application/octet-stream"},
+                    // EDA project files
+                    {".kicad_pcb","application/octet-stream"},
+                    {".kicad_sch","application/octet-stream"},
+                    {".sch","application/octet-stream"}, {".brd","application/octet-stream"},
+                    {".net","text/plain"},
                 };
                 std::string mime;
                 for (const auto& a : kAllowed) if (ends(a.e)) { mime = a.mime; break; }
                 if (base.empty() || mime.empty()) {
                     jsonResp(400, {{"error",
-                        "File type not allowed (pdf, png, jpg, gif, svg, csv, txt, xlsx, docx, zip)"}});
+                        "File type not allowed. Documents: pdf, png, jpg, gif, svg, csv, txt, "
+                        "xlsx, docx, zip. Manufacturing: gerber (gbr/ger/gtl/gbl/...), drill "
+                        "(drl/xln), placement (pos/xy), geometry (step/stp/stl/dxf/iges), "
+                        "EDA (kicad_pcb/kicad_sch/sch/brd/net)."}});
                     return;
                 }
 
@@ -1321,11 +1419,21 @@ void IrModule::registerRoutes() {
                 p.append(stored.checksum);
                 p.append(stored.storeFname);
                 p.append(sess->uid);
+                // docs/106 — an explicit document_type wins; otherwise classify
+                // from the filename. Nobody labels sixteen Gerber layers by hand.
+                // parser.getParameter, not req->getParameter: this is a multipart
+                // body, and req->getParameter only sees the query string — so the
+                // override was silently ignored and every file fell back to the
+                // guess. The neighbouring fields all read it the same way.
+                std::string docType = parser.getParameter<std::string>("document_type");
+                if (docType.empty() || !documentTypeAllowed(docType))
+                    docType = classifyDocument(lower);
+                p.append(docType);
                 auto ins = txn.exec(
                     "INSERT INTO ir_attachment "
                     "(name, description, res_model, res_id, type, mimetype, "
-                    " file_size, checksum, store_fname, create_uid) "
-                    "VALUES ($1,$2,$3,$4,'binary',$5,$6,$7,$8,$9) RETURNING id", p);
+                    " file_size, checksum, store_fname, create_uid, document_type) "
+                    "VALUES ($1,$2,$3,$4,'binary',$5,$6,$7,$8,$9,$10) RETURNING id", p);
                 const int attId = ins[0][0].as<int>();
                 txn.commit();
 
@@ -1567,6 +1675,37 @@ void IrModule::registerMigrations(infrastructure::MigrationRunner& runner) {
             ON ir_attachment(res_model, res_id);
         CREATE INDEX IF NOT EXISTS ir_attachment_checksum_idx
             ON ir_attachment(checksum);
+    )SQL"});
+
+    // docs/106 — classify what a file IS, so a fabrication package can be shown
+    // as groups rather than as sixteen files called top.gtl and bot.gbl.
+    //
+    // A NEW migration, not an edit to 1040. Migrations are applied once and
+    // recorded; changing the body of one that has already run affects fresh
+    // databases only and silently does nothing to every existing install. That
+    // is exactly what happened on the first attempt here.
+    runner.registerMigration({1041, "ir_attachment_document_type", R"SQL(
+        ALTER TABLE ir_attachment ADD COLUMN IF NOT EXISTS document_type TEXT;
+        CREATE INDEX IF NOT EXISTS ir_attachment_doctype_idx
+            ON ir_attachment (res_model, res_id, document_type);
+        -- Files uploaded before this column existed are classified from their
+        -- names, so history groups the same way new uploads do.
+        UPDATE ir_attachment SET document_type =
+            CASE
+              WHEN lower(name) ~ '\.(gbr|ger|gtl|gbl|gto|gbo|gts|gbs|gm1|gko|gbp|gtp|gpt|gpb)$' THEN 'gerber'
+              WHEN lower(name) ~ '\.(drl|xln|drd|tap)$'        THEN 'drill'
+              WHEN lower(name) ~ '\.(pos|xy)$'                 THEN 'placement'
+              WHEN lower(name) ~ '\.(kicad_pcb|brd)$'          THEN 'pcb-design'
+              WHEN lower(name) ~ '\.(kicad_sch|sch)$'          THEN 'schematic'
+              WHEN lower(name) ~ '\.net$'                      THEN 'netlist'
+              WHEN lower(name) ~ '\.(step|stp|iges|igs|stl|3mf)$' THEN '3d-model'
+              WHEN lower(name) ~ '\.dxf$'                      THEN 'drawing'
+              WHEN lower(name) ~ '\.(png|jpg|jpeg|gif|svg)$'   THEN 'image'
+              WHEN lower(name) ~ '\.(csv|xlsx)$'               THEN 'data'
+              WHEN lower(name) ~ '\.zip$'                      THEN 'archive'
+              ELSE 'document'
+            END
+        WHERE document_type IS NULL;
     )SQL"});
 }
 

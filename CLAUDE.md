@@ -30,6 +30,43 @@ rm -rf ./build
 `erp_tests` is **not** part of the default build target — `cmake --build ./build`
 stays the fast path. `run_tests.sh` builds it explicitly.
 
+## Database snapshots — the testing workflow (docs/104)
+
+**A clean database means one thing: `db/snapshots/baseline.dump`.** It holds the
+schema plus the reference data every module seeds (chart of accounts, journals,
+units, footprints, stages, menus, help), one company and the admin user — and no
+transactions, no products, no test debris.
+
+```bash
+./scripts/make_baseline.sh                    # rebuild the baseline
+./scripts/db_snapshot.sh restore db/snapshots/baseline.dump   # reset to clean
+./scripts/db_snapshot.sh take   my.dump       # capture any state
+./scripts/audit_test_leaks.sh                 # which scripts leave rows behind
+```
+
+`run_tests.sh` does this on every run, in order:
+
+1. snapshots the working database to `log/pretest.dump`,
+2. loads `baseline.dump` so the run starts from identical data,
+3. runs the suite,
+4. **restores `log/pretest.dump`** — your data comes back exactly as it was.
+
+Flags: `--no-baseline` (run against the working database), `--keep-db` (skip the
+restore; the snapshot is still taken), `--baseline <file>`.
+
+### Writing tests under this workflow
+
+- **Seed your own fixtures.** A clean baseline has zero products and zero
+  orders. A script that assumes one exists is not testing what it claims to.
+  Running against the baseline is how you find out.
+- **Synthesise a snapshot for a corner case.** Build the state you need, dump it
+  with `db_snapshot.sh take`, and restore it at the start of the test. That is
+  the supported way to test against a large, awkward or historical database
+  without carrying it in the working one.
+- **Never rely on rows another script left behind.** `audit_test_leaks.sh`
+  measures who leaks; the restore stops it accumulating, but a script that reads
+  another's debris is still broken.
+
 Two tiers, and both are load-bearing:
 
 - **unit** (`tests/*.cpp`, registered with `ERP_TEST`) — pure functions only.

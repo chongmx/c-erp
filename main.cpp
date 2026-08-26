@@ -12,6 +12,9 @@
 #include "modules/stock/StockModule.hpp"
 #include "modules/mail/MailModule.hpp"
 #include "modules/mrp/MrpModule.hpp"
+#include "modules/project/ProjectModule.hpp"
+#include "modules/help/HelpModule.hpp"
+#include "modules/bom/BomModule.hpp"
 #include "modules/report/ReportModule.hpp"
 #include "modules/portal/PortalModule.hpp"
 #include "modules/rental/RentalModule.hpp"
@@ -71,6 +74,9 @@ int main(int argc, char** argv) {
     g_container->addModule<odoo::modules::auth::AuthSignupModule>();
     g_container->addModule<odoo::modules::stock::StockModule>();
     g_container->addModule<odoo::modules::mrp::MrpModule>();
+    g_container->addModule<odoo::modules::project::ProjectModule>();
+    g_container->addModule<odoo::modules::help::HelpModule>();
+    g_container->addModule<odoo::modules::bom::BomModule>();
     g_container->addModule<odoo::modules::report::ReportModule>();
     g_container->addModule<odoo::modules::portal::PortalModule>();
     g_container->addModule<odoo::modules::rental::RentalModule>();

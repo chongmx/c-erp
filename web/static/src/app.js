@@ -826,22 +826,47 @@ class AttachmentPanel extends Component {
                     <div class="chatter-loading">Loading…</div>
                 </t>
                 <t t-else="">
+                    <!-- Grouped, not flat. A PCB fabrication package is a dozen
+                         files called top.gtl / bot.gbl / outline.gm1, and a flat
+                         list of those is a directory listing, not a UI. -->
                     <div class="att-list">
-                        <t t-foreach="state.files" t-as="f" t-key="f.id">
-                            <div class="att-row">
-                                <span class="att-icon" t-esc="iconFor(f.mimetype)"/>
-                                <a class="att-name" t-att-href="f.url" target="_blank"
-                                   t-att-title="f.name" t-esc="f.name"/>
-                                <span class="att-meta" t-esc="f.size_human"/>
-                                <span class="att-meta att-when" t-esc="f.created"/>
-                                <a class="att-dl" t-att-href="f.url + '?download=1'"
-                                   title="Download">&#8615;</a>
-                                <span t-if="!props.readonly" class="att-del" title="Remove"
-                                      t-on-click.stop="() => this.onDelete(f)">&#x2715;</span>
+                        <t t-foreach="groups" t-as="g" t-key="g.key">
+                            <div class="att-group">
+                                <div class="att-group-h">
+                                    <span t-esc="g.label"/>
+                                    <span class="att-count" t-esc="g.files.length"/>
+                                </div>
+                                <t t-foreach="g.files" t-as="f" t-key="f.id">
+                                    <div class="att-row">
+                                        <span class="att-icon" t-esc="iconFor(f.mimetype)"/>
+                                        <a class="att-name" t-att-href="f.url" target="_blank"
+                                           t-att-title="f.name" t-esc="f.name"/>
+                                        <span class="att-kind" t-if="f.document_type"
+                                              t-esc="f.document_type"/>
+                                        <span class="att-meta" t-esc="f.size_human"/>
+                                        <span class="att-meta att-when" t-esc="f.created"/>
+                                        <a class="att-dl" t-att-href="f.url + '?download=1'"
+                                           title="Download">&#8615;</a>
+                                        <span t-if="!props.readonly" class="att-del" title="Remove"
+                                              t-on-click.stop="() => this.onDelete(f)">&#x2715;</span>
+                                    </div>
+                                </t>
                             </div>
                         </t>
                         <t t-if="!state.files.length">
                             <div class="chatter-empty">No files attached yet.</div>
+                        </t>
+                    </div>
+
+                    <!-- Answers the question a fab package actually raises: is it
+                         complete? Only shown once there is fabrication data, so it
+                         never nags a record that has none. -->
+                    <div class="att-fab" t-if="fabStatus">
+                        <span class="att-fab-l">Fabrication package</span>
+                        <t t-foreach="fabStatus" t-as="s" t-key="s.key">
+                            <span t-attf-class="att-fab-i {{ s.present ? 'yes' : 'no' }}">
+                                <t t-esc="s.present ? '✓' : '✕'"/> <t t-esc="s.label"/>
+                            </span>
                         </t>
                     </div>
 
@@ -858,7 +883,9 @@ class AttachmentPanel extends Component {
                                t-on-change="onFileChosen"/>
                         <div t-if="state.error" class="att-error" t-esc="state.error"/>
                         <div class="att-hint">
-                            PDF, images, CSV, TXT, XLSX, DOCX or ZIP — up to 25 MB.
+                            Documents (PDF, images, CSV, TXT, XLSX, DOCX, ZIP) and manufacturing
+                            data — Gerber, drill, pick-and-place, STEP/STL/DXF, KiCad. Up to 25 MB.
+                            The kind is detected from the file name.
                         </div>
                     </t>
                 </t>
@@ -891,6 +918,42 @@ class AttachmentPanel extends Component {
             this.state.error = e.message || 'Could not load the attachments';
         }
         this.state.loading = false;
+    }
+
+    // Sections, in the order someone actually works through a build: make the
+    // board, then the enclosure, then the paperwork. Types not listed fall into
+    // Documents rather than being dropped.
+    static SECTIONS = [
+        { key: 'fabrication', label: 'Fabrication', types: ['gerber', 'drill', 'placement'] },
+        { key: 'design',      label: 'Design source', types: ['pcb-design', 'schematic', 'netlist'] },
+        { key: 'mechanical',  label: 'Mechanical', types: ['3d-model', 'drawing'] },
+        { key: 'documents',   label: 'Documents', types: null },   // null = everything else
+    ];
+
+    get groups() {
+        const out = [];
+        const claimed = new Set();
+        for (const s of AttachmentPanel.SECTIONS) {
+            if (!s.types) continue;
+            const files = this.state.files.filter(f => s.types.includes(f.document_type));
+            files.forEach(f => claimed.add(f.id));
+            if (files.length) out.push({ key: s.key, label: s.label, files });
+        }
+        const rest = this.state.files.filter(f => !claimed.has(f.id));
+        if (rest.length) out.push({ key: 'documents', label: 'Documents', files: rest });
+        return out;
+    }
+
+    // Null unless there is fabrication data, so a product with a datasheet and
+    // nothing else is not told it has an incomplete PCB package.
+    get fabStatus() {
+        const have = new Set(this.state.files.map(f => f.document_type));
+        if (!have.has('gerber') && !have.has('drill') && !have.has('placement')) return null;
+        return [
+            { key: 'gerber',    label: 'Gerber',    present: have.has('gerber') },
+            { key: 'drill',     label: 'Drill',     present: have.has('drill') },
+            { key: 'placement', label: 'Placement', present: have.has('placement') },
+        ];
     }
 
     iconFor(mime) {
@@ -11474,6 +11537,12 @@ const CUSTOM_VIEWS = {
     'company.admin':      CompanyAdmin,
     'db.backups':         DbBackups,
     'db.studio':          DbStudio,
+    'part.lookup':        PartLookup,
+    'part.catalog':       PartCatalog,
+    'project.board':      TaskBoard,
+    'project.timegrid':   TimesheetGrid,
+    'help.center':        HelpCenter,
+    'bom.editor':         BomEditor,
     'account.report':     AccountReports,
     'account.dashboard':  AccountDashboard,
     'account.settings':   AccountSettings,
@@ -11492,7 +11561,34 @@ class ActionView extends Component {
                 <t t-component="customView"/>
             </t>
             <t t-elif="state.mode === 'list'">
-                <t t-if="isCategoryModel">
+                <!-- docs/095: the generic view switcher. Every action used to be
+                     list-or-form; these four are driven by read_group and work on
+                     any model, so they are offered everywhere rather than being
+                     configured per action. -->
+                <div class="view-switch-bar">
+                    <span class="rv-switch">
+                        <button t-foreach="altViews" t-as="v" t-key="v.id"
+                                t-attf-class="{{ state.altView === v.id ? 'active' : '' }}"
+                                t-att-title="v.title"
+                                t-on-click="() => this.setAltView(v.id)" t-esc="v.label"/>
+                    </span>
+                </div>
+                <t t-if="state.altView === 'grouped'">
+                    <GroupedListView action="currentAction" onOpenForm.bind="openForm"/>
+                </t>
+                <t t-elif="state.altView === 'kanban'">
+                    <KanbanView action="currentAction" onOpenForm.bind="openForm"/>
+                </t>
+                <t t-elif="state.altView === 'pivot'">
+                    <PivotView action="currentAction"/>
+                </t>
+                <t t-elif="state.altView === 'graph'">
+                    <GraphView action="currentAction"/>
+                </t>
+                <t t-elif="state.altView === 'calendar'">
+                    <CalendarView action="currentAction" onOpenForm.bind="openForm"/>
+                </t>
+                <t t-elif="isCategoryModel">
                     <ProductCategoryListView/>
                 </t>
                 <t t-elif="isProductModel">
@@ -11610,7 +11706,22 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor, PortalUserListView, UserFormView, GroupsListView, ProductCategoryTree, ProductCategoryListView, AssetFormView, BudgetFormView, BankAccountFormView, ExpenseSheetFormView };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor, PortalUserListView, UserFormView, GroupsListView, ProductCategoryTree, ProductCategoryListView, AssetFormView, BudgetFormView, BankAccountFormView, ExpenseSheetFormView,
+        // docs/095 — generic views, loaded from components/RecordViews.js
+        GroupedListView, KanbanView, PivotView, GraphView, CalendarView };
+
+    // docs/095 — the alternate views offered on every list.
+    get altViews() {
+        return [
+            { id: 'list',     label: 'List',     title: 'The plain list' },
+            { id: 'grouped',  label: 'Grouped',  title: 'Group rows and subtotal them' },
+            { id: 'kanban',   label: 'Kanban',   title: 'A card per record, a column per group' },
+            { id: 'pivot',    label: 'Pivot',    title: 'Cross-tabulate two fields' },
+            { id: 'graph',    label: 'Graph',    title: 'Bar, line or pie' },
+            { id: 'calendar', label: 'Calendar', title: 'Place records on a month grid' },
+        ];
+    }
+    setAltView(v) { this.state.altView = v; }
 
     // Use overrideAction when navigateTo() has been called, else fall back to props.action
     get currentAction()          { return this.state.overrideAction || this.props.action; }
@@ -11697,6 +11808,7 @@ class ActionView extends Component {
         this.state = useState({
             loading:            true,
             mode:               'list',
+            altView:            'list',   // docs/095 — list | grouped | kanban | pivot | graph | calendar
             recordId:           null,
             listView:           null,
             formView:           null,
@@ -11751,6 +11863,10 @@ class ActionView extends Component {
             this.state.overrideAction = { res_model: model, domain: domain || [] };
             this.state.recordId       = null;
             this.state.mode           = 'list';
+            // docs/095 — land on the plain list. Carrying, say, a pivot across
+            // to a different model would open on a cross-tab of fields that
+            // model may not have.
+            this.state.altView        = 'list';
         } catch (e) {
             console.error('navigateTo failed:', e);
         } finally {

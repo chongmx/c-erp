@@ -136,7 +136,8 @@ public:
                       bool                                    secureCookies = false,
                       bool                                    devMode = false,
                       const std::string& trustedProxies = "127.0.0.1,::1",
-                      std::shared_ptr<DbConnection>           db = nullptr)
+                      std::shared_ptr<DbConnection>           db = nullptr,
+                      std::shared_ptr<core::ModelFactory>     modelFactory = nullptr)
         : vmFactory_    (std::move(vmFactory))
         , sessions_     (std::move(sessions))
         , viewFactory_  (std::move(viewFactory))
@@ -144,6 +145,7 @@ public:
         , devMode_      (devMode)
         , clientIp_     (trustedProxies)
         , db_           (std::move(db))
+        , modelFactory_ (std::move(modelFactory))
     {}
 
     /**
@@ -310,6 +312,37 @@ public:
         http.addCorsOptions("/web/session/my_companies");
         http.addCorsOptions("/web/session/set_active_company");
         http.addCorsOptions("/web/company/access");
+    }
+
+    // ── docs/095: grouped aggregation for every model ─────────────
+    //
+    // Odoo's call is read_group(domain, fields, groupby) positionally, but the
+    // OWL client also sends the same three as kwargs. Both are accepted — both
+    // occur in practice, and a silently empty group list is a miserable thing
+    // to chase down.
+    nlohmann::json handleReadGroupGeneric_(const core::CallKwArgs& call) {
+        auto model = modelFactory_->create(call.model, core::Lifetime::Transient);
+        if (!model) throw std::runtime_error("Unknown model: " + call.model);
+
+        auto pick = [&](int argIdx, const char* kw) -> nlohmann::json {
+            const auto a = call.arg(argIdx);
+            if (!a.is_null() && !(a.is_array() && a.empty())) return a;
+            if (call.kwargs.contains(kw)) return call.kwargs[kw];
+            return a;
+        };
+        std::string order;
+        if (call.kwargs.contains("orderby") && call.kwargs["orderby"].is_string())
+            order = call.kwargs["orderby"].get<std::string>();
+        else if (call.kwargs.contains("order") && call.kwargs["order"].is_string())
+            order = call.kwargs["order"].get<std::string>();
+
+        // Record rules and company scoping are applied inside the model, so the
+        // context has to reach it — a grouped total that counted rows the user
+        // cannot open would leak by arithmetic. CurrentUser was published for
+        // this request a few lines above, from the session rather than the body.
+        model->setUserContext(core::CurrentUser::get());
+        return model->readGroup(pick(0, "domain"), pick(1, "fields"), pick(2, "groupby"),
+                                call.limit(), call.offset(), order);
     }
 
     // ── docs/094: company switcher + access administration ────────
@@ -886,12 +919,220 @@ public:
     //
     // Plus the same envelope as /web/db/*: authenticated admin only, and scoped
     // to the caller's own tenant, so one company can never read another's rows.
+    // ---------------------------------------------------------------
+    // Reset the database to a clean state (docs/102).
+    //
+    // "Empty" cannot mean empty: with no companies, no chart of accounts, no
+    // units and no menus the application does not start. So a reset clears the
+    // DATA people enter and keeps the CONFIGURATION the system needs, in two
+    // scopes:
+    //
+    //   transactions — documents and movements. Invoices, payments, orders,
+    //                  stock moves, timesheets, lookups. Master data survives:
+    //                  products, contacts, projects, accounts, units.
+    //   master       — the above plus the master records themselves: products
+    //                  and their parameters, contacts, projects, rental units.
+    //                  Configuration still survives, so the system still boots.
+    //
+    // Guards, because this is the most destructive thing in the product:
+    //   * administrator only (dbAdmin_ above),
+    //   * `confirm` must be the exact word RESET — a mis-click cannot do it,
+    //   * `dry_run` reports what WOULD go, and the UI shows that first,
+    //   * TRUNCATE without CASCADE. If the table list is incomplete the
+    //     database refuses the whole statement rather than quietly cascading
+    //     into something meant to survive. A loud failure here is the point.
+    // ---------------------------------------------------------------
+    /// Configuration the application needs in order to start and behave. If the
+    /// dependency closure ever reaches one of these, the requested scope is
+    /// wrong and the reset is refused rather than widened.
+    static const std::set<std::string>& kResetProtected() {
+        static const std::set<std::string> k = {
+            "res_company", "res_users", "res_groups", "res_currency",
+            "res_company_users_rel", "res_users_groups_rel",
+            "ir_ui_menu", "ir_act_window", "ir_config_parameter", "ir_sequence",
+            "ir_model", "ir_model_fields", "ir_report_template", "ir_attachment",
+            "account_account", "account_account_type", "account_journal",
+            "account_journal_group", "account_tax", "account_fiscal_position",
+            "account_incoterms", "account_budget_post", "account_asset_type",
+            "account_bank_account", "account_analytic_account",
+            "uom_uom", "uom_category", "product_category",
+            "part_unit", "part_footprint",
+            "product_attribute", "product_attribute_value", "product_pricelist",
+            "stock_location", "stock_warehouse", "stock_picking_type",
+            "project_task_type", "rental_unit_type", "rental_expense_category",
+            "hr_job", "hr_department", "hr_employee", "resource_calendar",
+            "help_article",
+        };
+        return k;
+    }
+
+    static std::vector<std::string> resetTables_(const std::string& scope) {
+        std::vector<std::string> t = {
+            // accounting documents
+            "account_partial_reconcile", "payment_proof", "account_payment",
+            "account_bank_statement_line", "account_bank_statement",
+            "account_asset_depreciation_line", "account_asset",
+            "account_budget_line", "account_budget",
+            "hr_expense", "hr_expense_sheet",
+            "account_analytic_line", "account_move_line", "account_move",
+            // stock
+            "stock_valuation_layer", "stock_move_line", "stock_move",
+            "stock_quant", "stock_picking", "stock_landed_cost",
+            "stock_production_lot", "stock_quant_package",
+            // sales & purchasing
+            "sale_order_line", "sale_order",
+            "purchase_order_line", "purchase_order",
+            // manufacturing
+            "mrp_workorder", "mrp_production", "mrp_production_schedule", "mrp_forecast",
+            // project
+            "project_timesheet", "project_task",
+            // rental
+            "rental_event", "rental_expense", "rental_contract",
+            // parts
+            "part_lookup_result",
+        };
+        if (scope == "master") {
+            for (const char* m : {"part_parameter", "part_manufacturer_info",
+                                  "product_variant_combination",
+                                  "product_template_attribute_value",
+                                  "product_template_attribute_line",
+                                  "product_supplierinfo", "product_pricelist_item",
+                                  "stock_warehouse_orderpoint", "stock_putaway_rule",
+                                  "product_product", "product_template",
+                                  "rental_unit", "partner_rental_price"})
+            // project_project is not here either: per-project task stages hang
+            // off it, and TRUNCATE cannot tell those from the shared default
+            // stages that every board needs. `transactions` already clears
+            // every task and timesheet, which leaves empty projects — delete
+            // those individually if you want them gone.
+            // Contacts are deliberately NOT here. res_partner is referenced by
+            // configuration (analytic accounts among others), so clearing it
+            // would drag configuration out with it — the closure check refuses
+            // that, correctly. Contacts are master data worth keeping anyway;
+            // remove them by hand if you really mean to.
+                t.emplace_back(m);
+        }
+        return t;
+    }
+
+    nlohmann::json handleDbReset_(const Session& s, const nlohmann::json& p) {
+        const std::string scope   = p.value("scope", std::string{"transactions"});
+        const std::string confirm = p.value("confirm", std::string{});
+        const bool dryRun         = p.value("dry_run", false);
+
+        if (scope != "transactions" && scope != "master")
+            return {{"error", "unknown reset scope"}};
+        if (!dryRun && confirm != "RESET")
+            return {{"error", "Type RESET to confirm. Nothing has been changed."}};
+
+        try {
+            TenantScope tscope(db_.get(), s.db);
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            txn.exec("SET LOCAL statement_timeout = '60s'");
+
+            // Only touch tables that actually exist here — a module that was
+            // never installed has no table to clear.
+            std::set<std::string> want;
+            for (const auto& name : resetTables_(scope))
+                if (!txn.exec("SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename=$1",
+                              pqxx::params{name}).empty())
+                    want.insert(name);
+
+            // Expand to the dependency closure. TRUNCATE refuses to clear a
+            // table while anything outside the statement still references it,
+            // and maintaining that list by hand is a losing game — every new
+            // module adds a child table somebody forgets. Deriving it from the
+            // catalogue means the list cannot drift out of date.
+            std::vector<std::pair<std::string, std::string>> fks;   // (child, parent)
+            for (const auto& row : txn.exec(
+                    "SELECT DISTINCT tc.table_name, ccu.table_name "
+                    "FROM information_schema.table_constraints tc "
+                    "JOIN information_schema.constraint_column_usage ccu "
+                    "  ON ccu.constraint_name = tc.constraint_name "
+                    " AND ccu.constraint_schema = tc.constraint_schema "
+                    "WHERE tc.constraint_type='FOREIGN KEY' AND tc.table_schema='public'"))
+                fks.emplace_back(row[0].c_str(), row[1].c_str());
+
+            std::vector<std::string> pulled;
+            for (bool grew = true; grew; ) {
+                grew = false;
+                for (const auto& [child, parent] : fks) {
+                    if (child == parent) continue;                 // self-reference is fine
+                    if (!want.count(parent) || want.count(child)) continue;
+                    // Anything the closure reaches that must survive means the
+                    // scope is wrong. Refuse loudly rather than quietly widen.
+                    if (kResetProtected().count(child))
+                        return {{"error", "Reset refused: clearing '" + parent +
+                                          "' would require deleting '" + child +
+                                          "', which holds configuration. Nothing has been changed."}};
+                    want.insert(child);
+                    pulled.push_back(child);
+                    grew = true;
+                }
+            }
+
+            nlohmann::json counts = nlohmann::json::array();
+            std::vector<std::string> present(want.begin(), want.end());
+            long long total = 0;
+            for (const auto& name : present) {
+                // Names come from the catalogue and the fixed list, never from
+                // input, and are quoted as identifiers (S-49).
+                const long long n = txn.exec("SELECT count(*) FROM " + txn.quote_name(name))[0][0]
+                                       .as<long long>(0);
+                if (n > 0) { counts.push_back({{"table", name}, {"rows", n}}); total += n; }
+            }
+            nlohmann::json extra = nlohmann::json::array();
+            for (const auto& e : pulled) extra.push_back(e);
+
+            if (dryRun) {
+                return {{"ok", true}, {"data", {{"dry_run", true}, {"scope", scope},
+                                                {"tables", counts}, {"total_rows", total},
+                                                {"table_count", static_cast<long long>(present.size())},
+                                                {"also_cleared", extra}}}};
+            }
+            if (!present.empty()) {
+                std::string list;
+                for (size_t i = 0; i < present.size(); ++i) {
+                    if (i) list += ", ";
+                    list += txn.quote_name(present[i]);
+                }
+                // No CASCADE: an incomplete list must fail, not spread.
+                txn.exec("TRUNCATE TABLE " + list + " RESTART IDENTITY");
+            }
+            txn.commit();
+
+            LOG_WARN << "[dbtool] RESET scope=" << scope << " uid=" << s.uid
+                     << " db=" << s.db << " rows=" << total;
+            if (AuditService::ready())
+                AuditService::instance().log("db.tool", "reset", std::vector<int>{}, s.uid);
+
+            return {{"ok", true}, {"data", {{"dry_run", false}, {"scope", scope},
+                                            {"tables", counts}, {"total_rows", total},
+                                            {"table_count", static_cast<long long>(present.size())},
+                                            {"also_cleared", extra}}}};
+        } catch (const pqxx::sql_error& ex) {
+            // Most likely an incomplete table list: something outside it still
+            // references a table being truncated. Say so rather than hide it.
+            LOG_ERROR << "[dbtool] reset failed: " << ex.what();
+            return {{"error", std::string("Reset refused by the database: ") + ex.what()}};
+        } catch (const std::exception& ex) {
+            LOG_ERROR << "[dbtool] reset failed: " << ex.what();
+            return {{"error", "The reset could not be completed."}};
+        }
+    }
+
     nlohmann::json handleDbTool_(const HttpRequestPtr& req, const nlohmann::json& body) {
         Session s; nlohmann::json err;
         if (!dbAdmin_(req, body, s, err)) return err;
 
         const nlohmann::json& p = body.contains("params") ? body["params"] : body;
         const std::string op = p.is_object() ? p.value("op", std::string{}) : std::string{};
+
+        // `reset` is the one write this endpoint performs, so it deliberately
+        // does NOT share the read-only transaction below — the read-only
+        // transaction is the console's safety property and must stay absolute.
+        if (op == "reset") return handleDbReset_(s, p);
 
         try {
             TenantScope scope(db_.get(), s.db);
@@ -1060,6 +1301,19 @@ private:
             // get_views is handled via ViewFactory when the ViewModel doesn't implement it
             if (call.method == "get_views" && viewFactory_) {
                 return successResponse_(id, handleGetViews_(call));
+            }
+
+            // docs/095 — read_group is served from the MODEL, not the ViewModel.
+            //
+            // Registering it on GenericViewModel only would have given grouping
+            // to the generic models and silently withheld it from every
+            // hand-written one — which is most of the interesting ones:
+            // account.move, sale.order, res.partner, stock.picking. That is the
+            // same defect shape that has bitten this codebase repeatedly, so
+            // grouping is answered centrally instead, and every model that has
+            // a field registry gets it whether its ViewModel knows or not.
+            if ((call.method == "read_group" || call.method == "web_read_group") && modelFactory_) {
+                return successResponse_(id, handleReadGroupGeneric_(call));
             }
 
             // PERF-D: fields_get returns pure metadata — serve from cache (300 s TTL)
@@ -1666,6 +1920,9 @@ private:
     }
 
     std::shared_ptr<core::ViewModelFactory> vmFactory_;
+    /// docs/095 — used to serve read_group for EVERY model, including the ones
+    /// whose ViewModel is hand-written. See handleReadGroupGeneric_.
+    std::shared_ptr<core::ModelFactory>     modelFactory_;
     std::shared_ptr<SessionManager>         sessions_;
     std::shared_ptr<core::ViewFactory>      viewFactory_;
     LoginRateLimiter                        rateLimiter_;

@@ -207,7 +207,8 @@ public:
                                                    cfg.http.secureCookies,
                                                    cfg.http.devMode,
                                                    cfg.http.trustedProxies,
-                                                   db);   // multi-tenant router (docs/072)
+                                                   db,        // multi-tenant router (docs/072)
+                                                   models);   // read_group for every model (docs/095)
 
         // P2: give ViewModels a way to drop the dispatcher's caches after a
         // write. Without this the fields_get cache (300 s) keeps serving stale

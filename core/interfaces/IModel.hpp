@@ -171,6 +171,33 @@ public:
      * @returns       Match count.
      */
     virtual int searchCount(const nlohmann::json& domain) = 0;
+
+    // ----------------------------------------------------------
+    // Grouped aggregation (docs/095)
+    // ----------------------------------------------------------
+
+    /**
+     * @brief Aggregate matching rows into groups — Odoo's `read_group`.
+     *
+     * Virtual with a throwing default rather than pure, so the dozens of
+     * existing models compile untouched; BaseModel overrides it, which is
+     * every model in practice. The dispatcher calls this directly instead of
+     * going through a ViewModel, so grouping reaches models whose ViewModel is
+     * hand-written and knows nothing about it.
+     *
+     * @param domain   filter, as for search()
+     * @param fields   candidate measures; non-numeric ones are ignored
+     * @param groupby  one or more keys, a date key may carry ":month" etc.
+     * @returns        one object per group: the key, `__count`, the sums, and
+     *                 `__domain` selecting exactly that group's rows.
+     */
+    virtual nlohmann::json readGroup(const nlohmann::json& /*domain*/,
+                                     const nlohmann::json& /*fields*/,
+                                     const nlohmann::json& /*groupby*/,
+                                     int /*limit*/ = 0, int /*offset*/ = 0,
+                                     const std::string& /*orderBy*/ = "") {
+        throw std::runtime_error("read_group is not supported for this model");
+    }
 };
 
 } // namespace odoo::core

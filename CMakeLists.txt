@@ -12,7 +12,10 @@ file(GLOB_RECURSE MODULE_SOURCES
     "modules/*.cpp"
     "factories/*.cpp"
 )
-add_executable(c-erp ${SOURCES} ${MODULE_SOURCES})
+# Nayuki's QR encoder (MIT, docs/099). Listed explicitly rather than globbed —
+# 3rdparty/ is not a source root and must not be swept up wholesale.
+set(QRCODEGEN_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/qrcodegen/qrcodegen.cpp")
+add_executable(c-erp ${SOURCES} ${MODULE_SOURCES} ${QRCODEGEN_SOURCES})
 
 # Third-party
 add_subdirectory(3rdparty/json)
@@ -46,6 +49,7 @@ target_include_directories(c-erp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/drogon/lib/inc
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/drogon
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/libpqxx/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/qrcodegen
 )
 
 # Link

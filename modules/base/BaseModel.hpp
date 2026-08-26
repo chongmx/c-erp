@@ -374,6 +374,236 @@ public:
     }
 
     // ----------------------------------------------------------
+    // read_group — grouped aggregation (docs/095)
+    // ----------------------------------------------------------
+    /**
+     * @brief Aggregate rows into groups, Odoo's `read_group` contract.
+     *
+     * This is the primitive the whole reporting surface stands on: grouped
+     * lists, the pivot, the graph and the kanban board are all read_group with
+     * a different renderer. Before it existed, every one of those had to be a
+     * bespoke screen with its own hand-written SQL — which is exactly why the
+     * dashboards in this codebase are bespoke screens with hand-written SQL.
+     *
+     * @param domainJson  filter, same as search
+     * @param fieldsJson  fields to aggregate: numeric ones get SUM
+     * @param groupbyJson one or more group keys. A date field may carry a
+     *                    granularity — "date:month" — as Odoo spells it.
+     * @param limit/offset/orderBy paging over the GROUPS, not the rows.
+     *
+     * Returns one object per group carrying the group key, `__count`, the
+     * aggregates, and `__domain` — the filter that selects exactly this
+     * group's rows, so a client can drill in without reconstructing it.
+     */
+    nlohmann::json readGroup(const nlohmann::json& domainJson,
+                             const nlohmann::json& fieldsJson,
+                             const nlohmann::json& groupbyJson,
+                             int limit = 0, int offset = 0,
+                             const std::string& orderBy = "") override {
+        // ---- resolve the group keys ------------------------------------
+        struct GroupKey {
+            std::string field;      // registered column
+            std::string interval;   // "" | day | week | month | quarter | year
+            std::string expr;       // SQL expression to GROUP BY
+            std::string alias;      // result column name
+        };
+        std::vector<GroupKey> keys;
+        auto addKey = [&](const std::string& spec) {
+            std::string field = spec, interval;
+            const auto colon = spec.find(':');
+            if (colon != std::string::npos) {
+                field    = spec.substr(0, colon);
+                interval = spec.substr(colon + 1);
+            }
+            if (!fieldRegistry_.has(field))
+                throw odoo::infrastructure::ValidationError("Unknown group-by field: " + field);
+            const auto& fd = fieldRegistry_.get(field);
+            GroupKey k;
+            k.field    = field;
+            k.interval = interval;
+            k.alias    = "g" + std::to_string(keys.size());
+            if (!interval.empty()) {
+                // Only these five, and matched exactly — the value reaches
+                // date_trunc as SQL text, so it can never be caller-supplied.
+                static const std::set<std::string> kIntervals =
+                    {"day", "week", "month", "quarter", "year"};
+                if (!kIntervals.count(interval))
+                    throw odoo::infrastructure::ValidationError(
+                        "Unsupported group-by interval: " + interval);
+                k.expr = "date_trunc('" + interval + "', " + field + ")";
+            } else if (fd.type == FieldType::Date || fd.type == FieldType::Datetime) {
+                k.expr = "date_trunc('month', " + field + ")";
+                k.interval = "month";
+            } else {
+                k.expr = field;
+            }
+            keys.push_back(std::move(k));
+        };
+        if (groupbyJson.is_string()) addKey(groupbyJson.get<std::string>());
+        else if (groupbyJson.is_array())
+            for (const auto& g : groupbyJson)
+                if (g.is_string()) addKey(g.get<std::string>());
+        if (keys.empty())
+            throw odoo::infrastructure::ValidationError("read_group needs at least one group-by field.");
+
+        // ---- resolve the measures --------------------------------------
+        // Odoo sends the whole field list; only the numeric ones can be summed,
+        // and silently skipping the rest is what the client expects.
+        struct Measure { std::string field, alias; bool scaled; };
+        std::vector<Measure> measures;
+        auto addMeasure = [&](std::string spec) {
+            // "amount_total:sum" — the aggregate suffix is accepted and ignored;
+            // SUM is the only one the client ever asks for here.
+            const auto colon = spec.find(':');
+            if (colon != std::string::npos) spec = spec.substr(0, colon);
+            if (spec == "id" || !fieldRegistry_.has(spec)) return;
+            const auto& fd = fieldRegistry_.get(spec);
+            const bool numeric = fd.type == FieldType::Integer || fd.type == FieldType::Float ||
+                                 fd.type == FieldType::Monetary;
+            if (!numeric) return;
+            for (const auto& k : keys) if (k.field == spec) return;   // never sum a group key
+            for (const auto& m : measures) if (m.field == spec) return;
+            measures.push_back({spec, "m" + std::to_string(measures.size()), fd.scaled});
+        };
+        if (fieldsJson.is_array())
+            for (const auto& f : fieldsJson) if (f.is_string()) addMeasure(f.get<std::string>());
+
+        // ---- build the statement ---------------------------------------
+        const nlohmann::json merged = mergeRuleDomain_(domainJson, RuleOp::Read);
+        auto [where, paramVec] = domainFromJson(merged).toSql(&filterableColumns_());
+
+        std::string sel, grp;
+        for (std::size_t i = 0; i < keys.size(); ++i) {
+            if (i) { sel += ", "; grp += ", "; }
+            sel += keys[i].expr + " AS " + keys[i].alias;
+            grp += keys[i].expr;
+            // Select the bucket's exclusive end next to its start so the group's
+            // __domain is half-open and two adjacent buckets can never both
+            // claim the same row.
+            if (!keys[i].interval.empty())
+                sel += ", (" + keys[i].expr + " + interval '" +
+                       bucketStep_(keys[i].interval) + "') AS " + keys[i].alias + "_end";
+        }
+        sel += ", COUNT(*) AS __count";
+        for (const auto& m : measures)
+            sel += ", SUM(" + m.field + ") AS " + m.alias;
+
+        std::string sql = "SELECT " + sel + " FROM " + std::string(TDerived::TABLE_NAME) +
+                          " WHERE " + where;
+        appendCompanyClause_(sql);          // docs/094 — groups must not span companies
+        sql += " GROUP BY " + grp;
+
+        // ORDER BY over groups: an aggregate alias or a group key, nothing else.
+        std::string order;
+        if (!orderBy.empty()) {
+            std::string col = orderBy, dir = "ASC";
+            const auto sp = orderBy.find(' ');
+            if (sp != std::string::npos) {
+                col = orderBy.substr(0, sp);
+                dir = lowerAscii_(orderBy.substr(sp + 1)) == "desc" ? "DESC" : "ASC";
+            }
+            if (col == "__count") order = " ORDER BY __count " + dir;
+            for (const auto& k : keys) if (k.field == col) order = " ORDER BY " + k.alias + " " + dir;
+            for (const auto& m : measures) if (m.field == col) order = " ORDER BY " + m.alias + " " + dir;
+        }
+        if (order.empty()) order = " ORDER BY " + keys[0].alias + " ASC NULLS LAST";
+        sql += order;
+        if (limit  > 0) sql += " LIMIT "  + std::to_string(limit);
+        if (offset > 0) sql += " OFFSET " + std::to_string(offset);
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        pqxx::result res;
+        if (paramVec.empty()) res = txn.exec(sql);
+        else { pqxx::params p; for (auto& s : paramVec) p.append(s); res = txn.exec(sql, p); }
+
+        // ---- shape the reply -------------------------------------------
+        // Many2one keys are resolved to [id, display_name] in one extra query
+        // per key rather than one per row.
+        std::map<std::string, std::map<int, std::string>> labels;
+        for (const auto& k : keys) {
+            const auto& fd = fieldRegistry_.get(k.field);
+            if (fd.type != FieldType::Many2one || fd.relation.empty()) continue;
+            std::set<int> ids;
+            const auto ci = res.column_number(k.alias);
+            for (const auto& row : res)
+                if (!row[ci].is_null()) ids.insert(row[ci].template as<int>(0));
+            if (ids.empty()) continue;
+            labels[k.field] = resolveM2oLabels_(txn, fd.relation, ids);
+        }
+
+        // Resolve column positions once. Indexing a row by name inside this
+        // template also makes `as<>` a dependent name, which is a needless
+        // fight with the compiler for something that is faster done by index.
+        struct KeyCol { std::size_t idx; std::size_t endIdx; bool hasEnd; };
+        std::vector<KeyCol> keyCols;
+        for (const auto& k : keys) {
+            KeyCol kc{res.column_number(k.alias), 0, !k.interval.empty()};
+            if (kc.hasEnd) kc.endIdx = res.column_number(k.alias + "_end");
+            keyCols.push_back(kc);
+        }
+        std::vector<std::size_t> measureCols;
+        for (const auto& m : measures) measureCols.push_back(res.column_number(m.alias));
+        const auto countCol = res.column_number("__count");
+
+        nlohmann::json out = nlohmann::json::array();
+        for (const auto& row : res) {
+            nlohmann::json g = nlohmann::json::object();
+            nlohmann::json gdom = nlohmann::json::array();
+
+            for (std::size_t i = 0; i < keys.size(); ++i) {
+                const auto& k  = keys[i];
+                const auto& fd = fieldRegistry_.get(k.field);
+                const auto& f  = row[keyCols[i].idx];
+                const std::string outKey = k.interval.empty() ? k.field
+                                                              : (k.field + ":" + k.interval);
+                if (f.is_null()) {
+                    g[outKey] = false;
+                    gdom.push_back({k.field, "=", nullptr});
+                } else if (fd.type == FieldType::Many2one) {
+                    const int id = f.template as<int>(0);
+                    const auto it = labels.find(k.field);
+                    std::string lbl = (it != labels.end() && it->second.count(id))
+                                          ? it->second.at(id) : ("#" + std::to_string(id));
+                    g[outKey] = nlohmann::json::array({id, lbl});
+                    gdom.push_back({k.field, "=", id});
+                } else if (!k.interval.empty()) {
+                    // date_trunc returns a timestamp; the client wants the bucket
+                    // start plus the half-open range it can filter on.
+                    std::string v = f.c_str();
+                    if (v.size() >= 10) v = v.substr(0, 10);
+                    const auto& fe = row[keyCols[i].endIdx];
+                    std::string endv = fe.is_null() ? std::string{} : std::string(fe.c_str());
+                    if (endv.size() >= 10) endv = endv.substr(0, 10);
+                    g[outKey] = v;
+                    gdom.push_back({k.field, ">=", v});
+                    if (!endv.empty()) gdom.push_back({k.field, "<", endv});
+                } else if (fd.type == FieldType::Boolean) {
+                    const bool b = f.template as<bool>(false);
+                    g[outKey] = b;
+                    gdom.push_back({k.field, "=", b});
+                } else {
+                    const std::string v = f.c_str();
+                    g[outKey] = v;
+                    gdom.push_back({k.field, "=", v});
+                }
+            }
+
+            g["__count"] = row[countCol].template as<long long>(0);
+            for (std::size_t i = 0; i < measures.size(); ++i) {
+                const auto& f = row[measureCols[i]];
+                if (f.is_null())            g[measures[i].field] = 0;
+                else if (measures[i].scaled)
+                    g[measures[i].field] = Money::fromMicros(f.template as<long long>(0)).toJson();
+                else                        g[measures[i].field] = f.template as<double>(0);
+            }
+            g["__domain"] = std::move(gdom);
+            out.push_back(std::move(g));
+        }
+        return out;
+    }
+
+    // ----------------------------------------------------------
     // Hooks — must be PUBLIC for CRTP static_cast to reach them
     // ----------------------------------------------------------
     virtual void registerFields()                               = 0;
@@ -402,6 +632,60 @@ private:
             return std::set<std::string>(v.begin(), v.end());
         }();
         return cols;
+    }
+
+    // ── read_group helpers (docs/095) ──────────────────────────
+
+    static std::string lowerAscii_(std::string s) {
+        for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    }
+
+    /// The SQL interval that advances one bucket. Used to select the bucket's
+    /// exclusive end alongside its start, so PostgreSQL does the calendar
+    /// arithmetic — month lengths and leap years are not worth reimplementing.
+    static const char* bucketStep_(const std::string& interval) {
+        if (interval == "day")     return "1 day";
+        if (interval == "week")    return "1 week";
+        if (interval == "quarter") return "3 months";
+        if (interval == "year")    return "1 year";
+        return "1 month";
+    }
+
+    /// Resolve display names for a set of many2one ids in one round trip.
+    /// Falls back to the id when the target has no obvious label column, which
+    /// keeps a group readable rather than blank.
+    std::map<int, std::string> resolveM2oLabels_(pqxx::transaction_base& txn,
+                                                 const std::string& model,
+                                                 const std::set<int>& ids) const {
+        std::map<int, std::string> out;
+        if (ids.empty()) return out;
+        std::string table;
+        for (char c : model) table += (c == '.') ? '_' : c;
+        try {
+            // Pick the first label-ish column this table actually has.
+            static const std::vector<std::string> kCandidates =
+                {"name", "complete_name", "display_name", "code", "login"};
+            std::string labelCol;
+            for (const auto& c : kCandidates) {
+                auto r = txn.exec(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name=$1 AND column_name=$2",
+                    pqxx::params{table, c});
+                if (!r.empty()) { labelCol = c; break; }
+            }
+            if (labelCol.empty()) return out;
+            std::string idList;
+            for (int id : ids) { if (!idList.empty()) idList += ","; idList += std::to_string(id); }
+            auto r = txn.exec("SELECT id, " + txn.quote_name(labelCol) +
+                              " FROM " + txn.quote_name(table) +
+                              " WHERE id IN (" + idList + ")");
+            for (const auto& row : r)
+                out[row[0].as<int>()] = row[1].is_null() ? "" : row[1].c_str();
+        } catch (const std::exception&) {
+            // A missing or unreadable relation must not fail the whole grouping.
+        }
+        return out;
     }
 
     // ── docs/094: multi-company scoping ────────────────────────
