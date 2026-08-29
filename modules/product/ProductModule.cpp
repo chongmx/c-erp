@@ -443,6 +443,80 @@ public:
 
 
 // ================================================================
+// 2b. PRODUCT.PRODUCT VIEW MODEL
+//
+// Generic in every respect but one: a variant created through the API must end
+// up with a TEMPLATE. Creating `product.product` directly used to leave
+// product_tmpl_id NULL, which produces a product that:
+//
+//   * the variant screens cannot show (they list variants OF a template),
+//   * no pricelist rule keyed on a template can price,
+//   * and every global integrity check counts as broken — which is how this
+//     was found: product-variants asserts "no product is without a template"
+//     across the whole database, and started failing the moment any earlier
+//     test created a product through the API.
+//
+// The template is synthesised from the product's own values, so the pair is
+// consistent from the moment it exists. There is no FK on product_tmpl_id,
+// which is exactly why nothing objected before.
+// ================================================================
+
+class ProductProductViewModel : public core::GenericViewModel<ProductProduct> {
+public:
+    explicit ProductProductViewModel(std::shared_ptr<DbConnection> db)
+        : core::GenericViewModel<ProductProduct>(db), pdb_(db)
+    {
+        // Re-registering "create" replaces the generic one inherited above.
+        REGISTER_MUTATOR("create", handleCreateWithTemplate)
+    }
+
+private:
+    std::shared_ptr<DbConnection> pdb_;
+
+    nlohmann::json handleCreateWithTemplate(const core::CallKwArgs& call) {
+        auto res = handleCreate(call);
+        if (res.is_number_integer()) {
+            const int id = res.get<int>();
+            if (id > 0) ensureTemplate_(id);
+        }
+        return res;
+    }
+
+    void ensureTemplate_(int productId) {
+        auto conn = pdb_->acquire();
+        pqxx::work txn{conn.get()};
+
+        auto r = txn.exec("SELECT product_tmpl_id FROM product_product WHERE id=$1",
+                          pqxx::params{productId});
+        if (r.empty()) return;
+
+        // A dangling id counts as missing: pointing at a template that was
+        // deleted is worse than pointing at nothing, because it silently
+        // adopts whatever later takes that id.
+        if (!r[0][0].is_null()) {
+            auto e = txn.exec("SELECT 1 FROM product_template WHERE id=$1",
+                              pqxx::params{r[0][0].as<int>()});
+            if (!e.empty()) return;
+        }
+
+        auto ins = txn.exec(
+            "INSERT INTO product_template "
+            "  (name, default_code, type, categ_id, uom_id, uom_po_id, list_price, "
+            "   standard_price, sale_ok, purchase_ok, active, company_id) "
+            "SELECT name, default_code, type, categ_id, uom_id, uom_po_id, list_price, "
+            "       standard_price, sale_ok, purchase_ok, TRUE, company_id "
+            "  FROM product_product WHERE id=$1 RETURNING id",
+            pqxx::params{productId});
+        if (ins.empty()) return;
+
+        txn.exec("UPDATE product_product SET product_tmpl_id=$1 WHERE id=$2",
+                 pqxx::params{ins[0][0].as<int>(), productId});
+        txn.commit();
+    }
+};
+
+
+// ================================================================
 // 3. PRODUCT CATEGORY VIEW MODEL
 //    Enriches search_read / read with parent name, child_count,
 //    and product_count — all computed via SQL JOINs/subqueries.
@@ -463,6 +537,8 @@ public:
         REGISTER_METHOD("fields_get",      handleFieldsGet)
         REGISTER_METHOD("name_search",     handleNameSearch)
         REGISTER_METHOD("search",          handleSearch)
+        REGISTER_METHOD("tree",            handleTree)
+        REGISTER_METHOD("detail",          handleDetail)
     }
 
     std::string modelName() const override { return "product.category"; }
@@ -471,24 +547,64 @@ public:
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
 
-        // Domain filter — support [["active","=",true]] and empty
+        // Domain filter.
+        //
+        // This used to understand only `active` and `parent_id` and SILENTLY
+        // IGNORE every other leaf, so `[["name","=","PCB Assembly"]]` matched
+        // nothing in the chain, the clause stayed 1=1, and the call returned all
+        // 80 categories. A filter that quietly widens is the worst failure mode
+        // available: the caller believes it asked a narrow question and gets an
+        // answer to a different one.
+        //
+        // Unknown fields and operators are now REFUSED. Values are bound as $n
+        // (S-49) — only the column name is chosen, and only from this allowlist.
         std::string whereClause = "1=1";
+        pqxx::params params;
+        int pn = 0;
         const auto& domain = call.domain();
         if (domain.is_array()) {
             for (const auto& leaf : domain) {
                 if (!leaf.is_array() || leaf.size() < 3) continue;
-                std::string field = leaf[0].get<std::string>();
-                std::string op    = leaf[1].get<std::string>();
-                if (field == "active" && op == "=" && leaf[2].is_boolean()) {
-                    whereClause += leaf[2].get<bool>()
-                        ? " AND pc.active = TRUE"
-                        : " AND pc.active = FALSE";
-                } else if (field == "parent_id" && op == "=") {
-                    if (leaf[2].is_null() || leaf[2] == false) {
-                        whereClause += " AND pc.parent_id IS NULL";
-                    } else if (leaf[2].is_number_integer()) {
-                        whereClause += " AND pc.parent_id = " + std::to_string(leaf[2].get<int>());
+                if (!leaf[0].is_string() || !leaf[1].is_string()) continue;
+                const std::string field = leaf[0].get<std::string>();
+                const std::string op    = leaf[1].get<std::string>();
+                const auto& val = leaf[2];
+
+                if (field == "active") {
+                    const bool want = val.is_boolean() ? val.get<bool>() : true;
+                    whereClause += want ? " AND pc.active = TRUE" : " AND pc.active = FALSE";
+                } else if (field == "parent_id") {
+                    if (val.is_null() || val == false)
+                        whereClause += (op == "!=") ? " AND pc.parent_id IS NOT NULL"
+                                                    : " AND pc.parent_id IS NULL";
+                    else if (val.is_number_integer()) {
+                        whereClause += " AND pc.parent_id " + std::string(op == "!=" ? "<>" : "=")
+                                     + " $" + std::to_string(++pn);
+                        params.append(val.get<int>());
                     }
+                } else if (field == "id" && val.is_number_integer()) {
+                    whereClause += " AND pc.id " + std::string(op == "!=" ? "<>" : "=")
+                                 + " $" + std::to_string(++pn);
+                    params.append(val.get<int>());
+                } else if (field == "name" || field == "display_name") {
+                    if (!val.is_string())
+                        throw infrastructure::ValidationError("The '" + field + "' filter needs text.");
+                    const std::string s = val.get<std::string>();
+                    if (op == "=" || op == "!=") {
+                        whereClause += " AND pc.name " + std::string(op == "!=" ? "<>" : "=")
+                                     + " $" + std::to_string(++pn);
+                        params.append(s);
+                    } else if (op == "ilike" || op == "like" || op == "=ilike") {
+                        whereClause += " AND pc.name ILIKE $" + std::to_string(++pn);
+                        params.append(op == "=ilike" ? s : "%" + s + "%");
+                    } else {
+                        throw infrastructure::ValidationError(
+                            "Unsupported operator '" + op + "' on category name.");
+                    }
+                } else {
+                    throw infrastructure::ValidationError(
+                        "Cannot filter categories on '" + field +
+                        "'. Supported: id, name, parent_id, active.");
                 }
             }
         }
@@ -496,7 +612,7 @@ public:
         int limit  = call.limit()  > 0 ? call.limit()  : 500;
         int offset = call.offset();
 
-        auto rows = txn.exec(
+        const std::string sql =
             "SELECT pc.id, pc.name, pc.active, pc.parent_id, "
             "COALESCE(par.name,'') AS parent_name, "
             "(SELECT COUNT(*) FROM product_category c2 WHERE c2.parent_id = pc.id) AS child_count, "
@@ -505,8 +621,8 @@ public:
             "LEFT JOIN product_category par ON par.id = pc.parent_id "
             "WHERE " + whereClause + " "
             "ORDER BY pc.name "
-            "LIMIT " + std::to_string(limit) + " OFFSET " + std::to_string(offset)
-        );
+            "LIMIT " + std::to_string(limit) + " OFFSET " + std::to_string(offset);
+        auto rows = pn ? txn.exec(sql, params) : txn.exec(sql);
 
         nlohmann::json result = nlohmann::json::array();
         for (const auto& r : rows) result.push_back(serializeRow_(r));
@@ -702,6 +818,188 @@ public:
         for (const auto& r : rows)
             result.push_back(nlohmann::json::array({r["id"].as<int>(), r["name"].as<std::string>()}));
         return result;
+    }
+
+    // ----------------------------------------------------------
+    // tree — the whole category hierarchy in ONE call.
+    //
+    // The screen is a tree, so it is fetched as a tree. Walking the levels
+    // with a search_read per expanded node would be a request per click and
+    // would make the counts inconsistent between levels, because each would
+    // be measured at a different moment.
+    //
+    // Two product counts per node, and they answer different questions:
+    //   direct_count — products filed in exactly this category
+    //   total_count  — products anywhere beneath it
+    // A category showing "0" while its children hold hundreds is the thing
+    // that makes people distrust the screen.
+    // ----------------------------------------------------------
+    nlohmann::json handleTree(const core::CallKwArgs& call) {
+        const auto& kw = call.kwargs;
+        const bool includeArchived =
+            kw.contains("include_archived") && kw["include_archived"].is_boolean()
+                ? kw["include_archived"].get<bool>() : false;
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        // Recursive descendant counts, computed in the database. Doing this in
+        // the client would mean shipping every product id to the browser.
+        auto rows = txn.exec(
+            "WITH RECURSIVE descend AS ("
+            "    SELECT id AS root, id AS node FROM product_category"
+            "  UNION ALL"
+            "    SELECT d.root, c.id FROM product_category c"
+            "      JOIN descend d ON c.parent_id = d.node"
+            "), totals AS ("
+            "    SELECT d.root, COUNT(p.id) AS total"
+            "      FROM descend d LEFT JOIN product_product p ON p.categ_id = d.node"
+            "     GROUP BY d.root"
+            ") "
+            "SELECT c.id, c.name, c.parent_id, c.active, "
+            "       (SELECT COUNT(*) FROM product_product p WHERE p.categ_id = c.id) AS direct_count, "
+            "       COALESCE(t.total, 0) AS total_count, "
+            "       (SELECT COUNT(*) FROM product_category k WHERE k.parent_id = c.id) AS child_count "
+            "  FROM product_category c "
+            "  LEFT JOIN totals t ON t.root = c.id "
+            + std::string(includeArchived ? "" : " WHERE c.active = TRUE ") +
+            " ORDER BY c.parent_id NULLS FIRST, c.name",
+            pqxx::params{});
+
+        nlohmann::json nodes = nlohmann::json::array();
+        for (const auto& r : rows) {
+            nodes.push_back({
+                {"id",           r["id"].as<int>()},
+                {"name",         r["name"].c_str()},
+                {"parent_id",    r["parent_id"].is_null() ? 0 : r["parent_id"].as<int>()},
+                {"active",       r["active"].as<bool>(true)},
+                {"direct_count", r["direct_count"].as<int>(0)},
+                {"total_count",  r["total_count"].as<int>(0)},
+                {"child_count",  r["child_count"].as<int>(0)},
+            });
+        }
+        return {{"nodes", nodes}, {"count", nodes.size()}};
+    }
+
+    // ----------------------------------------------------------
+    // detail — everything the right-hand panel shows for one category.
+    //
+    // One call rather than five: the panel is opened by a click, and a click
+    // that fires five requests shows its sections popping in one at a time.
+    // ----------------------------------------------------------
+    nlohmann::json handleDetail(const core::CallKwArgs& call) {
+        int id = 0;
+        if (call.args.is_array() && !call.args.empty()) {
+            const auto& a = call.args[0];
+            if (a.is_number_integer())                     id = a.get<int>();
+            else if (a.is_object() && a.contains("id"))    id = a["id"].get<int>();
+            else if (a.is_array() && !a.empty() && a[0].is_number_integer())
+                                                           id = a[0].get<int>();
+        }
+        if (id <= 0)
+            throw infrastructure::ValidationError("detail: an existing category id is required.");
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        auto cat = txn.exec(
+            "SELECT c.id, c.name, c.parent_id, c.active, c.create_date, c.write_date, "
+            "       p.name AS parent_name, "
+            "       c.property_stock_valuation_account_id AS acc_val, "
+            "       c.property_stock_journal_id           AS acc_jrn, "
+            "       c.property_stock_account_input_id     AS acc_in, "
+            "       c.property_stock_account_output_id    AS acc_out "
+            "  FROM product_category c "
+            "  LEFT JOIN product_category p ON p.id = c.parent_id "
+            " WHERE c.id = $1", pqxx::params{id});
+        if (cat.empty())
+            throw infrastructure::ValidationError("No category with id " + std::to_string(id) + ".");
+
+        // The full path, built by walking up. It is what tells you where you
+        // are once the tree is scrolled and the parent is off-screen.
+        auto pathRows = txn.exec(
+            "WITH RECURSIVE up AS ("
+            "    SELECT id, name, parent_id, 0 AS depth FROM product_category WHERE id = $1"
+            "  UNION ALL"
+            "    SELECT c.id, c.name, c.parent_id, u.depth + 1"
+            "      FROM product_category c JOIN up u ON c.id = u.parent_id"
+            ") SELECT id, name FROM up ORDER BY depth DESC", pqxx::params{id});
+        nlohmann::json path = nlohmann::json::array();
+        for (const auto& r : pathRows)
+            path.push_back({{"id", r["id"].as<int>()}, {"name", r["name"].c_str()}});
+
+        auto counts = txn.exec(
+            "WITH RECURSIVE descend AS ("
+            "    SELECT $1::int AS node"
+            "  UNION ALL"
+            "    SELECT c.id FROM product_category c JOIN descend d ON c.parent_id = d.node"
+            ") "
+            "SELECT (SELECT COUNT(*) FROM product_product WHERE categ_id = $1) AS direct, "
+            "       (SELECT COUNT(*) FROM product_product WHERE categ_id IN (SELECT node FROM descend)) AS total, "
+            "       (SELECT COUNT(*) FROM product_category WHERE parent_id = $1) AS children, "
+            "       (SELECT COUNT(*) FROM descend) - 1 AS descendants",
+            pqxx::params{id});
+
+        // A sample of what is actually filed here — the question anyone asks
+        // next. Capped, because a category can hold thousands.
+        auto prods = txn.exec(
+            "SELECT id, name, COALESCE(default_code,'') AS code, "
+            "       COALESCE(list_price,0) AS list_price, active "
+            "  FROM product_product WHERE categ_id = $1 "
+            " ORDER BY COALESCE(default_code, name) LIMIT 25", pqxx::params{id});
+        nlohmann::json products = nlohmann::json::array();
+        for (const auto& r : prods)
+            products.push_back({
+                {"id",         r["id"].as<int>()},
+                {"name",       r["name"].c_str()},
+                {"code",       r["code"].c_str()},
+                {"list_price", core::Money::fromMicros(r["list_price"].as<long long>(0)).toJson()},
+                {"active",     r["active"].as<bool>(true)},
+            });
+
+        auto kids = txn.exec(
+            "SELECT c.id, c.name, "
+            "       (SELECT COUNT(*) FROM product_product p WHERE p.categ_id = c.id) AS direct_count "
+            "  FROM product_category c WHERE c.parent_id = $1 ORDER BY c.name",
+            pqxx::params{id});
+        nlohmann::json children = nlohmann::json::array();
+        for (const auto& r : kids)
+            children.push_back({{"id", r["id"].as<int>()},
+                                {"name", r["name"].c_str()},
+                                {"direct_count", r["direct_count"].as<int>(0)}});
+
+        auto accName = [&](const char* col) -> nlohmann::json {
+            if (cat[0][col].is_null()) return nullptr;
+            const int aid = cat[0][col].as<int>();
+            auto a = txn.exec("SELECT name FROM account_account WHERE id=$1", pqxx::params{aid});
+            if (a.empty()) return nullptr;
+            return nlohmann::json{{"id", aid}, {"name", a[0][0].c_str()}};
+        };
+
+        return {
+            {"id",          cat[0]["id"].as<int>()},
+            {"name",        cat[0]["name"].c_str()},
+            {"parent_id",   cat[0]["parent_id"].is_null() ? 0 : cat[0]["parent_id"].as<int>()},
+            {"parent_name", cat[0]["parent_name"].is_null() ? "" : cat[0]["parent_name"].c_str()},
+            {"active",      cat[0]["active"].as<bool>(true)},
+            {"create_date", cat[0]["create_date"].is_null() ? "" : cat[0]["create_date"].c_str()},
+            {"write_date",  cat[0]["write_date"].is_null()  ? "" : cat[0]["write_date"].c_str()},
+            {"path",        path},
+            {"counts", {
+                {"direct",      counts[0]["direct"].as<int>(0)},
+                {"total",       counts[0]["total"].as<int>(0)},
+                {"children",    counts[0]["children"].as<int>(0)},
+                {"descendants", counts[0]["descendants"].as<int>(0)},
+            }},
+            {"products", products},
+            {"children_list", children},
+            {"accounts", {
+                {"valuation", accName("acc_val")},
+                {"journal",   nullptr},
+                {"input",     accName("acc_in")},
+                {"output",    accName("acc_out")},
+            }},
+        };
     }
 
     nlohmann::json handleSearch(const core::CallKwArgs& call) {
@@ -2891,8 +3189,10 @@ void ProductModule::registerViewModels() {
     viewModels_.registerCreator("product.category", [db]{
         return std::make_shared<ProductCategoryViewModel>(db);
     });
+    // Not the generic one: a variant created through the API must come with a
+    // template. See ProductProductViewModel.
     viewModels_.registerCreator("product.product", [db]{
-        return std::make_shared<GenericViewModel<ProductProduct>>(db);
+        return std::make_shared<ProductProductViewModel>(db);
     });
     viewModels_.registerCreator("product.supplierinfo", [db]{
         return std::make_shared<ProductSupplierInfoViewModel>(db);

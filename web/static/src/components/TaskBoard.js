@@ -291,5 +291,16 @@ class TaskBoard extends owl.Component {
         const v = Number(h || 0);
         return Number.isInteger(v) ? String(v) : v.toFixed(1);
     }
-    open(id) { window.location.hash = '#action=tasks&view=form&id=' + id; }
+    /**
+     * Open a record in the shell. Falls back to a warning rather than pretending
+     * it worked — the previous `location.hash` version failed silently because
+     * this app has no hash router at all.
+     */
+    openRecord(model, id) {
+        if (window.ErpNav && window.ErpNav.openRecord) return window.ErpNav.openRecord(model, id);
+        console.warn('Cannot navigate: the shell is not mounted.');
+        return false;
+    }
+
+    open(id) { return this.openRecord('project.task', id); }
 }

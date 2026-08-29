@@ -11827,6 +11827,12 @@ class ActionView extends Component {
             const model = this.props.action.res_model;
             const result = await RpcService.getViews(model, [[false, 'list'], [false, 'form']]);
             this.state.listView = result.views?.list || null;
+            // Arrived here by clicking a record elsewhere: go straight to its
+            // form rather than dropping the user on a list they must search.
+            if (this.props.initialRecordId) {
+                this.state.recordId = this.props.initialRecordId;
+                this.state.mode     = 'form';
+            }
             this.state.formView = result.views?.form || null;
             // Load all categories for the product browser tree
             if (model === 'product.product') {
@@ -12013,7 +12019,8 @@ class MainApp extends Component {
                         <div class="loading">Loading…</div>
                     </t>
                     <t t-elif="state.action">
-                        <ActionView action="state.action" t-key="state.action.id"/>
+                        <ActionView action="state.action" initialRecordId="state.pendingRecordId"
+                                    t-key="state.action.id + ':' + (state.pendingRecordId || 0)"/>
                     </t>
                     <t t-else="">
                         <div class="welcome">
@@ -12038,8 +12045,49 @@ class MainApp extends Component {
             activeMenuId:  null,
             action:        null,
             loadingAction: false,
+            pendingRecordId: null,
         });
-        onMounted(() => this.loadMenus());
+        onMounted(() => {
+            this.loadMenus();
+            // The one place a child component can ask the shell to navigate.
+            //
+            // There is no hash router in this app — screens are reached by
+            // clicking menus — so `location.hash = '#action=...'` did nothing at
+            // all. Three screens used it to open a record and silently failed.
+            // A registered hook is honest about the coupling and works.
+            window.ErpNav = {
+                openRecord: (model, id) => this.openRecord(model, id),
+                available: true,
+            };
+        });
+        owl.onWillUnmount(() => { if (window.ErpNav) delete window.ErpNav; });
+    }
+
+    /**
+     * Open a record in its form view, from anywhere.
+     *
+     * Finds an action for the model rather than requiring the caller to know an
+     * action id — a component that shows products should not have to know which
+     * menu entry happens to point at them.
+     */
+    async openRecord(model, recordId) {
+        if (!model) return false;
+        try {
+            const acts = await RpcService.call('ir.actions.act_window', 'search_read',
+                [[['res_model', '=', model]]], { fields: ['id', 'name'], limit: 1 });
+            if (!acts || !acts.length) {
+                console.warn('openRecord: no action for model', model);
+                return false;
+            }
+            const action = await RpcService.loadAction(acts[0].id);
+            this.state.mode            = 'app';
+            this.state.action          = action;
+            this.state.pendingRecordId = recordId || null;
+            return true;
+        } catch (e) {
+            console.error('openRecord failed:', e);
+            return false;
+        }
     }
 
     async loadMenus() {
@@ -12081,13 +12129,15 @@ class MainApp extends Component {
     }
 
     goHome() {
-        this.state.mode      = 'home';
-        this.state.activeApp = null;
-        this.state.action    = null;
+        this.state.mode            = 'home';
+        this.state.activeApp       = null;
+        this.state.action          = null;
+        this.state.pendingRecordId = null;
     }
 
     async activateLeaf(leaf) {
-        this.state.activeMenuId = leaf.id;
+        this.state.activeMenuId    = leaf.id;
+        this.state.pendingRecordId = null;
         if (!leaf.action_id) return;
 
         this.state.loadingAction = true;

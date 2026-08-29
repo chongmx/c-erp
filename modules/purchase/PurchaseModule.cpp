@@ -660,11 +660,28 @@ private:
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        txn.exec(
-            "UPDATE purchase_order SET state = 'cancel', write_date = now() "
-            "WHERE id = ANY($1::int[]) AND state = 'draft'",
-            pqxx::params{purIdsArray(ids)});
-        for (int id : ids)
+
+        // Same defect as sale.order had: `WHERE state = 'draft'` left a
+        // CONFIRMED order untouched while returning true and writing
+        // "Purchase order cancelled." into its chatter. A confirmed order is
+        // the one that actually gets cancelled, so it is allowed; the bill is
+        // unwound separately by reversing it.
+        std::vector<int> cancelled;
+        for (int id : ids) {
+            auto r = txn.exec("SELECT state FROM purchase_order WHERE id = $1",
+                              pqxx::params{id});
+            if (r.empty())
+                throw std::runtime_error("Purchase order not found: " + std::to_string(id));
+            const std::string st = r[0][0].c_str();
+            if (st == "cancel") continue;          // already cancelled: not an error
+            if (st != "draft" && st != "purchase")
+                throw odoo::infrastructure::ValidationError(
+                    "An order in state '" + st + "' cannot be cancelled.");
+            txn.exec("UPDATE purchase_order SET state = 'cancel', write_date = now() "
+                     "WHERE id = $1", pqxx::params{id});
+            cancelled.push_back(id);
+        }
+        for (int id : cancelled)
             odoo::modules::mail::postLog(txn, "purchase.order", id, 0,
                 "Purchase order cancelled.", "log_note");
         txn.commit();
@@ -698,9 +715,19 @@ private:
             int         payTermId  = r[0][2].is_null() ? 0 : r[0][2].as<int>();
             int         companyId  = r[0][3].as<int>();
             int         currencyId = r[0][4].is_null() ? 0 : r[0][4].as<int>();
-            double      amtUntaxed = r[0][5].as<double>();
-            double      amtTax     = r[0][6].as<double>();
-            double      amtTotal   = r[0][7].as<double>();
+            // These columns hold BIGINT micro-units. Read them as INTEGERS:
+            // binding a double appends it in its shortest form, so a 750.00
+            // order serialises as "7.5e+08" and the bigint column rejects it —
+            // creating a vendor bill failed for any total above roughly $10.
+            //
+            // This is the third place the same mistake appeared: SaleModule's
+            // action_create_invoices (fixed, and its comment says the same
+            // thing) and StockModule's qty_delivered / qty_received. If you are
+            // writing a value into a micro-unit column, keep it integral the
+            // whole way; do not let it become a double in between.
+            long long   amtUntaxed = std::llround(r[0][5].as<double>());
+            long long   amtTax     = std::llround(r[0][6].as<double>());
+            long long   amtTotal   = std::llround(r[0][7].as<double>());
             std::string orderName  = r[0][8].c_str();
 
             if (state != "purchase")
@@ -771,11 +798,15 @@ private:
                 pqxx::params{ordId});
 
             for (const auto& ln : lines) {
+                // Integral all the way, for the same reason as the header
+                // amounts above: quantity, price and the debit/credit columns
+                // are all BIGINT micro-units, and a double reaching any of
+                // them serialises as "6e+06" and is rejected.
                 std::string lname = ln[0].c_str();
-                double      qty   = ln[1].as<double>();
-                double      unit  = ln[2].as<double>();
-                double      sub   = ln[3].as<double>();
-                double      tax   = ln[4].as<double>();
+                long long   qty   = std::llround(ln[1].as<double>());
+                long long   unit  = std::llround(ln[2].as<double>());
+                long long   sub   = std::llround(ln[3].as<double>());
+                long long   tax   = std::llround(ln[4].as<double>());
 
                 // Expense (debit) line
                 pqxx::params el;

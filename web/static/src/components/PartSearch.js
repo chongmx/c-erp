@@ -68,8 +68,16 @@ class PartSearch extends owl.Component {
         }
     }
 
-    openProduct(id) {
-        // Navigate to the product form via a hashchange the shell listens to.
-        window.location.hash = '#action=products&view=form&id=' + id;
+    /**
+     * Open a record in the shell. Falls back to a warning rather than pretending
+     * it worked — the previous `location.hash` version failed silently because
+     * this app has no hash router at all.
+     */
+    openRecord(model, id) {
+        if (window.ErpNav && window.ErpNav.openRecord) return window.ErpNav.openRecord(model, id);
+        console.warn('Cannot navigate: the shell is not mounted.');
+        return false;
     }
+
+    openProduct(id) { return this.openRecord('product.product', id); }
 }

@@ -664,11 +664,34 @@ private:
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        txn.exec(
-            "UPDATE sale_order SET state = 'cancel', write_date = now() "
-            "WHERE id = ANY($1::int[]) AND state = 'draft'",
-            pqxx::params{saleIdsArray(ids)});
-        for (int id : ids)
+
+        // Cancelling used to be `WHERE state = 'draft'`, which meant a
+        // CONFIRMED order silently stayed confirmed — while the call returned
+        // true and the chatter gained the line "Sales order cancelled." on an
+        // order that had not been. Reporting success for work not done is the
+        // worst of the three possible behaviours.
+        //
+        // A confirmed order is exactly the one a customer cancels, so it is
+        // allowed here. The accounting is unwound separately, by reversing the
+        // invoice (RINV) — cancelling the order does not and must not touch
+        // posted entries.
+        std::vector<int> cancelled;
+        for (int id : ids) {
+            auto r = txn.exec("SELECT state FROM sale_order WHERE id = $1",
+                              pqxx::params{id});
+            if (r.empty())
+                throw std::runtime_error("Sale order not found: " + std::to_string(id));
+            const std::string st = r[0][0].c_str();
+            if (st == "cancel") continue;          // already cancelled: not an error
+            if (st != "draft" && st != "sale")
+                throw odoo::infrastructure::ValidationError(
+                    "An order in state '" + st + "' cannot be cancelled.");
+            txn.exec("UPDATE sale_order SET state = 'cancel', write_date = now() "
+                     "WHERE id = $1", pqxx::params{id});
+            cancelled.push_back(id);
+        }
+        // Only orders that actually moved get the chatter note.
+        for (int id : cancelled)
             odoo::modules::mail::postLog(txn, "sale.order", id, 0,
                 "Sales order cancelled.", "log_note");
         txn.commit();

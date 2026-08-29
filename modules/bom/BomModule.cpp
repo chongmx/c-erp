@@ -286,6 +286,15 @@ private:
         if (!des.empty() && qty <= 0) qty = static_cast<int>(des.size());
         row["quantity"] = qty;
         row["designator_list"] = des;
+        // Store the EXPANDED form. "R1-R4" is how a BOM writes it, but the BOM
+        // line has to carry the four designators it actually means — otherwise
+        // the range is re-parsed by every consumer, and the count that was just
+        // validated is not the count that gets written.
+        if (!des.empty()) {
+            std::string joined;
+            for (size_t i = 0; i < des.size(); ++i) { if (i) joined += ","; joined += des[i]; }
+            row["designators"] = joined;
+        }
 
         if (qty <= 0) {
             r.severity = "error";
@@ -429,7 +438,10 @@ private:
         int ok = 0, warn = 0, err = 0;
         for (const auto& r : txn.exec(
                 "SELECT l.id, l.sequence, l.designators, l.quantity, l.mpn, l.manufacturer, "
-                "       l.value_text, l.footprint, l.description, COALESCE(l.product_id,0), "
+                // AS product_id matters: without an alias the result column is
+                // named "coalesce" and reading it by name throws.
+                "       l.value_text, l.footprint, l.description, "
+                "       COALESCE(l.product_id,0) AS product_id, "
                 "       l.severity, l.issues, l.candidates, l.fitted, "
                 "       COALESCE(p.name,'') AS product_name, COALESCE(p.default_code,'') AS product_code "
                 "FROM mrp_bom_import_line l "

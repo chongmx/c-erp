@@ -810,14 +810,22 @@ private:
 
             // Update linked sale order lines qty_delivered
             if (saleId > 0 && code == "outgoing") {
+                // qty_delivered holds BIGINT micro-units. Read the sum as an
+                // INTEGER: binding a double appends it in the shortest form,
+                // and 4000000.0 serialises as "4e+06", which a bigint column
+                // rejects outright — so validating a delivery raised by a sale
+                // order failed for every quantity of one unit or more. Same
+                // class as the invoice-total bug in SaleModule's
+                // action_create_invoices; the ::bigint cast keeps the value
+                // integral all the way through.
                 auto moves = txn.exec(
-                    "SELECT product_id, SUM(quantity) AS qty "
+                    "SELECT product_id, SUM(quantity)::bigint AS qty "
                     "FROM stock_move WHERE picking_id=$1 AND state='done' "
                     "GROUP BY product_id",
                     pqxx::params{id});
                 for (const auto& m : moves) {
-                    const int    productId = m["product_id"].as<int>();
-                    const double qty       = m["qty"].as<double>();
+                    const int       productId = m["product_id"].as<int>();
+                    const long long qty       = m["qty"].as<long long>(0);
                     txn.exec(
                         "UPDATE sale_order_line "
                         "SET qty_delivered = qty_delivered + $1, write_date=now() "
@@ -840,14 +848,17 @@ private:
 
             // Update linked purchase order lines qty_received
             if (purchaseId > 0 && code == "incoming") {
+                // qty_received is BIGINT micro-units too, and had the identical
+                // defect — a receipt against a purchase order could not be
+                // validated. See the note above.
                 auto moves = txn.exec(
-                    "SELECT product_id, SUM(quantity) AS qty "
+                    "SELECT product_id, SUM(quantity)::bigint AS qty "
                     "FROM stock_move WHERE picking_id=$1 AND state='done' "
                     "GROUP BY product_id",
                     pqxx::params{id});
                 for (const auto& m : moves) {
-                    const int    productId = m["product_id"].as<int>();
-                    const double qty       = m["qty"].as<double>();
+                    const int       productId = m["product_id"].as<int>();
+                    const long long qty       = m["qty"].as<long long>(0);
                     txn.exec(
                         "UPDATE purchase_order_line "
                         "SET qty_received = qty_received + $1, write_date=now() "

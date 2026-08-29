@@ -96,8 +96,34 @@ public:
         if (!validFile(file)) return {{"ok", false}, {"output", "invalid backup file name"}};
         std::string path = dir + "/" + file;
         if (access(path.c_str(), R_OK) != 0) return {{"ok", false}, {"output", "backup not found"}};
+
+        // DROP SCHEMA first, rather than relying on pg_restore --clean.
+        //
+        // --clean drops objects ONE AT A TIME and treats a failed DROP as a
+        // warning. A table with dependents (product_template has several)
+        // cannot be dropped that way: the DROP fails, the CREATE then fails
+        // with "already exists", and its data is SKIPPED — so every other
+        // table is replaced while that one silently keeps its old rows.
+        //
+        // The result is a restore that reports success and leaves the database
+        // in a state that was never dumped: in our case 163 products pointing
+        // at template ids the restore had refused to load. Dropping the schema
+        // outright removes the ordering problem entirely.
+        //
+        // Same fix as scripts/db_snapshot.sh — see docs/109 §9.
+        {
+            auto d = pgArgs("psql", c);
+            d.push_back("-q");
+            d.push_back("-c");
+            d.push_back("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;");
+            auto dr = dbRunCmd_(d, pgEnv(c));
+            if (dr.code != 0)
+                return {{"ok", false},
+                        {"output", "could not clear the database before restoring:\n" + dr.out}};
+        }
+
         auto a = pgArgs("pg_restore", c);
-        a.push_back("--clean"); a.push_back("--if-exists"); a.push_back("--no-owner"); a.push_back(path);
+        a.push_back("--no-owner"); a.push_back("--no-privileges"); a.push_back(path);
         auto r = dbRunCmd_(a, pgEnv(c));
         // pg_restore exits non-zero on benign warnings; surface output verbatim.
         return {{"ok", true}, {"code", r.code}, {"output", r.out}};
