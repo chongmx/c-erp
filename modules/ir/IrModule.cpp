@@ -16,6 +16,7 @@
 #include "IrCron.hpp"
 #include "Money.hpp"
 #include "CacheInvalidation.hpp"
+#include "HttpClient.hpp"
 #include "MigrationRunner.hpp"
 #include "CsvParser.hpp"
 #include "Errors.hpp"
@@ -1524,10 +1525,293 @@ void IrModule::registerRoutes() {
     );
 }
 
+
+// ================================================================
+// ir.ai.settings — AI agent configuration (docs/110)
+//
+// THE RULE THIS CLASS EXISTS TO ENFORCE: the API key never leaves the server
+// through a normal read. `read` and `search_read` return `configured` and the
+// last four characters, never the value. There is exactly one path that
+// returns it -- reveal_for_setup -- and it is admin-only and audited, because
+// the operator sometimes genuinely has to paste it into a systemd unit.
+//
+// Every method here is admin-only. A settings row holding a live credential is
+// not something a portal user should be able to enumerate.
+// ================================================================
+class IrAiSettingsViewModel : public core::BaseViewModel {
+public:
+    explicit IrAiSettingsViewModel(std::shared_ptr<DbConnection> db)
+        : db_(std::move(db))
+    {
+        REGISTER_METHOD("search_read",      handleRead)
+        REGISTER_METHOD("web_search_read",  handleRead)
+        REGISTER_METHOD("read",             handleRead)
+        REGISTER_METHOD("web_read",         handleRead)
+        REGISTER_METHOD("get",              handleGet)
+        REGISTER_MUTATOR("save",            handleSave)
+        REGISTER_MUTATOR("clear_key",       handleClearKey)
+        REGISTER_METHOD("reveal_for_setup", handleReveal)
+        REGISTER_METHOD("test_connection",  handleTest)
+        REGISTER_METHOD("fields_get",       handleFieldsGet)
+    }
+
+    std::string modelName() const override { return "ir.ai.settings"; }
+
+private:
+    std::shared_ptr<DbConnection> db_;
+
+    void requireAdmin_(const core::CallKwArgs& call) {
+        const auto ctx = extractContext_(call);
+        if (!ctx.isAdmin)
+            throw odoo::infrastructure::AccessDeniedError(
+                "AI settings are administrator-only.");
+    }
+
+    // The only shape a client is ever given. `configured` answers "is a key
+    // set" without answering "what is it", and the tail is enough for a human
+    // to tell two keys apart.
+    static nlohmann::json publicRow_(const pqxx::row& r) {
+        const std::string key = r["api_key"].c_str();
+        return {
+            {"id",                r["id"].as<int>()},
+            {"enabled",           r["enabled"].as<bool>(false)},
+            {"provider",          r["provider"].c_str()},
+            {"configured",        !key.empty()},
+            {"key_tail",          key.size() >= 4 ? key.substr(key.size() - 4) : std::string{}},
+            {"model",             r["model"].c_str()},
+            {"max_output_tokens", r["max_output_tokens"].as<int>(0)},
+            {"daily_call_cap",    r["daily_call_cap"].as<int>(0)},
+            {"calls_today",       r["calls_today"].as<int>(0)},
+            {"last_ok_at",        r["last_ok_at"].is_null()  ? "" : r["last_ok_at"].c_str()},
+            {"last_error",        r["last_error"].c_str()},
+            {"api_base_url",      r["api_base_url"].c_str()},
+            {"tls_available",     odoo::infrastructure::HttpClient::tlsAvailable()},
+        };
+    }
+
+    pqxx::row row_(pqxx::work& txn) {
+        auto r = txn.exec("SELECT * FROM ir_ai_settings WHERE id=1");
+        if (r.empty()) {
+            txn.exec("ALTER TABLE ir_ai_settings ADD COLUMN IF NOT EXISTS api_base_url VARCHAR NOT NULL DEFAULT 'https://api.anthropic.com'");
+    txn.exec("INSERT INTO ir_ai_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING");
+            r = txn.exec("SELECT * FROM ir_ai_settings WHERE id=1");
+        }
+        return r[0];
+    }
+
+    nlohmann::json handleGet(const core::CallKwArgs& call) {
+        requireAdmin_(call);
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        return publicRow_(row_(txn));
+    }
+
+    nlohmann::json handleRead(const core::CallKwArgs& call) {
+        requireAdmin_(call);
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        nlohmann::json out = nlohmann::json::array();
+        out.push_back(publicRow_(row_(txn)));
+        return out;
+    }
+
+    nlohmann::json handleSave(const core::CallKwArgs& call) {
+        requireAdmin_(call);
+        const auto v = call.arg(0);
+        if (!v.is_object())
+            throw odoo::infrastructure::ValidationError("save: expected an object of values.");
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        if (v.contains("enabled") && v["enabled"].is_boolean())
+            txn.exec("UPDATE ir_ai_settings SET enabled=$1, write_date=now() WHERE id=1",
+                     pqxx::params{v["enabled"].get<bool>()});
+        if (v.contains("provider") && v["provider"].is_string()) {
+            const std::string p = v["provider"].get<std::string>();
+            if (p != "anthropic" && p != "mock")
+                throw odoo::infrastructure::ValidationError(
+                    "Unknown provider '" + p + "'. Use 'anthropic' or 'mock'.");
+            txn.exec("UPDATE ir_ai_settings SET provider=$1, write_date=now() WHERE id=1",
+                     pqxx::params{p});
+        }
+        if (v.contains("model") && v["model"].is_string())
+            txn.exec("UPDATE ir_ai_settings SET model=$1, write_date=now() WHERE id=1",
+                     pqxx::params{v["model"].get<std::string>()});
+        if (v.contains("max_output_tokens") && v["max_output_tokens"].is_number_integer())
+            txn.exec("UPDATE ir_ai_settings SET max_output_tokens=$1, write_date=now() WHERE id=1",
+                     pqxx::params{v["max_output_tokens"].get<int>()});
+        if (v.contains("daily_call_cap") && v["daily_call_cap"].is_number_integer())
+            txn.exec("UPDATE ir_ai_settings SET daily_call_cap=$1, write_date=now() WHERE id=1",
+                     pqxx::params{v["daily_call_cap"].get<int>()});
+        if (v.contains("api_base_url") && v["api_base_url"].is_string()) {
+            const std::string u = v["api_base_url"].get<std::string>();
+            // Only a scheme+host belongs here. A path would be silently
+            // ignored by the client and look like a configuration that works.
+            if (u.rfind("http://", 0) != 0 && u.rfind("https://", 0) != 0)
+                throw odoo::infrastructure::ValidationError(
+                    "The base URL must start with http:// or https://.");
+            txn.exec("UPDATE ir_ai_settings SET api_base_url=$1, write_date=now() WHERE id=1",
+                     pqxx::params{u});
+        }
+
+        // The key is write-only: sent to be stored, never sent back. An empty
+        // string means "leave it alone", so a save from a screen that has
+        // never seen the key cannot wipe it.
+        if (v.contains("api_key") && v["api_key"].is_string()) {
+            const std::string k = v["api_key"].get<std::string>();
+            if (!k.empty())
+                txn.exec("UPDATE ir_ai_settings SET api_key=$1, last_error='', write_date=now() WHERE id=1",
+                         pqxx::params{k});
+        }
+
+        auto out = publicRow_(row_(txn));
+        txn.commit();
+        if (AuditService::ready())
+            AuditService::instance().log("ir.ai.settings", "save",
+                                         std::vector<int>{1}, extractContext_(call).uid);
+        return out;
+    }
+
+    nlohmann::json handleClearKey(const core::CallKwArgs& call) {
+        requireAdmin_(call);
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        txn.exec("UPDATE ir_ai_settings SET api_key='', enabled=FALSE, write_date=now() WHERE id=1");
+        auto out = publicRow_(row_(txn));
+        txn.commit();
+        if (AuditService::ready())
+            AuditService::instance().log("ir.ai.settings", "clear_key",
+                                         std::vector<int>{1}, extractContext_(call).uid);
+        return out;
+    }
+
+    // The single exception to "the key never leaves the server", and the
+    // reason it is separate, admin-only and audited: a credential that can be
+    // revealed without a trace is one nobody can reason about afterwards.
+    nlohmann::json handleReveal(const core::CallKwArgs& call) {
+        requireAdmin_(call);
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        auto r = row_(txn);
+        const std::string key = r["api_key"].c_str();
+        if (key.empty())
+            throw odoo::infrastructure::ValidationError("No key is configured.");
+        txn.commit();
+        if (AuditService::ready())
+            AuditService::instance().log("ir.ai.settings", "reveal_for_setup",
+                                         std::vector<int>{1}, extractContext_(call).uid);
+        LOG_INFO << "[ir.ai.settings] key revealed for setup by uid="
+                 << extractContext_(call).uid;
+        return {
+            {"api_key", key},
+            {"systemd", "Environment=\"ANTHROPIC_API_KEY=" + key + "\""},
+            {"docker",  "-e ANTHROPIC_API_KEY=" + key},
+            {"shell",   "export ANTHROPIC_API_KEY=" + key},
+        };
+    }
+
+    // Step 2 of docs/110 §6. `mock` answers locally so the suite never needs a
+    // key and never touches the network; `anthropic` reports what is missing
+    // until the outbound client lands.
+    nlohmann::json handleTest(const core::CallKwArgs& call) {
+        requireAdmin_(call);
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        auto r = row_(txn);
+        const std::string provider = r["provider"].c_str();
+        const std::string key      = r["api_key"].c_str();
+        const std::string model    = r["model"].c_str();
+
+        if (provider == "mock") {
+            txn.exec("UPDATE ir_ai_settings SET last_ok_at=now(), last_error='' WHERE id=1");
+            txn.commit();
+            return {{"ok", true}, {"provider", "mock"},
+                    {"detail", "Mock provider answered locally. No network call was made."}};
+        }
+        if (key.empty()) {
+            txn.exec("UPDATE ir_ai_settings SET last_error=$1 WHERE id=1",
+                     pqxx::params{std::string("No API key is configured.")});
+            txn.commit();
+            return {{"ok", false}, {"provider", provider},
+                    {"detail", "No API key is configured."}};
+        }
+        const std::string base = r["api_base_url"].c_str();
+        const int maxTok = r["max_output_tokens"].as<int>(2048);
+        txn.commit();   // released before the network call: a connection must
+                        // not be held open for the length of an API round trip.
+
+        if (!odoo::infrastructure::HttpClient::tlsAvailable() &&
+            base.rfind("https://", 0) == 0) {
+            return {{"ok", false}, {"provider", provider},
+                    {"detail", "This build of drogon has no TLS, so it cannot call an https "
+                               "endpoint. Rebuild with OpenSSL, or point the base URL at a "
+                               "local proxy that terminates TLS."}};
+        }
+
+        // The smallest call that proves the key works: one token back.
+        nlohmann::json payload = {
+            {"model", model},
+            {"max_tokens", 16},
+            {"messages", nlohmann::json::array({
+                {{"role", "user"}, {"content", "Reply with the single word: ok"}}
+            })},
+        };
+        auto res = odoo::infrastructure::HttpClient::postJson(
+            base, "/v1/messages", payload.dump(),
+            {{"x-api-key", key},
+             {"anthropic-version", "2023-06-01"}},
+            20.0);
+
+        std::string detail;
+        bool ok = res.ok;
+        if (res.ok) {
+            detail = "Connected. " + model + " answered.";
+        } else if (res.status == 401 || res.status == 403) {
+            detail = "The service rejected the key (HTTP " + std::to_string(res.status) + ").";
+        } else if (res.status == 404) {
+            detail = "No such model '" + model + "' at " + base + ".";
+        } else if (res.status == 429) {
+            detail = "Rate limited by the service (HTTP 429). The key is valid.";
+            ok = true;   // it answered, which is what this check is asking
+        } else if (res.status > 0) {
+            detail = "The service replied " + std::to_string(res.status) + ".";
+        } else {
+            detail = res.error;
+        }
+
+        {
+            auto c2 = db_->acquire();
+            pqxx::work t2{c2.get()};
+            if (ok) t2.exec("UPDATE ir_ai_settings SET last_ok_at=now(), last_error='' WHERE id=1");
+            else    t2.exec("UPDATE ir_ai_settings SET last_error=$1 WHERE id=1",
+                            pqxx::params{detail});
+            t2.commit();
+        }
+        // The body is NOT returned: it is the model's reply, and echoing an
+        // upstream body into this response is how request details leak.
+        return {{"ok", ok}, {"provider", provider}, {"model", model},
+                {"status", res.status}, {"detail", detail}};
+    }
+
+    nlohmann::json handleFieldsGet(const core::CallKwArgs&) {
+        return {
+            {"enabled",           {{"type","boolean"},{"string","Enabled"}}},
+            {"provider",          {{"type","char"},   {"string","Provider"}}},
+            {"model",             {{"type","char"},   {"string","Model"}}},
+            {"max_output_tokens", {{"type","integer"},{"string","Max output tokens"}}},
+            {"daily_call_cap",    {{"type","integer"},{"string","Daily call cap"}}},
+        };
+    }
+};
+
 void IrModule::registerViewModels() {
     auto db  = services_.db();
     auto& mf = models_;
 
+    viewModels_.registerCreator("ir.ai.settings", [db]{
+        return std::make_shared<IrAiSettingsViewModel>(db);
+    });
     viewModels_.registerCreator("ir.ui.menu", [db]{
         return std::make_shared<IrMenuViewModel>(db);
     });
@@ -1732,6 +2016,42 @@ void IrModule::ensureSchema_() {
     auto conn = services_.db()->acquire();
     pqxx::work txn{conn.get()};
 
+    // ------------------------------------------------------------------
+    // ir_ai_settings — the AI agent configuration (docs/110).
+    //
+    // ONE ROW, id=1. Deliberately a table of its own rather than rows in
+    // ir_config_parameter: that table is a plain key/value store with no
+    // access control, so any authenticated user could search_read the API key
+    // straight out of it.
+    //
+    // The key is stored here in plaintext, by decision (docs/110 §1): the
+    // database is then the whole migration unit -- restore the dump on a new
+    // machine and it is configured. The cost is that a backup carries a live
+    // credential, which is why the template dumps are scrubbed and the backup
+    // screen says so.
+    // ------------------------------------------------------------------
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS ir_ai_settings (
+            id                SERIAL PRIMARY KEY,
+            enabled           BOOLEAN NOT NULL DEFAULT FALSE,
+            provider          VARCHAR NOT NULL DEFAULT 'anthropic',
+            api_key           VARCHAR NOT NULL DEFAULT '',
+            model             VARCHAR NOT NULL DEFAULT 'claude-sonnet-5',
+            max_output_tokens INTEGER NOT NULL DEFAULT 2048,
+            daily_call_cap    INTEGER NOT NULL DEFAULT 200,
+            calls_today       INTEGER NOT NULL DEFAULT 0,
+            calls_date        DATE,
+            last_ok_at        TIMESTAMP,
+            last_error        VARCHAR NOT NULL DEFAULT '',
+            -- Configurable so the same binary can talk straight to Anthropic or
+            -- through an nginx egress proxy. One row differs; no code does.
+            api_base_url      VARCHAR NOT NULL DEFAULT 'https://api.anthropic.com',
+            create_date       TIMESTAMP DEFAULT now(),
+            write_date        TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec("INSERT INTO ir_ai_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING");
+
     txn.exec(R"(
         CREATE TABLE IF NOT EXISTS ir_act_window (
             id        SERIAL  PRIMARY KEY,
@@ -1822,6 +2142,24 @@ void IrModule::seedActions_() {
 void IrModule::seedMenus_() {
     auto conn = services_.db()->acquire();
     pqxx::work txn{conn.get()};
+
+    // Settings -> AI Agent (docs/110). Ids 117 / 403 are the next free pair;
+    // scripts/verify_menu_ids.sh fails the suite on a reused id.
+    txn.exec(R"(
+        INSERT INTO ir_act_window (id, name, res_model, view_mode, path, context) VALUES
+            (117, 'AI Agent', 'ir.ai.settings', 'form', 'ai-agent', '{}')
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
+                view_mode=EXCLUDED.view_mode, path=EXCLUDED.path
+    )");
+    txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
+    txn.exec(R"(
+        INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
+            (403, 'AI Agent', 30, 45, 117)
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
+    )");
 
     txn.exec("DELETE FROM ir_ui_menu WHERE id < 10");
     txn.exec("DELETE FROM ir_ui_menu WHERE id=33");

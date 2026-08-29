@@ -39,18 +39,41 @@
 .pl-hint { color: var(--muted); font-size: .84rem; padding: 14px 0; }
 
 /* ---- paste panel ---- */
-.pl-paste { padding: 12px 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
-.pl-paste-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: .84rem; color: var(--muted); }
+/* The paste panel is an EDITOR, so it takes the free vertical space rather
+   than sitting at a fixed 150px above a mostly-empty list.
+
+   Before: the textarea was a fixed short box and .pl-body below it consumed
+   everything left over -- so a pasted LookupResult had to be scrolled inside a
+   small window while a large blank area sat underneath it. A JSON payload you
+   are about to edit is the one thing on this screen you need to see whole.
+
+   Now both halves flex, weighted towards the editor while it is open, each
+   with a floor so neither can collapse to nothing. */
+.pl-paste {
+    display: flex; flex-direction: column;
+    flex: 1 1 60%; min-height: 260px;
+    padding: 12px 18px; background: var(--surface);
+    border-bottom: 1px solid var(--border);
+}
+.pl-paste-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: .84rem; color: var(--muted); flex: 0 0 auto; }
 .pl-paste textarea {
-    width: 100%; min-height: 150px; resize: vertical;
+    width: 100%; box-sizing: border-box;
+    /* flex, not a fixed height: it fills whatever the panel was given.
+       min-height:0 is required or the flex item refuses to shrink below its
+       content and the panel overflows instead of scrolling. */
+    flex: 1 1 auto; min-height: 0; resize: vertical;
     background: var(--bg); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 10px 12px;
-    font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; font-size: .82rem; line-height: 1.5;
+    font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+    font-size: .82rem; line-height: 1.5; tab-size: 2;
+    white-space: pre-wrap;   /* wrap long lines rather than scroll sideways */
 }
 .pl-paste textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 /* ---- two-pane body ---- */
-.pl-body { flex: 1; display: flex; min-height: 0; }
+/* Keeps a floor so the proposal list never disappears entirely while the
+   editor is open, and still takes the whole screen when it is closed. */
+.pl-body { flex: 1 1 40%; display: flex; min-height: 180px; }
 
 .pl-list {
     width: 320px; flex: 0 0 320px; border-right: 1px solid var(--border);

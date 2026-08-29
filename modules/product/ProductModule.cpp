@@ -4357,8 +4357,10 @@ void ProductModule::seedCategories_() {
             (10, 'Product Categories', 'product.category',     'list,form', 'product-categories',  '{}'),
             (11, 'Vendor Pricelists',  'product.supplierinfo', 'list,form', 'vendor-pricelists',   '{}'),
             (12, 'Footprints',         'part.footprint',       'list,form', 'footprints',          '{}'),
-            (13, 'Part Units',         'part.unit',            'list,form', 'part-units',          '{}'),
-            (15, 'Parametric Search',  'part.search',          'list',      'parametric-search',   '{}')
+            (13, 'Part Units',         'part.unit',            'list,form', 'part-units',          '{}')
+            -- 15 was 'Parametric Search' (part.search), removed: a strict subset
+            -- of Parts Catalogue, which does the same ranges and the same SI
+            -- shorthand. The id stays retired rather than reused.
         ON CONFLICT (id) DO UPDATE
             SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
                 view_mode=EXCLUDED.view_mode, path=EXCLUDED.path, domain=NULL
@@ -4378,13 +4380,13 @@ void ProductModule::seedMenus_() {
         ON CONFLICT (id) DO UPDATE
             SET action_id=EXCLUDED.action_id
     )");
-    txn.exec(R"(
-        INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-            (58, 'Parametric Search', 50, 15, 15)
-        ON CONFLICT (id) DO UPDATE
-            SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
-                sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
-    )");
+    // Menu 58 / action 15 were 'Parametric Search'. Removed as a duplicate of
+    // Parts Catalogue. Deleted here rather than merely unseeded, because a seed
+    // that stops writing a row leaves it behind on every database that already
+    // has one -- the menu would survive the upgrade and open a screen that no
+    // longer exists. Both ids stay retired; see scripts/verify_menu_ids.sh.
+    txn.exec("DELETE FROM ir_ui_menu WHERE id = 58");
+    txn.exec("DELETE FROM ir_act_window WHERE id = 15");
 
     // docs/096 — templates and attributes. Ids from scripts/verify_menu_ids.sh:
     // actions 102/103, menus 75/76.

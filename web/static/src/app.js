@@ -11532,13 +11532,15 @@ const CUSTOM_VIEWS = {
     'rental.demo.data':   RentalDemoData,
     // Custom screens for the new modules (components loaded by index.html).
     'barcode.scan':       BarcodeScan,
-    'part.search':        PartSearch,
     'bank.reconcile':     BankReconcile,
     'company.admin':      CompanyAdmin,
     'db.backups':         DbBackups,
     'db.studio':          DbStudio,
     'part.lookup':        PartLookup,
     'part.catalog':       PartCatalog,
+    // Categories are a hierarchy, so the screen is a tree rather than a flat
+    // list with a "Parent" column (CategoryTree.js).
+    'product.category':   CategoryTree,
     'project.board':      TaskBoard,
     'project.timegrid':   TimesheetGrid,
     'help.center':        HelpCenter,
@@ -11546,6 +11548,8 @@ const CUSTOM_VIEWS = {
     'account.report':     AccountReports,
     'account.dashboard':  AccountDashboard,
     'account.settings':   AccountSettings,
+    // Settings -> AI Agent (docs/110). The key is write-only; see AiSettings.js.
+    'ir.ai.settings':     AiSettings,
 };
 
 // ----------------------------------------------------------------

@@ -2541,3 +2541,193 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 .att-fab-i { font-size: .74rem; white-space: nowrap; }
 .att-fab-i.yes { color: var(--ok, #4ec9b0); }
 .att-fab-i.no  { color: var(--accent); }
+
+/* ================================================================
+   Product -> Configuration -> Categories (CategoryTree.js)
+
+   A resizable tree on the left, the detail of the selection on the right.
+
+   Built on the app's OWN tokens -- --bg, --surface, --border, --accent,
+   --text, --muted. The first version invented --bg-soft and --accent-soft,
+   which do not exist, so every fallback painted a LIGHT surface while the
+   text kept inheriting the dark theme's near-white --text: a white sidebar
+   under white labels. Nothing failed; the tree was simply invisible, and
+   only a screenshot showed it.
+   ================================================================ */
+.ct-shell { display:flex; height:100%; min-height:0; overflow:hidden;
+            background:var(--bg); color:var(--text); }
+
+.ct-side { display:flex; flex-direction:column; min-width:180px; max-width:720px;
+           border-right:1px solid var(--border); background:var(--surface); }
+.ct-side-head { display:flex; gap:6px; padding:10px; border-bottom:1px solid var(--border); }
+.ct-search { flex:1 1 auto; min-width:0; padding:6px 8px; border:1px solid var(--border);
+             border-radius:4px; font-size:13px; background:var(--bg); color:var(--text); }
+.ct-search::placeholder { color:var(--muted); }
+.ct-icon { flex:0 0 auto; width:28px; height:28px; border:1px solid var(--border);
+           background:var(--bg); color:var(--text); border-radius:4px; cursor:pointer;
+           font-size:14px; line-height:1; }
+.ct-icon:hover { border-color:var(--accent); color:var(--accent); }
+.ct-side-tools { display:flex; align-items:center; justify-content:space-between;
+                 padding:6px 10px; font-size:12px; color:var(--muted);
+                 border-bottom:1px solid var(--border); }
+.ct-chk { display:flex; align-items:center; gap:5px; cursor:pointer; }
+.ct-tree { flex:1 1 auto; overflow:auto; padding:4px 0; }
+.ct-side-foot { padding:8px 10px; border-top:1px solid var(--border); }
+.ct-empty { padding:16px; color:var(--muted); font-size:13px; }
+
+.ct-row { display:flex; align-items:center; gap:6px; padding-top:5px; padding-bottom:5px;
+          padding-right:8px; cursor:pointer; font-size:13px; white-space:nowrap;
+          color:var(--text); }
+.ct-row:hover { background:rgba(255,255,255,.06); }
+/* Selection is carried by a left rail plus a lift in background, not by a pale
+   fill: on a dark ground a light fill would need the text to invert with it. */
+.ct-row.sel { background:rgba(233,69,96,.16); box-shadow:inset 3px 0 0 var(--accent);
+              font-weight:600; }
+.ct-row.arch { opacity:.55; font-style:italic; }
+.ct-twist { flex:0 0 12px; width:12px; text-align:center; font-size:10px; color:var(--muted); }
+.ct-twist.blank { visibility:hidden; }
+.ct-name { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; }
+/* Two counts, deliberately different weights: what is filed here reads first,
+   what is rolled up from below is present but recessive. */
+.ct-n { flex:0 0 auto; font-size:11px; padding:1px 6px; border-radius:9px;
+        font-variant-numeric:tabular-nums; }
+.ct-n.direct { background:rgba(233,69,96,.18); color:var(--accent); }
+.ct-n.roll { background:transparent; color:var(--muted); }
+
+.ct-grip { flex:0 0 6px; cursor:col-resize; background:transparent; }
+.ct-grip:hover { background:var(--accent); opacity:.4; }
+body.ct-resizing { cursor:col-resize; user-select:none; }
+
+.ct-main { flex:1 1 auto; min-width:0; overflow:auto; background:var(--bg); }
+.ct-panel { padding:18px 22px; max-width:1000px; }
+.ct-blank { display:flex; flex-direction:column; align-items:center; justify-content:center;
+            height:100%; color:var(--muted); gap:8px; }
+.ct-blank-i { font-size:40px; opacity:.5; }
+
+.ct-crumbs { font-size:12px; color:var(--muted); margin-bottom:6px; }
+.ct-crumb { cursor:pointer; }
+.ct-crumb:hover { text-decoration:underline; color:var(--accent); }
+.ct-sep { margin:0 5px; opacity:.5; }
+.ct-title-row { display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+.ct-h2 { margin:0; font-size:20px; color:var(--text); }
+.ct-h3 { margin:22px 0 8px; font-size:12px; text-transform:uppercase;
+         letter-spacing:.06em; color:var(--muted); }
+.ct-note { text-transform:none; letter-spacing:0; font-weight:400; margin-left:8px; }
+.ct-spacer { flex:1 1 auto; }
+.ct-sub { margin:0 0 10px; color:var(--muted); font-size:13px; }
+.ct-badge.archived { font-size:11px; padding:2px 8px; border-radius:9px;
+                     background:var(--border); color:var(--muted); }
+.ct-err { margin:8px 0; padding:8px 10px; border-radius:4px;
+          background:rgba(244,71,71,.15); color:var(--err); font-size:13px; }
+.ct-form { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.ct-input { padding:6px 8px; border:1px solid var(--border); border-radius:4px;
+            font-size:14px; min-width:240px; background:var(--bg); color:var(--text); }
+
+.ct-stats { display:flex; flex-wrap:wrap; gap:10px; }
+.ct-stat { flex:1 1 140px; border:1px solid var(--border); border-radius:6px;
+           padding:12px 14px; background:var(--surface); }
+.ct-stat-n { font-size:24px; font-weight:600; font-variant-numeric:tabular-nums;
+             color:var(--text); }
+.ct-stat-l { font-size:12px; color:var(--muted); margin-top:2px; }
+
+.ct-chips { display:flex; flex-wrap:wrap; gap:6px; }
+.ct-chip { display:inline-flex; align-items:center; gap:6px; padding:4px 10px;
+           border:1px solid var(--border); border-radius:14px; font-size:13px;
+           cursor:pointer; background:var(--surface); color:var(--text); }
+.ct-chip:hover { border-color:var(--accent); color:var(--accent); }
+.ct-chip b { font-variant-numeric:tabular-nums; color:var(--muted); font-weight:600; }
+
+.ct-table-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:6px; }
+.ct-table { width:100%; border-collapse:collapse; font-size:13px; color:var(--text); }
+.ct-table th, .ct-table td { padding:7px 10px; text-align:left;
+                             border-bottom:1px solid var(--border); }
+.ct-table th { background:var(--surface); font-weight:600; color:var(--muted); }
+.ct-table tr:last-child td { border-bottom:none; }
+.ct-table td.num, .ct-table th.num { text-align:right; font-variant-numeric:tabular-nums; }
+.ct-table td.mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+.ct-table tr.muted { opacity:.55; }
+.ct-none { color:var(--muted); font-size:13px; }
+
+.ct-props { display:flex; flex-wrap:wrap; gap:10px; }
+.ct-prop { flex:1 1 200px; border:1px solid var(--border); border-radius:6px;
+           padding:10px 12px; background:var(--surface); }
+.ct-prop-l { display:block; font-size:11px; text-transform:uppercase;
+             letter-spacing:.05em; color:var(--muted); }
+.ct-prop-v { display:block; margin-top:3px; font-size:13px; color:var(--text); }
+.ct-meta { margin-top:22px; padding-top:12px; border-top:1px solid var(--border);
+           display:flex; flex-wrap:wrap; gap:16px; font-size:12px; color:var(--muted); }
+
+/* ----------------------------------------------------------------
+   Custom screens declare  and mean fill
+
+
+/* ----------------------------------------------------------------
+   Custom screens declare `height: 100%` and mean "fill the window".
+
+   .content already fills the shell (848px of a 900px viewport), but
+   .action-view sat between them as display:block with AUTO height -- and a
+   percentage height resolves against the parent's height PROPERTY, not its
+   rendered box. So every full-height screen collapsed to its own content and
+   left dead space underneath: Part Lookup's editor stayed short with an empty
+   half-screen below it, and the Categories tree stopped mid-page.
+
+   Measured, not guessed. Walking the chain from the screen upwards gave:
+       .content 848px  ->  .action-view 234px  ->  .pl-shell 234px
+   ---------------------------------------------------------------- */
+.action-view { height: 100%; min-height: 0; }
+
+
+/* ----------------------------------------------------------------
+   Settings -> AI Agent (AiSettings.js, docs/110)
+   ---------------------------------------------------------------- */
+.ai-shell { height: 100%; overflow: auto; padding: 20px 24px; color: var(--text); background: var(--bg); }
+.ai-head { margin-bottom: 18px; }
+.ai-title { margin: 0 0 4px; font-size: 20px; }
+.ai-sub { color: var(--muted); font-size: 13px; }
+.ai-body { display: flex; flex-direction: column; gap: 14px; max-width: 860px; }
+.ai-card { border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; background: var(--surface); }
+.ai-h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.ai-help { margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+.ai-row { display: flex; align-items: center; gap: 12px; padding: 5px 0; }
+/* Scoped to the status ROWS.  inside .ai-field, which is a
+   flex COLUMN, makes the basis a 160px HEIGHT -- the labels sat at the top of
+   200px-tall cells with their controls stranded at the bottom. */
+.ai-row .ai-label { flex: 0 0 160px; }
+.ai-label { font-size: 13px; color: var(--muted); }
+.ai-field .ai-label { flex: none; }
+.ai-val { flex: 1 1 auto; font-size: 13px; display: flex; align-items: center; gap: 10px; }
+.ai-muted { color: var(--muted); }
+.ai-err { color: var(--err); }
+.ai-key { font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+          background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; }
+.ai-pill { font-size: 11px; padding: 2px 10px; border-radius: 10px; }
+.ai-pill.ok   { background: rgba(78,201,176,.18); color: var(--ok); }
+.ai-pill.off  { background: rgba(136,153,170,.18); color: var(--muted); }
+.ai-pill.none { background: rgba(244,71,71,.15); color: var(--err); }
+.ai-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ai-input { flex: 1 1 320px; min-width: 220px; padding: 7px 10px; border: 1px solid var(--border);
+            border-radius: 5px; background: var(--bg); color: var(--text);
+            font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.ai-num { width: 110px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px;
+          background: var(--bg); color: var(--text); font-size: 13px; }
+.ai-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.ai-field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+.ai-field select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px;
+                   background: var(--bg); color: var(--text); font-size: 13px; }
+.ai-btn { padding: 7px 14px; border: 1px solid var(--border); border-radius: 5px;
+          background: var(--bg); color: var(--text); cursor: pointer; font-size: 13px; }
+.ai-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.ai-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.ai-btn.ghost { background: transparent; }
+.ai-btn:disabled { opacity: .5; cursor: not-allowed; }
+.ai-result { font-size: 13px; }
+.ai-result.ok  { color: var(--ok); }
+.ai-result.bad { color: var(--err); }
+.ai-pre { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px;
+          background: var(--bg); font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+          white-space: pre-wrap; word-break: break-all; }
+.ai-warn { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px;
+           padding: 10px 14px; font-size: 13px; color: var(--muted); background: var(--surface); }
+.ai-error { margin-top: 12px; padding: 9px 12px; border-radius: 5px;
+            background: rgba(244,71,71,.15); color: var(--err); font-size: 13px; }
+.ai-note { color: var(--muted); font-size: 13px; }

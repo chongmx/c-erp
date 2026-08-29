@@ -449,7 +449,8 @@ private:
             "id","name","picking_type_id","state","partner_id","location_id",
             "location_dest_id","scheduled_date","origin","company_id",
             "sale_id","purchase_id","user_id"};
-        auto [where, paramVec] = domainFromJson(call.domain()).toSql(&kCols);
+        // joins stock_location twice and res_partner: name and state are ambiguous unqualified
+        auto [where, paramVec] = domainFromJson(call.domain()).toSql(&kCols, "sp");
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
@@ -1071,7 +1072,8 @@ private:
             "id","picking_id","product_id","product_uom_id","name","product_uom_qty",
             "quantity","state","location_id","location_dest_id","company_id",
             "origin","reserved_qty","lot_id","production_id"};
-        auto [where, paramVec] = domainFromJson(call.domain()).toSql(&kCols);
+        // joins stock_picking: state, name and company_id are ambiguous unqualified
+        auto [where, paramVec] = domainFromJson(call.domain()).toSql(&kCols, "sm");
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};

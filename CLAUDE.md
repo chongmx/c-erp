@@ -39,6 +39,12 @@ bash tests/integration/account/bank-recon/test.sh
 
 `scripts/run_tests.sh` still works — it forwards to `tests/run.sh`.
 
+**Before writing or debugging a test, read `tests/docs/tooling.md`** — every
+tool, flag and helper function, with the trap each one hides (`pg()` strips
+spaces, `has_error` matches the error *object*, an empty id means the INSERT
+failed). `tests/docs/browser-render-checks.md` covers driving a real browser,
+which is the only way to catch an OWL template error.
+
 `erp_tests` is **not** part of the default build target — `cmake --build ./build`
 stays the fast path. `tests/run.sh` builds it explicitly. Its source list is a
 glob over `tests/unit/*/`, evaluated at **configure** time, so a newly added

@@ -1,0 +1,6 @@
+group=setup
+order=10
+scenario=baseline
+needs=none
+provides=fixtures
+timeout=300
