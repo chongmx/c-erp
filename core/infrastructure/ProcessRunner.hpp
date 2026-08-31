@@ -33,7 +33,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 /**
  * @brief RAII temp directory created with mkdtemp() (mode 0700).
@@ -92,4 +92,4 @@ ProcessResult runProcess(const std::vector<std::string>& argv,
                          int*                            exitCode  = nullptr,
                          int                             timeoutMs = 30000);
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

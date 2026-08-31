@@ -5,7 +5,7 @@
 
 #include <pqxx/pqxx>
 
-namespace odoo::core {
+namespace cerp::core {
 
 int IrModelData::ensure(pqxx::transaction_base& txn,
                         const std::string& module,
@@ -75,4 +75,4 @@ std::string IrModelData::xmlIdOf(pqxx::transaction_base& txn,
     return r[0][0].c_str();
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

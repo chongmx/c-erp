@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 class ControlPlane {
 public:
@@ -74,4 +74,4 @@ private:
     static std::unique_ptr<ControlPlane>          s_instance_;
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

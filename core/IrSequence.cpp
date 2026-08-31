@@ -13,7 +13,7 @@
 #include <iomanip>
 #include <sstream>
 
-namespace odoo::core {
+namespace cerp::core {
 
 using infrastructure::ValidationError;
 
@@ -192,4 +192,4 @@ bool IrSequence::has(const std::string& code, int companyId) {
     }
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

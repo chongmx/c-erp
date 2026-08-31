@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 struct BackupCmd { int code = -1; std::string out; };
 
@@ -146,4 +146,4 @@ public:
     }
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

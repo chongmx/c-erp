@@ -4,9 +4,9 @@
 #include "RentalMigrations.hpp"
 #include "MigrationRunner.hpp"
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
-using odoo::infrastructure::MigrationRunner;
+using cerp::infrastructure::MigrationRunner;
 
 void registerRentalMigrations(MigrationRunner& runner) {
 
@@ -591,7 +591,7 @@ void registerRentalMigrations(MigrationRunner& runner) {
     // --------------------------------------------------------
     // 813 — tie the invoice to its rental origin
     //
-    // Odoo links an invoice to the sale order it came from, and this
+    // the reference ERP links an invoice to the sale order it came from, and this
     // codebase already follows that: account_move carries `invoice_origin`
     // (a registered Char field, so it flows to the API and the portal for
     // free) and `sale_id` (a raw column plus an FK, added by SaleModule
@@ -636,4 +636,4 @@ void registerRentalMigrations(MigrationRunner& runner) {
     )SQL"});
 }
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

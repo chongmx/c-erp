@@ -7,15 +7,15 @@
 #include <variant>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // Domain
 // ============================================================
 /**
- * @brief Represents an Odoo domain expression as a typed C++ value.
+ * @brief Represents an the reference ERP domain expression as a typed C++ value.
  *
- * An Odoo domain is a JSON array of leaves and logical operators:
+ * An the reference ERP domain is a JSON array of leaves and logical operators:
  * @code
  *   [["active","=",true], "|", ["name","ilike","acme"], ["email","ilike","acme"]]
  * @endcode
@@ -24,7 +24,7 @@ namespace odoo::core {
  *   - domainFromJson()   — parse a JSON array into a Domain
  *   - toSql()           — compile to a parameterised WHERE clause
  *
- * The SQL compiler covers the operators Odoo's OWL frontend commonly sends.
+ * The SQL compiler covers the operators the reference ERP's OWL frontend commonly sends.
  * Unsupported operators throw std::runtime_error at compile time, not silently.
  */
 
@@ -272,12 +272,12 @@ private:
 };
 
 // ============================================================
-// domainFromJson — parse a raw Odoo domain JSON array
+// domainFromJson — parse a raw the reference ERP domain JSON array
 // ============================================================
 /**
  * @brief Parse a JSON domain expression into a typed Domain.
  *
- * Implements the standard Odoo domain stack-based parser:
+ * Implements the standard the reference ERP domain stack-based parser:
  *   - Strings "&", "|", "!" are logical operators.
  *   - Arrays of 3 elements are leaves: [field, op, value].
  *   - Default implicit AND between all top-level leaves.
@@ -289,7 +289,7 @@ inline Domain domainFromJson(const nlohmann::json& j) {
     if (!j.is_array() || j.empty())
         return Domain{};
 
-    // Stack-based Odoo domain parser
+    // Stack-based the reference ERP domain parser
     // Each element is either an operator string or a 3-element leaf array.
     std::vector<DomainNode> stack;
 
@@ -339,4 +339,4 @@ inline Domain domainFromJson(const nlohmann::json& j) {
     return Domain{DomainNode::makeAnd(std::move(stack))};
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

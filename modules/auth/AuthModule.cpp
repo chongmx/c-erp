@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::auth {
+namespace cerp::modules::auth {
 
 // ================================================================
 // CompanyViewModel — full CRUD for res.company
@@ -752,4 +752,4 @@ void AuthModule::seedAdminUser_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::auth
+} // namespace cerp::modules::auth

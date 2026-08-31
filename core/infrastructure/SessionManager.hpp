@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 // ============================================================
 // Session
@@ -20,7 +20,7 @@ namespace odoo::infrastructure {
 /**
  * @brief Represents one authenticated browser session.
  *
- * Mirrors Odoo's ir.http session structure closely enough that
+ * Mirrors the reference ERP's ir.http session structure closely enough that
  * the OWL frontend doesn't need changes:
  * @code
  * {
@@ -120,7 +120,7 @@ struct Session {
  * Expired sessions are evicted lazily on get() and explicitly via
  * evictExpired().
  *
- * The session cookie name matches Odoo's default: "session_id".
+ * The session cookie name matches the reference ERP's default: "session_id".
  *
  * Usage (inside JsonRpcDispatcher):
  * @code
@@ -285,7 +285,7 @@ public:
     // Cookie helpers (static)
     // ----------------------------------------------------------
 
-    /** @brief Cookie name Odoo's frontend expects. */
+    /** @brief Cookie name the reference ERP's frontend expects. */
     static constexpr const char* cookieName() { return "session_id"; }
 
     /**
@@ -364,4 +364,4 @@ private:
     std::size_t                              maxSessions_ = 50000;
 };
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

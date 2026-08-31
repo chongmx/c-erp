@@ -4,9 +4,9 @@
 #include <vector>
 
 // Forward declaration — keeps pqxx out of this header
-namespace odoo::infrastructure { class MigrationRunner; }
+namespace cerp::infrastructure { class MigrationRunner; }
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // IModule
@@ -76,7 +76,7 @@ public:
 
     /**
      * @brief Semantic version string, e.g. "17.0.1.0.0".
-     * Format follows Odoo convention: <odoo_major>.<odoo_minor>.<major>.<minor>.<patch>
+     * Format follows the reference ERP convention: <odoo_major>.<odoo_minor>.<major>.<minor>.<patch>
      */
     virtual std::string version() const { return "17.0.1.0.0"; }
 
@@ -185,7 +185,7 @@ public:
      *
      * Default: no-op (module has no versioned migrations).
      */
-    virtual void registerMigrations(odoo::infrastructure::MigrationRunner& /*runner*/) {}
+    virtual void registerMigrations(cerp::infrastructure::MigrationRunner& /*runner*/) {}
 
     /**
      * @brief Post-boot initialization hook.
@@ -210,12 +210,12 @@ public:
     /**
      * @brief Return a JSON manifest describing this module.
      *
-     * Mirrors Odoo's __manifest__.py structure. Used by admin UIs and
+     * Mirrors the reference ERP's __manifest__.py structure. Used by admin UIs and
      * diagnostic endpoints. Default implementation builds from the virtual
      * accessors above; concrete modules may override to add author, website,
      * icon, category, etc.
      *
-     * @returns JSON object compatible with Odoo's module manifest format.
+     * @returns JSON object compatible with the reference ERP's module manifest format.
      */
     virtual nlohmann::json manifest() const {
         return {
@@ -229,4 +229,4 @@ public:
     }
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

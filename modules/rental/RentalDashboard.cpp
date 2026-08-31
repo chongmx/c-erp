@@ -13,10 +13,10 @@
 #include <algorithm>
 #include <string>
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 namespace {
 
@@ -194,4 +194,4 @@ nlohmann::json RentalDashboard::build(std::shared_ptr<DbConnection> db,
     return out;
 }
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

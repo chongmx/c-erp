@@ -26,9 +26,9 @@
 
 #include <nlohmann/json.hpp>
 
-namespace odoo::infrastructure { class DbConnection; }
+namespace cerp::infrastructure { class DbConnection; }
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
 class RentalForecast {
 public:
@@ -41,4 +41,4 @@ public:
                                    const std::string& from = "");
 };
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

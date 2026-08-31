@@ -9,7 +9,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // REGISTER_METHOD macro
@@ -39,7 +39,7 @@ namespace odoo::core {
  */
 #define REGISTER_METHOD(method_name, handler)                              \
     registerMethod_(method_name,                                           \
-        [this](const ::odoo::core::CallKwArgs& call) -> nlohmann::json {  \
+        [this](const ::cerp::core::CallKwArgs& call) -> nlohmann::json {  \
             return this->handler(call);                                    \
         });
 
@@ -82,7 +82,7 @@ namespace odoo::core {
  */
 #define REGISTER_MUTATOR(method_name, handler)                             \
     registerMutator_(method_name,                                          \
-        [this](const ::odoo::core::CallKwArgs& call) -> nlohmann::json {  \
+        [this](const ::cerp::core::CallKwArgs& call) -> nlohmann::json {  \
             return this->handler(call);                                    \
         });
 
@@ -290,4 +290,4 @@ private:
     std::unordered_set<std::string>          guardedMutators_;   // P6
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::product {
+namespace cerp::modules::product {
 
 // ================================================================
 // MODULE
@@ -56,4 +56,4 @@ private:
     void seedMenus_();
 };
 
-} // namespace odoo::modules::product
+} // namespace cerp::modules::product

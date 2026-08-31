@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::base {
+namespace cerp::modules::base {
 
 // ================================================================
 // 1. MODELS
@@ -721,14 +721,14 @@ void BaseModule::registerRoutes() {}
 // and MigrationRunner applies strictly in version order regardless of which
 // module registered them — so ordering is governed by the 9xx numbers, not
 // by module boot sequence.
-void BaseModule::registerMigrations(odoo::infrastructure::MigrationRunner& runner) {
+void BaseModule::registerMigrations(cerp::infrastructure::MigrationRunner& runner) {
     // P2 (docs/047, docs/048): money, price and quantity columns become BIGINT
     // micro-units. Enabled once Phases 3 and 4 were complete — the conversion
     // boundary in BaseModel plus the 22 raw-SQL sites outside it (docs/049).
     //
     // Take a pg_dump before first run. MigrationRunner applies each migration
     // in its own transaction and halts startup on failure.
-    odoo::core::registerMoneyMigrations(runner);
+    cerp::core::registerMoneyMigrations(runner);
 }
 
 void BaseModule::initialize() {
@@ -893,4 +893,4 @@ void BaseModule::seedCountries_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::base
+} // namespace cerp::modules::base

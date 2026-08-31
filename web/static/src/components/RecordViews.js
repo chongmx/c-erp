@@ -10,7 +10,7 @@
  * Shared vocabulary, matching the server:
  *   groupable = selection | many2one | boolean | date | datetime
  *   measure   = integer | float | monetary
- * A date group key carries a granularity the way Odoo spells it, "date:month".
+ * A date group key carries a granularity the way the reference ERP spells it, "date:month".
  */
 
 // Reused from the Database Tools palette: eight hues already checked for

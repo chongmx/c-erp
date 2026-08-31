@@ -21,10 +21,10 @@
 #include <sstream>
 #include <cmath>
 
-namespace odoo::modules::sale {
+namespace cerp::modules::sale {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 // ----------------------------------------------------------------
 // helpers (local scope)
@@ -646,7 +646,7 @@ private:
         }
 
         for (int id : ids)
-            odoo::modules::mail::postLog(txn, "sale.order", id, 0,
+            cerp::modules::mail::postLog(txn, "sale.order", id, 0,
                 "Sales order confirmed.", "log_note");
         txn.commit();
         if (AuditService::ready())
@@ -684,7 +684,7 @@ private:
             const std::string st = r[0][0].c_str();
             if (st == "cancel") continue;          // already cancelled: not an error
             if (st != "draft" && st != "sale")
-                throw odoo::infrastructure::ValidationError(
+                throw cerp::infrastructure::ValidationError(
                     "An order in state '" + st + "' cannot be cancelled.");
             txn.exec("UPDATE sale_order SET state = 'cancel', write_date = now() "
                      "WHERE id = $1", pqxx::params{id});
@@ -692,7 +692,7 @@ private:
         }
         // Only orders that actually moved get the chatter note.
         for (int id : cancelled)
-            odoo::modules::mail::postLog(txn, "sale.order", id, 0,
+            cerp::modules::mail::postLog(txn, "sale.order", id, 0,
                 "Sales order cancelled.", "log_note");
         txn.commit();
         if (AuditService::ready())
@@ -1021,7 +1021,7 @@ private:
                 "WHERE id = $1 AND invoice_status = 'nothing'",
                 pqxx::params{ordId});
 
-            odoo::modules::mail::postLog(txn, "sale.order", ordId, 0,
+            cerp::modules::mail::postLog(txn, "sale.order", ordId, 0,
                 "Partial invoice created: " + ref, "log_note");
         }
 
@@ -1153,7 +1153,7 @@ private:
                 "WHERE id = $1",
                 pqxx::params{ordId});
 
-            odoo::modules::mail::postLog(txn, "sale.order", ordId, 0,
+            cerp::modules::mail::postLog(txn, "sale.order", ordId, 0,
                 "Final invoice created: " + ref, "log_note");
         }
 
@@ -1490,4 +1490,4 @@ void SaleModule::seedMenus_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::sale
+} // namespace cerp::modules::sale

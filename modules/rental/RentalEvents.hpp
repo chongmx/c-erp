@@ -21,7 +21,7 @@
 
 namespace pqxx { class transaction_base; }
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
 /// Optional context for an event. Zero means "not applicable".
 struct EventCtx {
@@ -77,4 +77,4 @@ public:
                      const nlohmann::json&   detail = nullptr);
 };
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

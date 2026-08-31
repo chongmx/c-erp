@@ -6,7 +6,7 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ── Static members ────────────────────────────────────────────
 std::once_flag              RuleEngine::s_once_;
@@ -39,7 +39,7 @@ void RuleEngine::invalidateAll() { cache_.invalidateAll(); }
 nlohmann::json RuleEngine::buildRuleDomain(const std::string& modelName,
                                              RuleOp             op,
                                              const UserContext&  ctx) const {
-    // Admins bypass all record rules (mirrors Odoo superuser behaviour)
+    // Admins bypass all record rules (mirrors the reference ERP superuser behaviour)
     if (ctx.isAdmin) return nlohmann::json::array();
 
     const auto rules = loadRules_(modelName);
@@ -66,7 +66,7 @@ nlohmann::json RuleEngine::buildRuleDomain(const std::string& modelName,
                 if (ctx.hasGroup(gid)) { matches = true; break; }
             if (matches) groupDomains.push_back(std::move(dom));
             // If user matches none of the rule's groups → rule is invisible to
-            // this user (Odoo "additive" group rule semantics)
+            // this user (the reference ERP "additive" group rule semantics)
         }
     }
 
@@ -192,7 +192,7 @@ nlohmann::json RuleEngine::domainAnd_(const nlohmann::json& d1,
 }
 
 // ── domainOr_ ─────────────────────────────────────────────────
-// Combines two JSON domains with OR using Odoo prefix notation:
+// Combines two JSON domains with OR using the reference ERP prefix notation:
 //   ["|", ...d1_items, ...d2_items]
 // Multi-leaf sub-domains are wrapped with "&" grouping operators so
 // the stack-based parser in domainFromJson handles them correctly.
@@ -218,4 +218,4 @@ nlohmann::json RuleEngine::domainOr_(const nlohmann::json& d1,
     return result;
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

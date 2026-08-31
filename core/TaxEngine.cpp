@@ -5,7 +5,7 @@
 
 #include <algorithm>
 
-namespace odoo::core {
+namespace cerp::core {
 
 TaxComputation TaxEngine::compute(const Money& priceUnit,
                                   const Money& quantity,
@@ -131,4 +131,4 @@ TaxComputation TaxEngine::compute(const Money& priceUnit,
     return out;
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

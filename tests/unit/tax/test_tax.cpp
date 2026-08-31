@@ -10,7 +10,7 @@
 #include <cstdio>
 #include <string>
 
-using namespace odoo::core;
+using namespace cerp::core;
 using erptest::section;
 
 static void eqs(const std::string& got, const std::string& want, const std::string& what) {

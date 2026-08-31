@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 /// One label's content. Sizes are millimetres, because labels are bought in
 /// millimetres and every printer dialog speaks them.
@@ -54,4 +54,4 @@ std::string renderLabelSheetHtml(const std::vector<LabelSpec>& labels,
 /// XML-escape text destined for SVG/HTML content.
 std::string xmlEscape(const std::string& in);
 
-} // namespace odoo::core
+} // namespace cerp::core

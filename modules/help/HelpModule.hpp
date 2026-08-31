@@ -26,7 +26,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::help {
+namespace cerp::modules::help {
 
 class HelpModule : public core::IModule {
 public:
@@ -58,4 +58,4 @@ private:
     void seedMenus_();
 };
 
-} // namespace odoo::modules::help
+} // namespace cerp::modules::help

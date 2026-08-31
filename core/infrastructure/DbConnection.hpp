@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 // ============================================================
 // DbConfig
@@ -307,4 +307,4 @@ inline PooledConnection::~PooledConnection() {
     if (conn_ && pool_) pool_->release_(std::move(conn_), tenant_);
 }
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

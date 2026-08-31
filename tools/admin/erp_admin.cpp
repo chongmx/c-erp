@@ -1,7 +1,7 @@
 // ============================================================
 // tools/admin/erp_admin.cpp — ERP Admin Console (docs/073)
 //
-// A SEPARATE, self-contained admin tool for the IT operator — NOT the Odoo
+// A SEPARATE, self-contained admin tool for the IT operator — NOT the the reference ERP
 // frontend, NOT exposed to the public site. It binds loopback only and is
 // reached over an SSH tunnel; access is gated by a per-launch token printed to
 // the console (so only whoever started it over SSH can use it).

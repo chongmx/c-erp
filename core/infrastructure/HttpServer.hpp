@@ -6,7 +6,7 @@
 #include <functional>
 #include <string>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 // ============================================================
 // HttpConfig
@@ -74,7 +74,7 @@ struct HttpConfig {
      * When non-empty, Drogon serves files from this directory for any
      * request that doesn't match a registered API route.
      *
-     * For the Odoo OWL frontend, point this at the Odoo web addon's
+     * For the reference ERP OWL frontend, point this at the reference ERP web addon's
      * static directory, e.g.:
      *   /usr/lib/python3/dist-packages/odoo/addons/web/static
      *
@@ -87,10 +87,21 @@ struct HttpConfig {
     std::string docRoot     = "";
 
     /**
-     * @brief File served when the root path "/" is requested.
+     * @brief File served for the application shell.
      * Only used when docRoot is non-empty.
      */
     std::string indexFile   = "index.html";
+
+    /**
+     * @brief Path the ERP application (and its login page) is served at.
+     *
+     * "/" belongs to the public website: a visitor arriving at the domain
+     * should see the site, not a login form for a system they have no account
+     * on. The application answers at /login instead (docs/126).
+     *
+     * config.json:  "app_path": "/login"
+     */
+    std::string appPath = "/login";
 
     /**
      * @brief Path to the log file, e.g. "log/system.log".
@@ -153,7 +164,7 @@ using HttpCallback    = std::function<void(const HttpResponsePtr&)>;
  *   API routes (/web/dataset/*, /healthz, /websocket) always take
  *   priority over static files regardless of registration order.
  *
- *   // Serve the Odoo OWL frontend:
+ *   // Serve the reference ERP OWL frontend:
  *   cfg.http.docRoot = "/usr/lib/python3/dist-packages/odoo/addons/web/static";
  *
  *   // Serve a local test page:
@@ -208,11 +219,20 @@ public:
                 },
                 [this]() { asyncLogger_.flush(); }
             );
-            std::cout << "[odoo-cpp] Logging to file: " << cfg_.logFile << "\n";
+            std::cout << "[c-erp] Logging to file: " << cfg_.logFile << "\n";
         }
 
         app.addListener(cfg_.host, cfg_.port)
-           .setThreadNum(cfg_.threads);
+           .setThreadNum(cfg_.threads)
+           // Drogon's own default is about 1 MB, which is below the size of an
+           // ordinary phone photo: the website media upload (docs/124) caps
+           // itself at 8 MB for images and 24 MB for video, and without this every
+           // image over ~1 MB died with
+           // a bare 413 before the handler ever ran — so the handler's own cap
+           // was unreachable and its explanation never shown. The headroom is
+           // deliberate: the route that cares enforces its own limit and says
+           // why, and this only stops something absurd reaching the process.
+           .setClientMaxBodySize(28 * 1024 * 1024);
 
         // Static file serving — must be configured before run()
         if (!cfg_.docRoot.empty()) {
@@ -221,7 +241,13 @@ public:
                               "gif","svg","ico","woff","woff2","ttf",
                               "eot","map","json","xml","txt"});
             // "/" → index.html
-            app.registerHandler("/",
+            // Where the application shell lives. Not hardcoded to "/" any
+            // more: the public website is the front door of the product, so
+            // "/" belongs to the website module and the ERP answers at
+            // /login (docs/126). index.html references its assets with
+            // absolute paths (/lib, /src), so it loads correctly from any
+            // path this is set to.
+            app.registerHandler(cfg_.appPath,
                 [this](const HttpRequestPtr&, HttpCallback&& cb) {
                     auto res = drogon::HttpResponse::newFileResponse(
                         cfg_.docRoot + "/" + cfg_.indexFile);
@@ -410,4 +436,4 @@ private:
     }
 };
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

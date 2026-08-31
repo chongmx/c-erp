@@ -16,7 +16,7 @@
 // quants too but are not counted as owned stock — they are the other end
 // of every real move and go negative naturally.
 //
-// Policy: allow-negative (Odoo default). applyMove never refuses; a move
+// Policy: allow-negative (the reference ERP default). applyMove never refuses; a move
 // that drives a location below zero simply records a negative quant, to be
 // reconciled by a later inventory adjustment. reserve() still only reserves
 // what is physically available.
@@ -28,7 +28,7 @@
 // pqxx::work by reference.
 namespace pqxx { class transaction_base; }
 
-namespace odoo::core {
+namespace cerp::core {
 
 class StockQuant {
 public:
@@ -78,4 +78,4 @@ public:
                                  int lotId = 0);
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

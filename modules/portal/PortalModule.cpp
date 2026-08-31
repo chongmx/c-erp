@@ -2,6 +2,8 @@
 // modules/portal/PortalModule.cpp  — implementation
 // =============================================================
 #include "PortalModule.hpp"
+#include "PortalAccess.hpp"
+#include "PortalStatement.hpp"
 #include "ProcessRunner.hpp"
 #include "Money.hpp"
 #include "ClientIp.hpp"
@@ -37,10 +39,10 @@
 #include <unordered_map>
 #include <vector>
 
-namespace odoo::modules::portal {
+namespace cerp::modules::portal {
 
-using namespace odoo::core;
-using namespace odoo::infrastructure;
+using namespace cerp::core;
+using namespace cerp::infrastructure;
 
 // ================================================================
 // Portal password utilities (PBKDF2-SHA512, same format as AuthService)
@@ -87,7 +89,7 @@ static std::vector<char> portalBase64Decode(const std::string& encoded) {
 /**
  * @brief Hash a plaintext password using PBKDF2-SHA512.
  *
- * Produces a string in Odoo's passlib format:
+ * Produces a string in the reference ERP's passlib format:
  *   $pbkdf2-sha512$<rounds>$<base64-salt>$<base64-hash>
  *
  * @param plaintext  Plaintext password.
@@ -100,7 +102,7 @@ static std::vector<char> portalBase64Decode(const std::string& encoded) {
 // value reads as 0.00 rather than throwing.
 static double portalMoney(const pqxx::field& f) {
     return f.is_null() ? 0.0
-                       : odoo::core::Money::fromMicros(f.as<long long>(0)).toJson();
+                       : cerp::core::Money::fromMicros(f.as<long long>(0)).toJson();
 }
 
 static std::string portalHashPassword(const std::string& plaintext,
@@ -935,6 +937,8 @@ public:
         REGISTER_METHOD("search_read",             handleSearchRead)
         REGISTER_METHOD("web_search_read",         handleSearchRead)
         REGISTER_MUTATOR("write",                   handleWrite)
+        REGISTER_METHOD("portal_share_document",   handleShareDocument)
+        REGISTER_METHOD("portal_revoke_document",  handleRevokeDocument)
         REGISTER_METHOD("set_portal_password",     handleSetPortalPassword)
         REGISTER_METHOD("get_companies",           handleGetCompanies)
         REGISTER_METHOD("portal_reset_password",   handleResetPassword)
@@ -958,21 +962,19 @@ private:
         int lim = call.limit() > 0 ? call.limit() : 200;
         int off = call.offset();
 
-        auto [where, paramVec] = domainFromJson(call.domain()).toSql();
-
-        // Qualify bare "company_id" references to "rp.company_id" to avoid
-        // ambiguity: both rp and rc (the joined company partner) have company_id.
-        {
-            const std::string from = "company_id";
-            const std::string to   = "rp.company_id";
-            size_t pos = 0;
-            while ((pos = where.find(from, pos)) != std::string::npos) {
-                // Skip if already table-qualified (preceded by a dot)
-                if (pos > 0 && where[pos - 1] == '.') { pos += from.size(); continue; }
-                where.replace(pos, from.size(), to);
-                pos += to.size();
-            }
-        }
+        // S-49: a custom search_read bypasses BaseModel's allowlist, so the
+        // filterable columns are named explicitly. Without it an authenticated
+        // user can filter on ANY res_partner column — including
+        // portal_password_hash, which a `like` domain then reads out one
+        // substring at a time, however restricted the SELECT list is.
+        static const std::set<std::string> kCols = {
+            "id","name","email","phone","company_id","portal_active",
+            "active","is_company","customer_rank","supplier_rank"};
+        // The self-join aliases rp and rc are the SAME table, so EVERY column
+        // is ambiguous unqualified — not just company_id. Qualifying at compile
+        // time covers all of them; rewriting the finished SQL by substring
+        // covered exactly the one column somebody had already hit.
+        auto [where, paramVec] = domainFromJson(call.domain()).toSql(&kCols, "rp");
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
@@ -1048,6 +1050,68 @@ private:
         }
         txn.commit();
         return true;
+    }
+
+    // ----------------------------------------------------------
+    // portal_share_document({model, res_id, days}) — mint a share link
+    //
+    // Staff-only. Returns a URL that shows ONE document, read-only, to whoever
+    // holds it — the same shape as the admin-issued password-reset link
+    // (docs/111): the system mints it, a person hands it over deliberately,
+    // and nothing is emailed because there is no mail layer yet (docs/112).
+    //
+    // Re-sharing replaces the previous token, so "share again" after a leak
+    // closes the leaked link rather than adding a second door.
+    // ----------------------------------------------------------
+    nlohmann::json handleShareDocument(const CallKwArgs& call) {
+        const std::string model = call.kwargs.value("model", std::string{});
+        const int resId = call.kwargs.value("res_id", 0);
+        int days = call.kwargs.value("days", 30);
+        if (days < 1)   days = 1;
+        if (days > 365) days = 365;   // a link that never ages is a password
+
+        if (!PortalAccess::isShareableModel(model))
+            throw std::runtime_error(
+                "Only invoices, sales orders and deliveries can be shared.");
+        if (resId <= 0) throw std::runtime_error("A document is required.");
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        const int uid = extractContext_(call).uid;
+        const std::string token = PortalAccess::share(txn, model, resId, uid, days);
+
+        std::string base = "http://localhost:8069";
+        auto b = txn.exec("SELECT value FROM ir_config_parameter WHERE key='web.base.url' LIMIT 1");
+        if (!b.empty() && !b[0][0].is_null()) {
+            std::string v = b[0][0].c_str();
+            if (!v.empty()) base = v;
+        }
+        txn.commit();
+
+        audit_("portal_share_document", {resId}, extractContext_(call));
+
+        return nlohmann::json{
+            {"model",         model},
+            {"res_id",        resId},
+            {"token",         token},
+            {"expires_days",  days},
+            {"share_url",     base + "/portal/doc/" + model + "/" +
+                              std::to_string(resId) + "?token=" + token},
+        };
+    }
+
+    // portal_revoke_document({model, res_id}) — close a shared link.
+    nlohmann::json handleRevokeDocument(const CallKwArgs& call) {
+        const std::string model = call.kwargs.value("model", std::string{});
+        const int resId = call.kwargs.value("res_id", 0);
+        if (!PortalAccess::isShareableModel(model) || resId <= 0)
+            throw std::runtime_error("A document is required.");
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        const bool had = PortalAccess::revoke(txn, model, resId);
+        txn.commit();
+        audit_("portal_revoke_document", {resId}, extractContext_(call));
+        return nlohmann::json{{"revoked", had}};
     }
 
     // ----------------------------------------------------------
@@ -1181,7 +1245,7 @@ private:
                 // P2: partner_rental_price.price_unit is micro-units (970).
                 // Raw SQL, so it converts here rather than in normalizeForDb_.
                 pqxx::params{partnerId, productId,
-                             odoo::core::Money::fromJson(priceUnit).toDb()});
+                             cerp::core::Money::fromJson(priceUnit).toDb()});
         }
         txn.commit();
 
@@ -1288,6 +1352,30 @@ void PortalModule::registerRoutes() {
     // shares one bucket across all customers behind nginx, so ten bad logins
     // lock every customer out.
     const infrastructure::ClientIpResolver clientIp{trustedProxies_};
+
+    // ----------------------------------------------------------
+    // Pagination (docs/114 W3). the reference ERP's pager, adapted to a JSON API: the
+    // caller sends page/limit, the response carries the totals so a client can
+    // draw its own pager.
+    //
+    // The orders and deliveries lists were UNBOUNDED — a customer with years
+    // of history fetched all of it on every page load, and so did anyone who
+    // took their password. A ceiling is both a performance and a blast-radius
+    // property.
+    // ----------------------------------------------------------
+    struct Page { int limit; int offset; int page; };
+    auto readPage = [](const drogon::HttpRequestPtr& req) -> Page {
+        auto toInt = [](const std::string& s, int dflt) {
+            if (s.empty()) return dflt;
+            try { return std::stoi(s); } catch (...) { return dflt; }
+        };
+        int limit = toInt(req->getParameter("limit"), 20);
+        int page  = toInt(req->getParameter("page"), 1);
+        if (limit < 1)   limit = 20;
+        if (limit > 100) limit = 100;   // a hard ceiling the client cannot raise
+        if (page  < 1)   page  = 1;
+        return Page{limit, (page - 1) * limit, page};
+    };
 
     // Shared helper: add security headers to a response
     auto addSecHeaders = [](const drogon::HttpResponsePtr& res) {
@@ -1853,7 +1941,7 @@ void PortalModule::registerRoutes() {
     // k. GET /portal/api/orders  — list of sale orders for this partner
     // ----------------------------------------------------------
     drogon::app().registerHandler("/portal/api/orders",
-        [db, portalSessions, addSecHeaders, devMode](
+        [db, portalSessions, addSecHeaders, devMode, readPage](
             const drogon::HttpRequestPtr& req,
             std::function<void(const drogon::HttpResponsePtr&)>&& cb)
         {
@@ -1870,21 +1958,34 @@ void PortalModule::registerRoutes() {
             try {
                 auto conn = db->acquire();
                 pqxx::work txn{conn.get()};
+                const auto pg = readPage(req);
+
+                auto cnt = txn.exec("SELECT count(*) FROM sale_order WHERE partner_id=$1",
+                                    pqxx::params{session->partnerId});
+                const int total = cnt.empty() ? 0 : cnt[0][0].as<int>(0);
+
                 auto rows = txn.exec(
                     "SELECT so.id, so.name, so.state, "
                     "to_char(so.date_order AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date_order, "
                     "COALESCE(so.amount_total,0) AS amount_total "
                     "FROM sale_order so "
-                    "WHERE so.partner_id=$1 ORDER BY so.id DESC",
-                    pqxx::params{session->partnerId});
-                nlohmann::json result = nlohmann::json::array();
+                    "WHERE so.partner_id=$1 ORDER BY so.id DESC LIMIT $2 OFFSET $3",
+                    pqxx::params{session->partnerId, pg.limit, pg.offset});
+                nlohmann::json items = nlohmann::json::array();
                 for (const auto& row : rows)
-                    result.push_back({{"id",row["id"].as<int>()},{"name",std::string(row["name"].c_str())},
+                    items.push_back({{"id",row["id"].as<int>()},{"name",std::string(row["name"].c_str())},
                         {"state",std::string(row["state"].c_str())},
                         {"date_order",row["date_order"].is_null()?"":std::string(row["date_order"].c_str())},
                         {"amount_total",portalMoney(row["amount_total"])}});
+
+                // The bare array is kept as the body so existing clients (and
+                // the 09-portal journey) keep working; the paging facts ride
+                // in headers rather than changing the payload's shape.
+                res->addHeader("X-Total-Count", std::to_string(total));
+                res->addHeader("X-Page",        std::to_string(pg.page));
+                res->addHeader("X-Page-Limit",  std::to_string(pg.limit));
                 res->setStatusCode(drogon::k200OK);
-                res->setBody(result.dump());
+                res->setBody(items.dump());
                 cb(res);
             } catch (const PoolExhaustedException& e) {
                 LOG_ERROR << "[portal] pool: " << e.what();
@@ -2032,7 +2133,7 @@ void PortalModule::registerRoutes() {
     // n. GET /portal/api/deliveries  — outgoing stock_picking for this partner
     // ----------------------------------------------------------
     drogon::app().registerHandler("/portal/api/deliveries",
-        [db, portalSessions, addSecHeaders, devMode](
+        [db, portalSessions, addSecHeaders, devMode, readPage](
             const drogon::HttpRequestPtr& req,
             std::function<void(const drogon::HttpResponsePtr&)>&& cb)
         {
@@ -2049,6 +2150,13 @@ void PortalModule::registerRoutes() {
             try {
                 auto conn = db->acquire();
                 pqxx::work txn{conn.get()};
+                const auto pg = readPage(req);
+                auto dcnt = txn.exec(
+                    "SELECT count(*) FROM stock_picking sp "
+                    "  LEFT JOIN stock_picking_type spt ON spt.id = sp.picking_type_id "
+                    " WHERE sp.partner_id=$1 AND spt.code='outgoing'",
+                    pqxx::params{session->partnerId});
+                const int total = dcnt.empty() ? 0 : dcnt[0][0].as<int>(0);
                 auto rows = txn.exec(
                     "SELECT sp.id, sp.name, sp.state, "
                     "COALESCE(sp.origin,'') AS origin, "
@@ -2057,14 +2165,17 @@ void PortalModule::registerRoutes() {
                     "FROM stock_picking sp "
                     "LEFT JOIN stock_picking_type spt ON spt.id = sp.picking_type_id "
                     "WHERE sp.partner_id=$1 AND spt.code='outgoing' "
-                    "ORDER BY sp.id DESC",
-                    pqxx::params{session->partnerId});
+                    "ORDER BY sp.id DESC LIMIT $2 OFFSET $3",
+                    pqxx::params{session->partnerId, pg.limit, pg.offset});
                 nlohmann::json result = nlohmann::json::array();
                 for (const auto& row : rows)
                     result.push_back({{"id",row["id"].as<int>()},{"name",std::string(row["name"].c_str())},
                         {"state",std::string(row["state"].c_str())},
                         {"origin",std::string(row["origin"].c_str())},
                         {"scheduled_date",row["scheduled_date"].is_null()?"":std::string(row["scheduled_date"].c_str())}});
+                res->addHeader("X-Total-Count", std::to_string(total));
+                res->addHeader("X-Page",        std::to_string(pg.page));
+                res->addHeader("X-Page-Limit",  std::to_string(pg.limit));
                 res->setStatusCode(drogon::k200OK);
                 res->setBody(result.dump());
                 cb(res);
@@ -2786,14 +2897,33 @@ void PortalModule::registerRoutes() {
                                                     ? 6  // fallback to account id=6
                                                     : priceRows[0]["income_account_id"].as<int>();
 
+                // The customer's OWN company and a real sale journal for it —
+                // not the literals 1,1 this used to hard-code. On a
+                // multi-company database that put every portal request into
+                // company 1's books whichever company the customer belonged to,
+                // which is both wrong and an isolation leak.
+                auto ctxRows = txn.exec(
+                    "SELECT COALESCE(rp.company_id, 1) AS company_id, "
+                    "       (SELECT j.id FROM account_journal j "
+                    "         WHERE j.type='sale' "
+                    "           AND j.company_id = COALESCE(rp.company_id, 1) "
+                    "         ORDER BY j.id LIMIT 1) AS journal_id "
+                    "  FROM res_partner rp WHERE rp.id = $1",
+                    pqxx::params{session->partnerId});
+                if (ctxRows.empty() || ctxRows[0]["journal_id"].is_null())
+                    throw std::runtime_error(
+                        "No sale journal is configured for this customer's company");
+                const int reqCompanyId = ctxRows[0]["company_id"].as<int>();
+                const int reqJournalId = ctxRows[0]["journal_id"].as<int>();
+
                 // Create draft invoice header
                 auto invoiceRows = txn.exec(
                     "INSERT INTO account_move "
                     "(name, move_type, state, partner_id, journal_id, company_id, "
                     " invoice_date, invoice_origin) "
-                    "VALUES ('/', 'out_invoice', 'draft', $1, 1, 1, CURRENT_DATE, 'Portal Request') "
+                    "VALUES ('/', 'out_invoice', 'draft', $1, $2, $3, CURRENT_DATE, 'Portal Request') "
                     "RETURNING id",
-                    pqxx::params{session->partnerId});
+                    pqxx::params{session->partnerId, reqJournalId, reqCompanyId});
 
                 if (invoiceRows.empty()) {
                     throw std::runtime_error("Failed to create invoice");
@@ -2801,13 +2931,16 @@ void PortalModule::registerRoutes() {
 
                 const int newInvoiceId = invoiceRows[0]["id"].as<int>();
 
-                // Create invoice line
+                // Create invoice line — on the SAME journal as its header. A
+                // line pointing at journal 1 while the move sits in another is
+                // exactly the kind of split that reconciles to nothing later.
                 txn.exec(
                     "INSERT INTO account_move_line "
                     "(move_id, account_id, journal_id, partner_id, name, quantity, price_unit, display_type) "
-                    "VALUES ($1, $2, 1, $3, $4, 1, $5, '')",
+                    "VALUES ($1, $2, $6, $3, $4, 1, $5, '')",
                     pqxx::params{newInvoiceId, incomeAccountId,
-                                 session->partnerId, productName, priceUnit});
+                                 session->partnerId, productName, priceUnit,
+                                 reqJournalId});
 
                 txn.commit();
 
@@ -2825,6 +2958,443 @@ void PortalModule::registerRoutes() {
             } catch (const std::exception& e) {
                 res->setStatusCode(drogon::k500InternalServerError);
                 LOG_ERROR << "[portal] " << e.what();
+                res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
+                cb(res);
+            }
+        },
+        {drogon::Post});
+
+    // ----------------------------------------------------------
+    // GET /portal/api/home — the counters (docs/114 W3)
+    //
+    // the reference ERP's /my/counters, adapted: one call that says what needs attention,
+    // so the landing screen is not four list fetches. Everything is scoped on
+    // the session's partner, like every other portal query here.
+    // ----------------------------------------------------------
+    drogon::app().registerHandler("/portal/api/home",
+        [db, portalSessions, addSecHeaders, devMode](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb)
+        {
+            auto res = drogon::HttpResponse::newHttpResponse();
+            res->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+            addSecHeaders(res);
+            const std::string sid = req->getCookie(PortalSessionManager::kCookieName);
+            auto session = portalSessions->get(sid);
+            if (!session) {
+                res->setStatusCode(drogon::k401Unauthorized);
+                res->setBody(nlohmann::json{{"error","Not authenticated"}}.dump());
+                cb(res); return;
+            }
+            try {
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+                const int pid = session->partnerId;
+
+                auto one = [&](const char* sql) {
+                    auto r = txn.exec(sql, pqxx::params{pid});
+                    return r.empty() ? 0 : r[0][0].as<int>(0);
+                };
+                const int invoices = one(
+                    "SELECT count(*) FROM account_move WHERE partner_id=$1 AND move_type='out_invoice'");
+                const int unpaid = one(
+                    "SELECT count(*) FROM account_move WHERE partner_id=$1 "
+                    "  AND move_type='out_invoice' AND state='posted' AND COALESCE(amount_residual,0) <> 0");
+                const int orders = one("SELECT count(*) FROM sale_order WHERE partner_id=$1");
+                const int quotes = one(
+                    "SELECT count(*) FROM sale_order WHERE partner_id=$1 AND state='draft'");
+                const int deliveries = one(
+                    "SELECT count(*) FROM stock_picking sp "
+                    "  LEFT JOIN stock_picking_type spt ON spt.id=sp.picking_type_id "
+                    " WHERE sp.partner_id=$1 AND spt.code='outgoing'");
+
+                auto due = txn.exec(
+                    "SELECT COALESCE(SUM(amount_residual),0) FROM account_move "
+                    " WHERE partner_id=$1 AND state='posted' AND move_type='out_invoice'",
+                    pqxx::params{pid});
+
+                res->setStatusCode(drogon::k200OK);
+                res->setBody(nlohmann::json{
+                    {"name",             session->name},
+                    {"invoice_count",    invoices},
+                    {"unpaid_count",     unpaid},
+                    {"order_count",      orders},
+                    {"quotation_count",  quotes},
+                    {"delivery_count",   deliveries},
+                    {"amount_due",       due.empty() ? 0.0 : portalMoney(due[0][0])},
+                }.dump());
+                cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal/home] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error","The server is temporarily overloaded. Please retry."}}.dump());
+                cb(res);
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[portal/home] " << e.what();
+                res->setStatusCode(drogon::k500InternalServerError);
+                res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
+                cb(res);
+            }
+        },
+        {drogon::Get});
+
+    // ----------------------------------------------------------
+    // GET /portal/api/statement[?date_from=&date_to=]        — JSON
+    // GET /portal/api/statement/print                        — HTML
+    // GET /portal/api/statement/pdf                          — PDF
+    //
+    // Built from the receivable ledger, so it agrees with the books by
+    // construction (docs/114 W4 / PortalStatement.hpp).
+    // ----------------------------------------------------------
+    auto statementDates = [](const drogon::HttpRequestPtr& req,
+                             std::string& from, std::string& to) -> bool {
+        from = req->getParameter("date_from");
+        to   = req->getParameter("date_to");
+        // Reject anything that is not YYYY-MM-DD rather than handing it to
+        // PostgreSQL to interpret. They arrive from a query string.
+        if (!PortalStatement::isIsoDate(from) || !PortalStatement::isIsoDate(to))
+            return false;
+        if (!from.empty() && !to.empty() && to < from) return false;
+        return true;
+    };
+
+    drogon::app().registerHandler("/portal/api/statement",
+        [db, portalSessions, addSecHeaders, devMode, statementDates](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb)
+        {
+            auto res = drogon::HttpResponse::newHttpResponse();
+            res->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+            addSecHeaders(res);
+            const std::string sid = req->getCookie(PortalSessionManager::kCookieName);
+            auto session = portalSessions->get(sid);
+            if (!session) {
+                res->setStatusCode(drogon::k401Unauthorized);
+                res->setBody(nlohmann::json{{"error","Not authenticated"}}.dump());
+                cb(res); return;
+            }
+            std::string from, to;
+            if (!statementDates(req, from, to)) {
+                res->setStatusCode(drogon::k400BadRequest);
+                res->setBody(nlohmann::json{{"error","Invalid date range"}}.dump());
+                cb(res); return;
+            }
+            try {
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+                auto data = PortalStatement::build(txn, session->partnerId, from, to);
+                res->setStatusCode(drogon::k200OK);
+                res->setBody(data.dump());
+                cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal/statement] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error","The server is temporarily overloaded. Please retry."}}.dump());
+                cb(res);
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[portal/statement] " << e.what();
+                res->setStatusCode(drogon::k500InternalServerError);
+                res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
+                cb(res);
+            }
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler("/portal/api/statement/print",
+        [db, portalSessions, devMode, statementDates](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb)
+        {
+            auto htmlErr = [&cb](int code, const std::string& msg) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
+                r->setContentTypeCode(drogon::CT_TEXT_HTML);
+                r->setBody("<html><body><p>" + msg + "</p></body></html>");
+                cb(r);
+            };
+            const std::string sid = req->getCookie(PortalSessionManager::kCookieName);
+            auto session = portalSessions->get(sid);
+            if (!session) { htmlErr(401, "Not authenticated"); return; }
+            std::string from, to;
+            if (!statementDates(req, from, to)) { htmlErr(400, "Invalid date range"); return; }
+            try {
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+                std::string html = PortalStatement::renderHtml(txn, session->partnerId, from, to);
+                if (req->getParameter("embed") != "1") {
+                    const std::string autoprint =
+                        "<script>window.onload=function(){window.print();}</script>";
+                    size_t pos = html.rfind("</body>");
+                    if (pos != std::string::npos) html.insert(pos, autoprint);
+                }
+                auto res = drogon::HttpResponse::newHttpResponse();
+                res->setStatusCode(drogon::k200OK);
+                res->setContentTypeCode(drogon::CT_TEXT_HTML);
+                res->setBody(html);
+                cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal/statement] pool: " << e.what();
+                htmlErr(503, "The server is temporarily overloaded. Please retry.");
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[portal/statement/print] " << e.what();
+                htmlErr(500, devMode ? e.what() : "An internal error occurred");
+            }
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler("/portal/api/statement/pdf",
+        [db, portalSessions, devMode, makePdf, statementDates](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb)
+        {
+            auto htmlErr = [&cb](int code, const std::string& msg) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
+                r->setContentTypeCode(drogon::CT_TEXT_HTML);
+                r->setBody("<html><body><p>" + msg + "</p></body></html>");
+                cb(r);
+            };
+            const std::string sid = req->getCookie(PortalSessionManager::kCookieName);
+            auto session = portalSessions->get(sid);
+            if (!session) { htmlErr(401, "Not authenticated"); return; }
+            std::string from, to;
+            if (!statementDates(req, from, to)) { htmlErr(400, "Invalid date range"); return; }
+            try {
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+                std::string html = PortalStatement::renderHtml(txn, session->partnerId, from, to);
+                std::string pdfData = makePdf(html, "account.move", txn);
+                txn.commit();
+                if (pdfData.empty()) {
+                    htmlErr(503, "PDF generation failed. Ensure wkhtmltopdf is installed."); return;
+                }
+                auto res = drogon::HttpResponse::newHttpResponse();
+                res->setStatusCode(drogon::k200OK);
+                res->setContentTypeString("application/pdf");
+                res->addHeader("Content-Disposition",
+                               "attachment; filename=\"statement.pdf\"");
+                res->setBody(pdfData);
+                cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal/statement] pool: " << e.what();
+                htmlErr(503, "The server is temporarily overloaded. Please retry.");
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[portal/statement/pdf] " << e.what();
+                htmlErr(500, devMode ? e.what() : "An internal error occurred");
+            }
+        },
+        {drogon::Get});
+
+    // ----------------------------------------------------------
+    // GET /portal/doc/{model}/{id}?token=…  — a shared document (docs/114 W1)
+    //
+    // the reference ERP's portal.mixin access_token, adapted. A staff member mints a link
+    // and hands it over; whoever holds it sees ONE document, read-only, with
+    // no session and no cookie. The token is bound to that (model, res_id), so
+    // it can never be walked to a neighbour.
+    // ----------------------------------------------------------
+    drogon::app().registerHandler("/portal/doc/{1}/{2}",
+        [db, portalSessions, devMode](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb,
+            const std::string& model, const std::string& idStr)
+        {
+            auto htmlErr = [&cb](int code, const std::string& msg) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
+                r->setContentTypeCode(drogon::CT_TEXT_HTML);
+                r->setBody("<html><body><p>" + msg + "</p></body></html>");
+                cb(r);
+            };
+            if (!PortalAccess::isShareableModel(model)) { htmlErr(404, "Not found"); return; }
+            int recordId = 0;
+            try { recordId = std::stoi(idStr); } catch (...) { htmlErr(400, "Invalid id"); return; }
+
+            // A logged-in customer may reach their own document here too, so
+            // the session is consulted when present — but it is not required.
+            int partnerId = 0;
+            const std::string sid = req->getCookie(PortalSessionManager::kCookieName);
+            if (auto s = portalSessions->get(sid)) partnerId = s->partnerId;
+            const std::string token = req->getParameter("token");
+
+            try {
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+                const AccessKind kind =
+                    PortalAccess::check(txn, model, recordId, partnerId, token);
+                if (kind == AccessKind::Denied) {
+                    // One message for "no such document" and "not yours": a
+                    // different answer for each would confirm which ids exist.
+                    htmlErr(404, "This document is not available. "
+                                 "The link may have expired or been revoked.");
+                    return;
+                }
+                // portalRenderDoc scopes on the OWNING partner, so a token
+                // holder is rendered as that partner rather than as nobody.
+                auto ownerRow = txn.exec(
+                    std::string("SELECT partner_id FROM ") +
+                    (model == "account.move" ? "account_move"
+                     : model == "sale.order" ? "sale_order" : "stock_picking") +
+                    " WHERE id=$1", pqxx::params{recordId});
+                if (ownerRow.empty() || ownerRow[0][0].is_null()) { htmlErr(404, "Not found"); return; }
+                const int ownerId = ownerRow[0][0].as<int>();
+
+                std::string html = portalRenderDoc(model, recordId, ownerId, txn);
+                if (html.empty()) { htmlErr(404, "Not found"); return; }
+
+                auto res = drogon::HttpResponse::newHttpResponse();
+                res->setStatusCode(drogon::k200OK);
+                res->setContentTypeCode(drogon::CT_TEXT_HTML);
+                res->addHeader("X-Content-Type-Options", "nosniff");
+                res->addHeader("X-Frame-Options",        "DENY");
+                res->addHeader("Referrer-Policy",        "no-referrer");
+                // A shared link must not be cached by a proxy on the way.
+                res->addHeader("Cache-Control", "private, no-store");
+                res->addHeader("X-Robots-Tag", "noindex, nofollow");
+                res->setBody(html);
+                cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal/doc] pool: " << e.what();
+                htmlErr(503, "The server is temporarily overloaded. Please retry.");
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[portal/doc] " << e.what();
+                htmlErr(500, devMode ? e.what() : "An internal error occurred");
+            }
+        },
+        {drogon::Get});
+
+    // ----------------------------------------------------------
+    // POST /portal/api/quote — ask for a quotation (docs/113 §3b)
+    // Body: {lines:[{product_id, quantity}], note}
+    //
+    // THE RULE: the portal proposes, staff dispose. This creates a DRAFT
+    // sale.order and nothing else — no confirmation, no stock reservation, no
+    // ledger entry, and no prices from the customer. Prices come from the
+    // product's own list price; a `price_unit` in the request body is ignored
+    // outright, because the portal's credential is a partner password, not a
+    // staff session, and a customer must not be able to name their own price.
+    // ----------------------------------------------------------
+    drogon::app().registerHandler("/portal/api/quote",
+        [db, portalSessions, addSecHeaders, devMode](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb)
+        {
+            auto res = drogon::HttpResponse::newHttpResponse();
+            res->addHeader("Content-Type", "application/json");
+            addSecHeaders(res);
+
+            const std::string sid = req->getCookie(PortalSessionManager::kCookieName);
+            auto session = portalSessions->get(sid);
+            if (!session) {
+                res->setStatusCode(drogon::k401Unauthorized);
+                res->setBody(nlohmann::json{{"error", "Not authenticated"}}.dump());
+                cb(res); return;
+            }
+
+            try {
+                nlohmann::json body;
+                try { body = nlohmann::json::parse(req->body()); }
+                catch (...) {
+                    res->setStatusCode(drogon::k400BadRequest);
+                    res->setBody(nlohmann::json{{"error", "Invalid JSON"}}.dump());
+                    cb(res); return;
+                }
+
+                if (!body.contains("lines") || !body["lines"].is_array() ||
+                    body["lines"].empty()) {
+                    res->setStatusCode(drogon::k400BadRequest);
+                    res->setBody(nlohmann::json{
+                        {"error", "At least one product line is required"}}.dump());
+                    cb(res); return;
+                }
+                // A bound on how much work one unauthenticated-ish request can
+                // ask for. 50 lines is a generous quotation and a cheap ceiling.
+                if (body["lines"].size() > 50) {
+                    res->setStatusCode(drogon::k400BadRequest);
+                    res->setBody(nlohmann::json{
+                        {"error", "A quotation request is limited to 50 lines"}}.dump());
+                    cb(res); return;
+                }
+
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+
+                auto coRows = txn.exec(
+                    "SELECT COALESCE(company_id,1) FROM res_partner WHERE id=$1",
+                    pqxx::params{session->partnerId});
+                const int companyId = coRows.empty() ? 1 : coRows[0][0].as<int>(1);
+
+                auto soRows = txn.exec(
+                    "INSERT INTO sale_order (name, partner_id, state, date_order, company_id, origin) "
+                    "VALUES ('/', $1, 'draft', now(), $2, 'Portal Quote Request') RETURNING id",
+                    pqxx::params{session->partnerId, companyId});
+                const int orderId = soRows[0]["id"].as<int>();
+
+                int accepted = 0;
+                for (const auto& l : body["lines"]) {
+                    if (!l.is_object() || !l.contains("product_id")) continue;
+                    const int productId = l["product_id"].is_number_integer()
+                                        ? l["product_id"].get<int>() : 0;
+                    double qty = 1.0;
+                    if (l.contains("quantity") && l["quantity"].is_number())
+                        qty = l["quantity"].get<double>();
+                    if (productId <= 0 || qty <= 0) continue;
+
+                    // The product must exist and be sellable. Prices are read
+                    // here, never taken from the request.
+                    auto p = txn.exec(
+                        "SELECT name, COALESCE(list_price,0), uom_id "
+                        "  FROM product_product "
+                        " WHERE id=$1 AND active AND sale_ok",
+                        pqxx::params{productId});
+                    if (p.empty()) continue;
+
+                    txn.exec(
+                        "INSERT INTO sale_order_line "
+                        "(order_id, product_id, name, product_uom_qty, price_unit, product_uom_id) "
+                        "VALUES ($1, $2, $3, $4, $5, $6)",
+                        pqxx::params{orderId, productId,
+                                     std::string(p[0][0].c_str()),
+                                     qty, p[0][1].as<long long>(0),
+                                     p[0][2].is_null() ? 1 : p[0][2].as<int>()});
+                    ++accepted;
+                }
+
+                if (accepted == 0) {
+                    // Nothing usable: roll the empty order back rather than
+                    // leaving staff a blank request to puzzle over.
+                    txn.abort();
+                    res->setStatusCode(drogon::k400BadRequest);
+                    res->setBody(nlohmann::json{
+                        {"error", "None of those products are available to order"}}.dump());
+                    cb(res); return;
+                }
+
+                const std::string note = body.value("note", std::string{});
+                if (!note.empty()) {
+                    txn.exec("UPDATE sale_order SET note=LEFT($2, 2000) WHERE id=$1",
+                             pqxx::params{orderId, note});
+                }
+                txn.commit();
+
+                res->setStatusCode(drogon::k200OK);
+                res->setBody(nlohmann::json{
+                    {"ok",       true},
+                    {"order_id", orderId},
+                    {"lines",    accepted},
+                    {"state",    "draft"},
+                    {"message",  "Thank you — your request has been sent. "
+                                 "We will confirm pricing and get back to you."},
+                }.dump());
+                cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[portal/quote] pool: " << e.what();
+                res->setStatusCode(drogon::k503ServiceUnavailable);
+                res->setBody(nlohmann::json{{"error", "The server is temporarily overloaded. Please retry."}}.dump());
+                cb(res);
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[portal/quote] " << e.what();
+                res->setStatusCode(drogon::k500InternalServerError);
                 res->setBody(nlohmann::json{{"error", devMode ? e.what() : "An internal error occurred"}}.dump());
                 cb(res);
             }
@@ -2855,6 +3425,9 @@ void PortalModule::ensureSchema_() {
     txn.exec(
         "ALTER TABLE res_partner "
         "ADD COLUMN IF NOT EXISTS portal_active BOOLEAN NOT NULL DEFAULT FALSE");
+
+    // Share tokens for single documents (docs/114 W1)
+    PortalAccess::ensureSchema(txn);
 
     // Payment proof uploads
     txn.exec(R"(
@@ -2940,4 +3513,4 @@ void PortalModule::seedMenu_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::portal
+} // namespace cerp::modules::portal

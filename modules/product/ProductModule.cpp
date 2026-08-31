@@ -21,12 +21,14 @@
 #include <set>
 #include <map>
 #include <sstream>
+#include <iomanip>
+#include <limits>
 #include <algorithm>
 
-namespace odoo::modules::product {
+namespace cerp::modules::product {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 /// docs/097 — parse "4k7", "100n", "2R2", "10 uF". Defined further down, but
 /// declared here because the parametric search uses it before that point.
@@ -767,7 +769,7 @@ public:
             // C-4: both FKs are ON DELETE SET NULL, so an unguarded delete
             // silently promotes every child category to root level and strips
             // the category from every product under it — damage that does not
-            // look like it came from the delete. Refuse, as Odoo does.
+            // look like it came from the delete. Refuse, as the reference ERP does.
             auto childRows = txn.exec(
                 "SELECT COUNT(*) FROM product_category WHERE parent_id = $1",
                 pqxx::params{id});
@@ -2501,11 +2503,58 @@ private:
  * @param number out: the numeric part, prefix applied
  * @returns false when there is no number at all
  */
+/**
+ * @brief Render a double as text SQL can read back exactly.
+ *
+ * `std::to_string(double)` formats with six decimal places, so 1e-8 becomes
+ * the string "0.000000". That is not a rounding error, it is a zero: every
+ * nanofarad, picofarad and nanohenry value written with the prefix in the
+ * VALUE ("10n", "4n7", "10p") was stored as 0 — which is most of the passive
+ * components in any real catalogue, silently, with no error anywhere.
+ *
+ * max_digits10 round-trips a double through text without loss, and scientific
+ * notation is what Postgres wants for these magnitudes anyway.
+ */
+static std::string numText(double v) {
+    std::ostringstream os;
+    os << std::setprecision(std::numeric_limits<double>::max_digits10) << v;
+    return os.str();
+}
+
+/**
+ * @brief Is this written value something other than a single quantity?
+ *
+ * Two cases, both of which parse as numbers and both of which are then wrong:
+ *
+ * **Identifiers.** "0603" parses perfectly well as 603 — and that is exactly
+ * the problem: it is a package code, and 603 is not a package. A leading zero
+ * followed by more digits, with no decimal point, is never a magnitude anyone
+ * meant to write. (This is a safety net, not the answer: a package belongs in
+ * the `footprint` field. 1206 and 2512 are package codes too and are
+ * indistinguishable from counts, so only the right field can save those.)
+ *
+ * **Ranges.** "-55 to 125" parses as -55, so an operating range silently
+ * becomes a single temperature that reads as a specification. Observed from a
+ * real lookup. Keeping the whole string is worse for searching and far better
+ * than being confidently wrong; a range belongs in two parameters, which the
+ * agent is now told.
+ */
+static bool looksLikeText(const std::string& s) {
+    if (s.find(" to ") != std::string::npos || s.find('~') != std::string::npos ||
+        s.find("..")   != std::string::npos || s.find(" ... ") != std::string::npos)
+        return true;
+    if (s.size() < 2 || s[0] != '0') return false;
+    if (s.find('.') != std::string::npos) return false;
+    return std::all_of(s.begin(), s.end(),
+                       [](unsigned char c) { return std::isdigit(c) != 0; });
+}
+
 static bool parseSiValue(const std::string& text, double& number, double& mult) {
     static const std::map<char, double> kPrefix = {
         {'p',1e-12},{'n',1e-9},{'u',1e-6},{'m',1e-3},
         {'k',1e3},{'K',1e3},{'M',1e6},{'G',1e9},{'T',1e12},
         {'R',1.0},   // 2R2 = 2.2 ohm
+        {'V',1.0},   // 3V3 = 3.3 V, 6V3 = 6.3 V — how every electrolytic is marked
     };
     std::string s;
     for (char c : text) if (!std::isspace(static_cast<unsigned char>(c))) s += c;
@@ -2809,6 +2858,7 @@ public:
         REGISTER_METHOD("search_read",   handleList)
         REGISTER_METHOD("read",          handleReadOne)
         REGISTER_MUTATOR("submit",       handleSubmit)
+        REGISTER_MUTATOR("update",       handleUpdate)
         REGISTER_MUTATOR("apply",        handleApply)
         REGISTER_MUTATOR("reject",       handleReject)
         REGISTER_METHOD("fields_get",    handleFieldsGet)
@@ -2870,19 +2920,67 @@ private:
      * being wrong about one parameter should not throw away the datasheet URL
      * and the manufacturer it got right.
      */
-    nlohmann::json handleSubmit(const core::CallKwArgs& call) {
-        const auto v = call.arg(0);
-        if (!v.is_object()) throw infrastructure::ValidationError("submit expects an object.");
-        const std::string query = S(v, "query");
-        const std::string mpn   = S(v, "mpn");
-        if (query.empty() && mpn.empty())
-            throw infrastructure::ValidationError("Either query or mpn is required.");
+    /**
+     * @brief Resolve a written unit symbol to the one part_unit stores.
+     *
+     * Datasheets, distributor listings and every CSV export write `uF`, not
+     * `µF` — the micro sign is not on a keyboard and does not survive a
+     * round-trip through most tooling. Refusing the ASCII spelling meant
+     * refusing the way capacitance and inductance are written essentially
+     * everywhere, and an agent asked for "10 uF" got "Unknown unit 'uF'".
+     *
+     * Only spellings of the SAME unit are accepted. Nothing here guesses at
+     * what a symbol might have meant: `C` stays Coulomb and never becomes
+     * Celsius, because a wrong unit is a wrong number.
+     *
+     * @returns the canonical symbol, or "" when it is genuinely unknown
+     */
+    static std::string canonicalUnit_(pqxx::work& txn, const std::string& us) {
+        if (us.empty()) return {};
+        auto known = [&](const std::string& s) {
+            return !txn.exec("SELECT 1 FROM part_unit WHERE symbol=$1", pqxx::params{s}).empty();
+        };
+        if (known(us)) return us;
 
-        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        static const std::string kMu = "\xc2\xb5";           // "µ" in UTF-8
+        if (us[0] == 'u' && known(kMu + us.substr(1))) return kMu + us.substr(1);
+        if (us.rfind(kMu, 0) == 0 && known("u" + us.substr(2))) return "u" + us.substr(2);
+
+        // Ohm spelled out, which is what an ASCII-only source produces.
+        static const std::map<std::string, std::string> kAlias = {
+            {"ohm","Ω"},   {"Ohm","Ω"},   {"OHM","Ω"},  {"ohms","Ω"}, {"Ohms","Ω"},
+            {"kohm","kΩ"}, {"kOhm","kΩ"}, {"Kohm","kΩ"},
+            {"Mohm","MΩ"}, {"MOhm","MΩ"}, {"mohm","mΩ"},
+            {"degC","°C"}, {"deg C","°C"},
+        };
+        auto it = kAlias.find(us);
+        if (it != kAlias.end() && known(it->second)) return it->second;
+        return {};
+    }
+
+    /**
+     * @brief Check a LookupResult and say what is wrong with it.
+     *
+     * Shared by `submit` and `update` so that an edited proposal is held to
+     * exactly the same standard as a freshly submitted one. When this lived
+     * inside submit(), editing could only ever have been validated by a second
+     * copy of these rules — and a second copy is a copy that drifts, which
+     * here would mean a hand-corrected part passing checks the agent's version
+     * had to satisfy.
+     *
+     * See canonicalUnit_ for the spelling rules.
+     *
+     * Also CANONICALISES the unit symbols in place, so everything downstream —
+     * apply, display, the parametric facets — sees the spelling part_unit
+     * actually stores. Doing it here rather than at each lookup site means
+     * there is one definition of what `uF` means.
+     *
+     * @param categId out: the resolved category, 0 when none matched
+     * @returns the issues array; `error` level means it cannot be applied
+     */
+    nlohmann::json validate_(pqxx::work& txn, nlohmann::json& v, int& categId) {
         nlohmann::json issues = nlohmann::json::array();
-
-        // Category: accept an id or a path, and say so when neither resolves.
-        int categId = 0;
+        categId = 0;
         if (v.contains("category_id") && v["category_id"].is_number_integer()) {
             categId = v["category_id"].get<int>();
             if (txn.exec("SELECT 1 FROM product_category WHERE id=$1", pqxx::params{categId}).empty()) {
@@ -2908,13 +3006,20 @@ private:
         // Parameters: every unit must be one we know, and every value parseable.
         if (v.contains("parameters") && v["parameters"].is_array()) {
             int idx = 0;
-            for (const auto& p : v["parameters"]) {
+            for (auto& p : v["parameters"]) {
                 const std::string pn = S(p, "name");
-                const std::string us = S(p, "unit");
+                // Rewrite the unit to the spelling part_unit stores, so `uF`
+                // and `µF` are the same unit rather than one real and one
+                // rejected. Everything downstream reads the canonical form.
+                std::string us = S(p, "unit");
+                if (!us.empty()) {
+                    const std::string canon = canonicalUnit_(txn, us);
+                    if (!canon.empty() && canon != us) { p["unit"] = canon; us = canon; }
+                }
                 const std::string raw = p.contains("value") && p["value"].is_string()
                                             ? p["value"].get<std::string>()
                                             : (p.contains("value") && p["value"].is_number()
-                                                   ? std::to_string(p["value"].get<double>()) : std::string{});
+                                                   ? numText(p["value"].get<double>()) : std::string{});
                 if (pn.empty())
                     issues.push_back({{"field","parameters[" + std::to_string(idx) + "].name"},
                                       {"level","error"},{"message","Parameter name is required"}});
@@ -2939,8 +3044,29 @@ private:
             issues.push_back({{"field","confidence"},{"level","warning"},
                               {"message","confidence should be between 0 and 1"}});
 
+        return issues;
+    }
+
+    nlohmann::json handleSubmit(const core::CallKwArgs& call) {
+        // Mutable: validate_ rewrites unit symbols to their canonical spelling,
+        // and it is the rewritten payload that must be stored.
+        auto v = call.arg(0);
+        if (!v.is_object()) throw infrastructure::ValidationError("submit expects an object.");
+        const std::string query = S(v, "query");
+        const std::string mpn   = S(v, "mpn");
+        if (query.empty() && mpn.empty())
+            throw infrastructure::ValidationError("Either query or mpn is required.");
+
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        int categId = 0;
+        nlohmann::json issues = validate_(txn, v, categId);
+
         bool hasError = false;
         for (const auto& i : issues) if (i.value("level", "") == "error") hasError = true;
+
+        double conf = 0.0;
+        if (v.contains("confidence") && v["confidence"].is_number())
+            conf = v["confidence"].get<double>();
 
         auto ins = txn.exec(
             "INSERT INTO part_lookup_result (query, mpn, manufacturer, state, payload, issues, "
@@ -2956,6 +3082,82 @@ private:
         txn.commit();
         return {{"ok", !hasError}, {"id", id},
                 {"state", hasError ? "invalid" : "pending"}, {"issues", issues}};
+    }
+
+    /**
+     * @brief Edit a staged proposal before applying it.
+     *
+     * The queue is where a person decides whether a proposal is true. Without
+     * this, disagreeing with one field meant rejecting the whole thing and
+     * re-entering it by hand — so the realistic alternative to editing was
+     * *not* a more careful catalogue, it was applying something known to be
+     * slightly wrong because fixing it cost too much.
+     *
+     * Re-validated on every save, by the same rules as submit: correcting one
+     * field must not be a way to smuggle a bad one past the checks. The state
+     * is recomputed too, so fixing the error that made a proposal `invalid`
+     * returns it to `pending` and makes Apply available again.
+     *
+     * An APPLIED proposal is frozen. It is a record of what was written to the
+     * catalogue, and editing history to disagree with it would leave no way to
+     * tell what actually happened.
+     */
+    nlohmann::json handleUpdate(const core::CallKwArgs& call) {
+        const auto v = call.arg(0);
+        if (!v.is_object() || !v.contains("id"))
+            throw infrastructure::ValidationError("update expects an object with an id.");
+        const int id = v["id"].get<int>();
+
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        auto cur = txn.exec("SELECT payload, state FROM part_lookup_result WHERE id=$1",
+                            pqxx::params{id});
+        if (cur.empty())
+            throw infrastructure::ValidationError("No proposal with id " + std::to_string(id));
+        const std::string state = cur[0]["state"].c_str();
+        if (state == "applied")
+            throw infrastructure::ValidationError(
+                "This proposal has been applied and can no longer be edited.");
+
+        // Merge onto the stored payload rather than replacing it: the screen
+        // sends the fields it shows, and a field it never displayed (a
+        // datasheet URL, a vendor's own part id) must survive being edited.
+        //
+        // `confidence` is deliberately NOT editable. It is the agent's
+        // statement about its own certainty, and a reviewer overwriting it
+        // does not make the data more reliable — it destroys the one signal
+        // that says how hard the rest needs checking. Enforced here rather
+        // than only in the screen, or it is a convention instead of a rule.
+        static const std::set<std::string> kReadOnly = {"id", "confidence", "state"};
+        auto payload = nlohmann::json::parse(cur[0]["payload"].c_str(), nullptr, false);
+        if (payload.is_discarded() || !payload.is_object()) payload = nlohmann::json::object();
+        for (auto it = v.begin(); it != v.end(); ++it)
+            if (!kReadOnly.count(it.key())) payload[it.key()] = it.value();
+
+        if (S(payload, "query").empty() && S(payload, "mpn").empty())
+            throw infrastructure::ValidationError("Either query or mpn is required.");
+
+        int categId = 0;
+        nlohmann::json issues = validate_(txn, payload, categId);
+        bool hasError = false;
+        for (const auto& i : issues) if (i.value("level", "") == "error") hasError = true;
+
+        double conf = 0.0;
+        if (payload.contains("confidence") && payload["confidence"].is_number())
+            conf = payload["confidence"].get<double>();
+
+        // A rejected proposal that is corrected becomes pending again — that is
+        // the point of being able to fix it.
+        const std::string newState = hasError ? "invalid" : "pending";
+        txn.exec("UPDATE part_lookup_result SET payload=$1::jsonb, issues=$2::jsonb, "
+                 "  mpn=NULLIF($3,''), manufacturer=NULLIF($4,''), source=NULLIF($5,''), "
+                 "  confidence=$6, categ_id=NULLIF($7,'')::int, state=$8, write_date=now() "
+                 "WHERE id=$9",
+                 pqxx::params{payload.dump(), issues.dump(),
+                              S(payload,"mpn"), S(payload,"manufacturer"), S(payload,"source"),
+                              conf, categId > 0 ? std::to_string(categId) : std::string{},
+                              newState, id});
+        txn.commit();
+        return {{"ok", !hasError}, {"id", id}, {"state", newState}, {"issues", issues}};
     }
 
     nlohmann::json handleList(const core::CallKwArgs& call) {
@@ -3007,9 +3209,25 @@ private:
 
     nlohmann::json handleReject(const core::CallKwArgs& call) {
         if (call.ids().empty()) throw infrastructure::ValidationError("An id is required.");
+        const int id = call.ids().front();
         auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+
+        // This used to be a bare UPDATE returning {"ok":true}. An id that
+        // matched nothing touched no rows and still reported success — the
+        // failure mode that hides every other one, because the screen says it
+        // worked and the database never changed.
+        auto r = txn.exec("SELECT state FROM part_lookup_result WHERE id=$1", pqxx::params{id});
+        if (r.empty())
+            throw infrastructure::ValidationError("No such lookup result.");
+        // An applied proposal is the record of what was written to the
+        // catalogue. Marking it rejected afterwards would leave the product in
+        // place and the history claiming nobody ever wanted it.
+        if (std::string(r[0][0].c_str()) == "applied")
+            throw infrastructure::ValidationError(
+                "This result has been applied and can no longer be rejected.");
+
         txn.exec("UPDATE part_lookup_result SET state='rejected', write_date=now() WHERE id=$1",
-                 pqxx::params{call.ids().front()});
+                 pqxx::params{id});
         txn.commit();
         return {{"ok", true}};
     }
@@ -3032,8 +3250,31 @@ private:
         auto r = txn.exec("SELECT payload, categ_id, state FROM part_lookup_result WHERE id=$1",
                           pqxx::params{id});
         if (r.empty()) throw infrastructure::ValidationError("No such lookup result.");
-        if (std::string(r[0][2].c_str()) == "applied")
+
+        // Only a PENDING proposal may be applied. Each of the other three is a
+        // decision that has already been made, and applying anyway would undo
+        // it silently:
+        //
+        //   applied  — it is already in the catalogue; twice is a duplicate
+        //   rejected — a person said no, and "no" has to mean no
+        //   invalid  — the ERP could not read one of its values
+        //
+        // `invalid` is the one that matters. It is the guarantee the entire
+        // staging design rests on and it was NOT being enforced: a proposal
+        // carrying "4k7 furlongs" applied cleanly, dropping the parameter it
+        // could not parse and writing the rest, so the catalogue gained a part
+        // that was quietly missing its resistance. The docs and the help have
+        // promised this check since the feature shipped.
+        const std::string state = r[0][2].c_str();
+        if (state == "applied")
             throw infrastructure::ValidationError("This result has already been applied.");
+        if (state == "rejected")
+            throw infrastructure::ValidationError(
+                "This result was rejected. Edit it to reopen it before applying.");
+        if (state == "invalid")
+            throw infrastructure::ValidationError(
+                "This result has errors and cannot be applied. Fix them first — see "
+                "\"What to check\".");
         const nlohmann::json v = nlohmann::json::parse(r[0][0].c_str());
 
         // The reviewer's choices win over the agent's.
@@ -3042,6 +3283,19 @@ private:
             categId = a["category_id"].get<int>();
         int productId = (a.is_object() && a.contains("product_id") && a["product_id"].is_number_integer())
                             ? a["product_id"].get<int>() : 0;
+
+        // Both of these are typed by hand on the review screen. Unchecked, a
+        // wrong number reached the INSERT and the foreign key aborted the
+        // transaction, which surfaced to the reviewer as "An internal error
+        // occurred" — true, unhelpful, and indistinguishable from a real fault.
+        if (productId > 0 &&
+            txn.exec("SELECT 1 FROM product_product WHERE id=$1", pqxx::params{productId}).empty())
+            throw infrastructure::ValidationError(
+                "No product with id " + std::to_string(productId) + ".");
+        if (categId > 0 &&
+            txn.exec("SELECT 1 FROM product_category WHERE id=$1", pqxx::params{categId}).empty())
+            throw infrastructure::ValidationError(
+                "No category with id " + std::to_string(categId) + ".");
 
         const std::string mpn  = S(v, "mpn");
         const std::string name = !S(v, "name").empty() ? S(v, "name")
@@ -3082,7 +3336,8 @@ private:
                                       kind = u[0][2].is_null() ? "" : u[0][2].c_str(); }
                 }
                 double num = 0, mul = 1;
-                const bool numeric = !raw.empty() && parseSiValue(raw, num, mul);
+                const bool numeric = !raw.empty() && !looksLikeText(raw)
+                                     && parseSiValue(raw, num, mul);
                 // The SI prefix in the text and the unit symbol are two ways of
                 // saying the same thing. "4.7" + "kΩ" and "4k7" + "Ω" must land
                 // on the same base value, so the parsed number is scaled by the
@@ -3094,20 +3349,20 @@ private:
                 auto ex = txn.exec("SELECT id FROM part_parameter WHERE product_id=$1 AND name=$2",
                                    pqxx::params{productId, pn});
                 const std::string unitTxt = unitId > 0 ? std::to_string(unitId) : std::string{};
-                const std::string baseTxt = numeric   ? std::to_string(base)    : std::string{};
+                const std::string baseTxt = numeric   ? numText(base)           : std::string{};
                 if (ex.empty())
                     txn.exec("INSERT INTO part_parameter (product_id, name, value_numeric, unit_id, "
                              "  value_text, value_base, quantity_kind) "
                              "VALUES ($1,$2,$3::double precision, NULLIF($4,'')::int, "
                              "        NULLIF($5,''), NULLIF($6,'')::double precision, NULLIF($7,''))",
-                             pqxx::params{productId, pn, std::to_string(numeric ? num : 0.0),
+                             pqxx::params{productId, pn, numText(numeric ? num : 0.0),
                                           unitTxt, numeric ? std::string{} : raw, baseTxt, kind});
                 else
                     txn.exec("UPDATE part_parameter SET value_numeric=$1::double precision, "
                              "  unit_id=NULLIF($2,'')::int, value_text=NULLIF($3,''), "
                              "  value_base=NULLIF($4,'')::double precision, "
                              "  quantity_kind=NULLIF($5,'') WHERE id=$6",
-                             pqxx::params{std::to_string(numeric ? num : 0.0), unitTxt,
+                             pqxx::params{numText(numeric ? num : 0.0), unitTxt,
                                           numeric ? std::string{} : raw, baseTxt, kind,
                                           ex[0][0].as<int>()});
                 ++nParams;
@@ -3890,6 +4145,18 @@ void ProductModule::ensureSchema_() {
     // the SI base of that kind (factor). A parameter stores both the value the
     // user typed and `value_base`, the same value in base units — so comparison
     // is a plain numeric range on one column, across every prefix.
+    // value_numeric was numeric(24,9): nine decimal places, so a picofarad
+    // (1e-12) and a nanohenry (1e-9) rounded to zero on the way in no matter
+    // how carefully they were formatted. Widened once, guarded so a boot does
+    // not rewrite the table every time.
+    txn.exec(R"(DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name='part_parameter' AND column_name='value_numeric'
+                      AND numeric_scale < 20)
+        THEN ALTER TABLE part_parameter ALTER COLUMN value_numeric TYPE numeric(40,20);
+        END IF;
+    END $$;)");
+
     txn.exec("ALTER TABLE part_unit ADD COLUMN IF NOT EXISTS quantity_kind VARCHAR");
     txn.exec("ALTER TABLE part_unit ADD COLUMN IF NOT EXISTS factor DOUBLE PRECISION NOT NULL DEFAULT 1");
     txn.exec("ALTER TABLE part_unit ADD COLUMN IF NOT EXISTS is_base BOOLEAN NOT NULL DEFAULT FALSE");
@@ -4487,4 +4754,4 @@ void ProductModule::seedMenus_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::product
+} // namespace cerp::modules::product

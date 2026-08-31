@@ -14,8 +14,8 @@
 #include <string>
 #include <vector>
 
-using odoo::core::Money;
-using odoo::core::Currency;
+using cerp::core::Money;
+using cerp::core::Currency;
 using erptest::section;
 
 // Soft checks throughout: a money bug is usually systematic, so seeing all

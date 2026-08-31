@@ -9,7 +9,7 @@
 // ============================================================
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 struct UserContext {
     int              uid       = 0;   ///< res.users id  (0 = anonymous)
@@ -85,4 +85,4 @@ private:
     }
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

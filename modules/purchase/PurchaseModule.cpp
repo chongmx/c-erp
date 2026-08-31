@@ -37,10 +37,10 @@
 #include <sstream>
 #include <cmath>
 
-namespace odoo::modules::purchase {
+namespace cerp::modules::purchase {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 // ----------------------------------------------------------------
 // helpers
@@ -642,7 +642,7 @@ private:
         }
 
         for (int id : ids)
-            odoo::modules::mail::postLog(txn, "purchase.order", id, 0,
+            cerp::modules::mail::postLog(txn, "purchase.order", id, 0,
                 "Purchase order confirmed.", "log_note");
         txn.commit();
         if (AuditService::ready())
@@ -675,14 +675,14 @@ private:
             const std::string st = r[0][0].c_str();
             if (st == "cancel") continue;          // already cancelled: not an error
             if (st != "draft" && st != "purchase")
-                throw odoo::infrastructure::ValidationError(
+                throw cerp::infrastructure::ValidationError(
                     "An order in state '" + st + "' cannot be cancelled.");
             txn.exec("UPDATE purchase_order SET state = 'cancel', write_date = now() "
                      "WHERE id = $1", pqxx::params{id});
             cancelled.push_back(id);
         }
         for (int id : cancelled)
-            odoo::modules::mail::postLog(txn, "purchase.order", id, 0,
+            cerp::modules::mail::postLog(txn, "purchase.order", id, 0,
                 "Purchase order cancelled.", "log_note");
         txn.commit();
         if (AuditService::ready())
@@ -1017,7 +1017,7 @@ private:
                 "WHERE id = $1 AND invoice_status = 'nothing'",
                 pqxx::params{ordId});
 
-            odoo::modules::mail::postLog(txn, "purchase.order", ordId, 0,
+            cerp::modules::mail::postLog(txn, "purchase.order", ordId, 0,
                 "Down payment bill created: " + ref, "log_note");
         }
 
@@ -1338,4 +1338,4 @@ void PurchaseModule::seedMenus_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::purchase
+} // namespace cerp::modules::purchase

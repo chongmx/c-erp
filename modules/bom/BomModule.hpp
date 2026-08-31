@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::bom {
+namespace cerp::modules::bom {
 
 class BomModule : public core::IModule {
 public:
@@ -49,4 +49,4 @@ private:
     void seedMenus_();
 };
 
-} // namespace odoo::modules::bom
+} // namespace cerp::modules::bom

@@ -13,7 +13,7 @@
 #include <sstream>
 #include <iomanip>
 
-namespace odoo::modules::auth {
+namespace cerp::modules::auth {
 
 // ================================================================
 // Constructor
@@ -40,55 +40,42 @@ void AuthSignupModule::registerViews()      {}
 // ----------------------------------------------------------
 void AuthSignupModule::registerRoutes() {
     // --- POST /web/signup ---
+    //
+    // POLICY: self-registration is disabled. The ONLY way to create an account
+    // is for an administrator to add it (res.users create, admin-gated). This
+    // endpoint used to create a full internal user (share=false) for any
+    // stranger who could reach it — the widest possible door on the system —
+    // gated only by a config flag that defaulted to ON. It now refuses
+    // unconditionally, so the policy cannot be re-opened by a stale config row.
+    // The route stays registered so a stray client gets a clear 403 rather than
+    // a 404 that reads like a deployment fault.
     drogon::app().registerHandler("/web/signup",
-        [this](const drogon::HttpRequestPtr& req,
-               std::function<void(const drogon::HttpResponsePtr&)>&& cb)
+        [](const drogon::HttpRequestPtr& /*req*/,
+           std::function<void(const drogon::HttpResponsePtr&)>&& cb)
         {
             auto res = drogon::HttpResponse::newHttpResponse();
             res->addHeader("Content-Type",                "application/json");
             res->addHeader("Access-Control-Allow-Origin", "*");
-
-            try {
-                if (!configBool_("auth_signup.allow")) {
-                    res->setStatusCode(drogon::k403Forbidden);
-                    res->setBody(nlohmann::json{
-                        {"error", "Self-registration is disabled"}}.dump());
-                    cb(res); return;
-                }
-
-                const auto body = nlohmann::json::parse(req->body());
-                const std::string login    = body.value("login",    "");
-                const std::string password = body.value("password", "");
-                const std::string name     = body.value("name",     login);
-
-                if (login.empty() || password.empty()) {
-                    res->setStatusCode(drogon::k400BadRequest);
-                    res->setBody(nlohmann::json{
-                        {"error", "login and password are required"}}.dump());
-                    cb(res); return;
-                }
-
-                createUser_(login, password, name);
-
-                res->setStatusCode(drogon::k200OK);
-                res->setBody(nlohmann::json{
-                    {"result", {{"login", login}}}}.dump());
-            } catch (const odoo::infrastructure::PoolExhaustedException& e) {
-                LOG_ERROR << "[auth_signup/signup] pool: " << e.what();
-                res->setStatusCode(drogon::k503ServiceUnavailable);
-                res->setBody(nlohmann::json{
-                    {"error", "The server is temporarily overloaded. Please retry."}}.dump());
-            } catch (const std::exception& e) {
-                LOG_ERROR << "[auth_signup/signup] " << e.what();
-                res->setStatusCode(drogon::k500InternalServerError);
-                res->setBody(nlohmann::json{
-                    {"error", devMode_ ? e.what() : "Registration failed"}}.dump());
-            }
+            res->setStatusCode(drogon::k403Forbidden);
+            res->setBody(nlohmann::json{
+                {"error", "Self-registration is disabled. "
+                          "Ask an administrator to create your account."}}.dump());
             cb(res);
         },
         {drogon::Post});
 
     // --- POST /web/reset_password ---
+    //
+    // POLICY: there is NO self-service password reset. A user cannot request a
+    // token for their own login — that automated path (submit an email, receive
+    // a reset link) is exactly the flow this endpoint no longer offers. The
+    // ONLY reset is one an administrator issues deliberately, out of band:
+    // res.users.action_generate_reset_link mints a one-time, 24-hour token and
+    // returns a link the admin sends to the user by hand.
+    //
+    // This route therefore does only ONE thing: COMPLETE a reset with a token
+    // the admin already generated. A request with no token is refused. The
+    // token is still validated, single-use and time-boxed by completeReset_().
     drogon::app().registerHandler("/web/reset_password",
         [this](const drogon::HttpRequestPtr& req,
                std::function<void(const drogon::HttpResponsePtr&)>&& cb)
@@ -98,13 +85,6 @@ void AuthSignupModule::registerRoutes() {
             res->addHeader("Access-Control-Allow-Origin", "*");
 
             try {
-                if (!configBool_("auth_signup.reset_pwd")) {
-                    res->setStatusCode(drogon::k403Forbidden);
-                    res->setBody(nlohmann::json{
-                        {"error", "Password reset is disabled"}}.dump());
-                    cb(res); return;
-                }
-
                 const auto body  = nlohmann::json::parse(req->body());
                 const std::string login = body.value("login", "");
 
@@ -115,33 +95,39 @@ void AuthSignupModule::registerRoutes() {
                     cb(res); return;
                 }
 
-                // If "token" + "password" are provided, complete the reset
-                if (body.contains("token") && body.contains("password")) {
-                    const std::string token    = body["token"].get<std::string>();
-                    const std::string password = body["password"].get<std::string>();
-                    if (password.empty()) {
-                        res->setStatusCode(drogon::k400BadRequest);
-                        res->setBody(nlohmann::json{
-                            {"error", "password is required"}}.dump());
-                        cb(res); return;
-                    }
-                    completeReset_(login, token, password);
-                    res->setStatusCode(drogon::k200OK);
+                // A token + a new password COMPLETES an admin-issued reset.
+                // Anything else is a self-service request, which is refused.
+                if (!body.contains("token") || !body.contains("password")) {
+                    res->setStatusCode(drogon::k403Forbidden);
                     res->setBody(nlohmann::json{
-                        {"result", {{"login", login}}}}.dump());
+                        {"error", "Password resets are issued by an administrator. "
+                                  "Please contact them for a reset link."}}.dump());
                     cb(res); return;
                 }
 
-                // Otherwise, generate a token and return it (email stub)
-                const std::string token = generateToken_();
-                storeResetToken_(login, token);
-
+                const std::string token    = body["token"].get<std::string>();
+                const std::string password = body["password"].get<std::string>();
+                if (password.empty()) {
+                    res->setStatusCode(drogon::k400BadRequest);
+                    res->setBody(nlohmann::json{
+                        {"error", "password is required"}}.dump());
+                    cb(res); return;
+                }
+                // Same floor as the portal and the admin form: a valid token is
+                // not a licence to set a trivial password. Checked BEFORE the
+                // token is spent, so a too-short attempt does not burn the
+                // one-time token and lock the user out of their own reset.
+                if (password.size() < 8) {
+                    res->setStatusCode(drogon::k400BadRequest);
+                    res->setBody(nlohmann::json{
+                        {"error", "Password must be at least 8 characters"}}.dump());
+                    cb(res); return;
+                }
+                completeReset_(login, token, password);
                 res->setStatusCode(drogon::k200OK);
-                // In production, the token would be emailed.
-                // We return it here for testing/frontend development.
                 res->setBody(nlohmann::json{
-                    {"result", {{"token", token}, {"login", login}}}}.dump());
-            } catch (const odoo::infrastructure::PoolExhaustedException& e) {
+                    {"result", {{"login", login}}}}.dump());
+            } catch (const cerp::infrastructure::PoolExhaustedException& e) {
                 LOG_ERROR << "[auth_signup/reset_password] pool: " << e.what();
                 res->setStatusCode(drogon::k503ServiceUnavailable);
                 res->setBody(nlohmann::json{
@@ -333,4 +319,4 @@ std::string AuthSignupModule::generateToken_() {
     return oss.str();
 }
 
-} // namespace odoo::modules::auth
+} // namespace cerp::modules::auth

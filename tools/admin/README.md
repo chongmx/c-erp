@@ -1,7 +1,7 @@
 # ERP Admin Console (`erp-admin`)
 
 A **separate, loopback-only** administrative console for the IT operator — *not* the
-Odoo/OWL frontend, and *never* exposed to the public site. It manages the c-erp service,
+the reference ERP/OWL frontend, and *never* exposed to the public site. It manages the c-erp service,
 PostgreSQL databases (backup/restore), multi-company tenants, nginx and SSL, by shelling
 out to the system tools after allowlist-validating every identifier.
 

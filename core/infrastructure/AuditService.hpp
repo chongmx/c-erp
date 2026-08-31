@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 class DbConnection;  // forward declaration — keeps pqxx out of header (PERF-E)
 
@@ -62,4 +62,4 @@ private:
     static std::unique_ptr<AuditService> s_instance_;
 };
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

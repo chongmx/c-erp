@@ -1,5 +1,5 @@
 /**
- * app.js — IR-driven OWL application with Odoo 14-style navigation.
+ * app.js — IR-driven OWL application with the reference ERP-style navigation.
  *
  * Navigation flow:
  *   Home screen → click app tile → app context (horizontal nav)
@@ -668,7 +668,7 @@ class FormView extends Component {
             await this.syncO2mLines(this.state.record.id);
             this.props.onBack();
         } catch (e) {
-            if (e.type === 'odoo.exceptions.ConcurrencyConflict')
+            if (e.type === 'cerp.exceptions.ConcurrencyConflict')
                 this.state.conflictError = e.message;
             else
                 this.state.error = e.message;
@@ -1087,7 +1087,7 @@ class AuditLogPanel extends Component {
 }
 
 // ----------------------------------------------------------------
-// InvoiceFormView — Odoo 14-style Invoice (account.move) form
+// InvoiceFormView — the reference ERP-style Invoice (account.move) form
 // ----------------------------------------------------------------
 class InvoiceFormView extends Component {
     static components = { DatePicker, ChatterPanel, AttachmentPanel };
@@ -1946,7 +1946,7 @@ class InvoiceFormView extends Component {
 }
 
 // ----------------------------------------------------------------
-// SaleOrderFormView — Odoo 14-style Sales Order form
+// SaleOrderFormView — the reference ERP-style Sales Order form
 // ----------------------------------------------------------------
 class SaleOrderFormView extends Component {
     static components = { DatePicker, InvoiceFormView, ChatterPanel, AttachmentPanel };
@@ -2921,7 +2921,7 @@ class SaleOrderFormView extends Component {
 }
 
 // ----------------------------------------------------------------
-// PurchaseOrderFormView — Odoo 14-style Purchase Order form
+// PurchaseOrderFormView — the reference ERP-style Purchase Order form
 // ----------------------------------------------------------------
 class PurchaseOrderFormView extends Component {
     static components = { DatePicker, ChatterPanel, AttachmentPanel };
@@ -3591,7 +3591,7 @@ class PurchaseOrderFormView extends Component {
 }
 
 // ----------------------------------------------------------------
-// TransferFormView — stock.picking detail (Odoo 14-style)
+// TransferFormView — stock.picking detail (the reference ERP-style)
 // ----------------------------------------------------------------
 class TransferFormView extends Component {
     static components = { DatePicker, ChatterPanel, AttachmentPanel };
@@ -4302,7 +4302,7 @@ class TransferFormView extends Component {
 }
 
 // ----------------------------------------------------------------
-// ProductFormView — product.product detail (Odoo 17-style)
+// ProductFormView — product.product detail (the reference ERP 17-style)
 // ----------------------------------------------------------------
 class ProductFormView extends Component {
     static components = { ChatterPanel, AttachmentPanel };
@@ -9470,11 +9470,34 @@ class UserFormView extends Component {
                 <button class="btn" t-on-click="onBack">&#8592; Users</button>
                 <span class="so-ref" t-esc="state.record.login || 'New User'"/>
                 <div style="flex:1"/>
+                <t t-if="props.recordId">
+                    <button class="btn" t-on-click="onGenerateResetLink"
+                            t-att-disabled="state.linking"
+                            title="Create a one-time link this user can open to set their own password">
+                        <t t-if="state.linking">Generating…</t><t t-else="">Generate reset link</t>
+                    </button>
+                </t>
                 <button class="btn btn-primary" t-on-click="onSave" t-att-disabled="state.saving">
                     <t t-if="state.saving">Saving…</t><t t-else="">Save</t>
                 </button>
                 <button class="btn" t-on-click="onDiscard">Discard</button>
             </div>
+            <!-- Admin-issued reset link: shown after Generate, copied and sent by hand -->
+            <t t-if="state.resetLink">
+                <div class="alert alert-success" style="margin:12px 16px 0">
+                    <div style="font-weight:600;margin-bottom:6px">
+                        Reset link created — valid 24 hours, single use. Send it to the user; it is not emailed automatically.
+                    </div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <input class="field-input" style="flex:1;font-family:monospace;font-size:.8rem"
+                               readonly="readonly" t-att-value="state.resetLink"
+                               t-on-focus="ev => ev.target.select()"/>
+                        <button class="btn btn-sm" t-on-click="onCopyResetLink">
+                            <t t-esc="state.copied ? 'Copied' : 'Copy'"/>
+                        </button>
+                    </div>
+                </div>
+            </t>
             <t t-if="state.msg">
                 <div t-attf-class="alert {{state.msgType === 'error' ? 'alert-danger' : 'alert-success'}}"
                      style="margin:12px 16px 0">
@@ -9598,6 +9621,9 @@ class UserFormView extends Component {
             saving:         false,
             msg:            '',
             msgType:        'success',
+            linking:        false,   // generating a reset link
+            resetLink:      '',      // the generated link, shown for copy
+            copied:         false,
         });
         onMounted(async () => {
             const [partners, companies] = await Promise.all([
@@ -9688,6 +9714,40 @@ class UserFormView extends Component {
         if (this.props.recordId) this.loadRecord();
         else { this.state.record = { login:'', password:'', partner_id:0, company_id:0, active:true }; this.state.selectedGroups = {}; }
         this.state.msg = '';
+    }
+
+    // Ask the server to mint a one-time reset link for this user. The admin
+    // copies it and sends it to the user by hand — nothing is emailed, and the
+    // admin never has to know or type the user's new password.
+    async onGenerateResetLink() {
+        this.state.linking = true;
+        this.state.msg = '';
+        this.state.copied = false;
+        try {
+            const r = await RpcService.call('res.users', 'action_generate_reset_link',
+                [[this.props.recordId]], {});
+            this.state.resetLink = (r && r.reset_url) || '';
+            if (!this.state.resetLink) {
+                this.state.msg = 'Could not generate a reset link.'; this.state.msgType = 'error';
+            }
+        } catch (e) {
+            this.state.msg = e.message || 'Could not generate a reset link.';
+            this.state.msgType = 'error';
+        } finally {
+            this.state.linking = false;
+        }
+    }
+
+    async onCopyResetLink() {
+        try {
+            await navigator.clipboard.writeText(this.state.resetLink);
+            this.state.copied = true;
+            setTimeout(() => { this.state.copied = false; }, 2000);
+        } catch (e) {
+            // Clipboard API can be blocked (insecure context); the field is
+            // selectable, so the user can still copy manually.
+            this.state.copied = false;
+        }
     }
 
     onBack() { this.props.onBack(); }
@@ -11892,7 +11952,7 @@ class HomeScreen extends Component {
     static template = xml`
         <div class="home-screen">
             <div class="home-header">
-                <span class="home-title">odoo-cpp</span>
+                <span class="home-title">c-erp</span>
                 <UserMenu/>
             </div>
             <div class="app-grid">

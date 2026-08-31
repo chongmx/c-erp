@@ -130,7 +130,9 @@ curl -s "$BASE/src/components/RecordViews.js" | grep -q 'class GroupedListView' 
     && ok "RecordViews.js is served" || no "RecordViews.js not served"
 curl -s "$BASE/src/components/recordviews.css" | grep -q 'rv-kanban' \
     && ok "its stylesheet is served" || no "recordviews.css not served"
-curl -s "$BASE/" | grep -q 'RecordViews.js' \
+# The application shell moved from "/" to "/login" — "/" is the public
+# website now (docs/126).
+curl -s "$BASE/login" | grep -q 'RecordViews.js' \
     && ok "index.html loads it before app.js" || no "index.html does not load RecordViews.js"
 for c in GroupedListView KanbanView PivotView GraphView CalendarView; do
     curl -s "$BASE/src/app.js" | grep -q "$c" && ok "ActionView can render $c" || no "$c not registered in app.js"

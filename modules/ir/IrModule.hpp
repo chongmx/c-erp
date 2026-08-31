@@ -8,9 +8,9 @@
 #include <string>
 #include <vector>
 
-namespace odoo::infrastructure { class MigrationRunner; }
+namespace cerp::infrastructure { class MigrationRunner; }
 
-namespace odoo::modules::ir {
+namespace cerp::modules::ir {
 
 class IrModule : public core::IModule {
 public:
@@ -31,7 +31,7 @@ public:
     void registerViewModels() override;
     void registerRoutes()     override;
     void initialize()         override;
-    void registerMigrations(odoo::infrastructure::MigrationRunner& runner) override;
+    void registerMigrations(cerp::infrastructure::MigrationRunner& runner) override;
 
 private:
     core::ModelFactory&     models_;
@@ -49,4 +49,4 @@ private:
     static std::vector<std::string> splitFields_(const std::string& csv);
 };
 
-} // namespace odoo::modules::ir
+} // namespace cerp::modules::ir

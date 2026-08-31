@@ -18,10 +18,10 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::help {
+namespace cerp::modules::help {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 static int m2oId(const nlohmann::json& v) {
     if (v.is_number_integer()) return v.get<int>();
@@ -494,4 +494,4 @@ void HelpModule::seedMenus_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::help
+} // namespace cerp::modules::help

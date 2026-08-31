@@ -19,9 +19,9 @@
 #include <string>
 #include <pqxx/pqxx>
 
-namespace odoo::infrastructure { class DbConnection; }
+namespace cerp::infrastructure { class DbConnection; }
 
-namespace odoo::core {
+namespace cerp::core {
 
 struct CompanyIdentity {
     int         id = 0;
@@ -62,4 +62,4 @@ struct CompanyIdentity {
  */
 int backfillCompanyIds(infrastructure::DbConnection& db);
 
-} // namespace odoo::core
+} // namespace cerp::core

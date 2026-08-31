@@ -14,7 +14,7 @@ source tests/lib/harness.sh
 #   Currencies · Account Types · Fiscal Positions (+ tax mapping) ·
 #   Incoterms · Journal Groups
 #
-# These are the remaining Odoo Configuration dropdown entries. They render in
+# These are the remaining the reference ERP Configuration dropdown entries. They render in
 # the generic form, so the contract to guard is: the menu resolves to the right
 # model, the seeded reference lists are present, and each model round-trips a
 # create/read (no "Internal Error" on New).

@@ -9,7 +9,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
-namespace odoo::modules::account {
+namespace cerp::modules::account {
 
 // ================================================================
 // account.account
@@ -410,4 +410,4 @@ public:
     }
 };
 
-} // namespace odoo::modules::account
+} // namespace cerp::modules::account

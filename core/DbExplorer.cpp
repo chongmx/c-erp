@@ -14,12 +14,12 @@
 #include <string>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // Deliberate, user-facing refusals ("no such table", "one statement at a time")
 // travel as ValidationError, which the dispatcher passes through verbatim. Any
 // other exception is masked per SEC-28 — see handleDbTool_.
-using odoo::infrastructure::ValidationError;
+using cerp::infrastructure::ValidationError;
 
 namespace {
 
@@ -690,4 +690,4 @@ nlohmann::json DbExplorer::query(pqxx::transaction_base& txn, const nlohmann::js
     return out;
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

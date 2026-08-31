@@ -18,7 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 // ============================================================
 // AppConfig
@@ -56,7 +56,7 @@ struct AppConfig {
     std::string               controlDb; ///< control-plane identity DB (docs/072 Phase 2); "" = off
 
     /**
-     * @brief Build AppConfig from an INI-style config file (Odoo format).
+     * @brief Build AppConfig from an INI-style config file (the reference ERP format).
      *
      * Recognised keys under [options]:
      *   db_host, db_port, db_name, db_user, db_password, db_maxconn
@@ -168,7 +168,7 @@ public:
                 // A tenant whose database does not exist yet must not stop the
                 // whole server from starting. Warn and skip; run
                 // tools/provision_tenant.sh to create it.
-                std::cerr << "[odoo-cpp] WARNING: tenant '" << t.name
+                std::cerr << "[c-erp] WARNING: tenant '" << t.name
                           << "' could not be opened (" << ex.what()
                           << ") — skipping. Run tools/provision_tenant.sh first.\n";
             }
@@ -180,9 +180,9 @@ public:
             cc.name = cfg.controlDb;
             try {
                 core::ControlPlane::initialize(cc);
-                std::cout << "[odoo-cpp] Control plane ready (db '" << cfg.controlDb << "')\n";
+                std::cout << "[c-erp] Control plane ready (db '" << cfg.controlDb << "')\n";
             } catch (const std::exception& ex) {
-                std::cerr << "[odoo-cpp] WARNING: control-plane db '" << cfg.controlDb
+                std::cerr << "[c-erp] WARNING: control-plane db '" << cfg.controlDb
                           << "' unavailable (" << ex.what()
                           << ") — company switcher disabled.\n";
             }
@@ -717,10 +717,10 @@ inline AppConfig AppConfig::fromFile(const std::string& path) {
                             if (d.is_string()) tc.emailDomains.push_back(d.get<std::string>());
                     cfg.tenants.push_back(std::move(tc));
                 }
-                std::cout << "[odoo-cpp] Loaded " << cfg.tenants.size()
+                std::cout << "[c-erp] Loaded " << cfg.tenants.size()
                           << " tenant(s) from " << tpath << "\n";
             } catch (const std::exception& ex) {
-                std::cerr << "[odoo-cpp] WARNING: could not parse " << tpath
+                std::cerr << "[c-erp] WARNING: could not parse " << tpath
                           << ": " << ex.what() << "\n";
             }
         }
@@ -735,10 +735,10 @@ inline AppConfig AppConfig::fromFileOrEnv(const std::string& path) {
     std::ifstream probe(path);
     if (probe.is_open()) {
         probe.close();
-        std::cout << "[odoo-cpp] Loading config from " << path << "\n";
+        std::cout << "[c-erp] Loading config from " << path << "\n";
         return fromFile(path);
     }
-    std::cout << "[odoo-cpp] Config file not found (" << path << "), using environment variables.\n";
+    std::cout << "[c-erp] Config file not found (" << path << "), using environment variables.\n";
     return fromEnv();
 }
 
@@ -774,4 +774,4 @@ inline AppConfig AppConfig::fromEnv() {
     return cfg;
 }
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

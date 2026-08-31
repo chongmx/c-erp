@@ -17,6 +17,7 @@
 #include "modules/bom/BomModule.hpp"
 #include "modules/report/ReportModule.hpp"
 #include "modules/portal/PortalModule.hpp"
+#include "modules/website/WebsiteModule.hpp"
 #include "modules/rental/RentalModule.hpp"
 #include <csignal>
 #include <iostream>
@@ -25,10 +26,10 @@
 #include <cstdio>
 #include <exception>
 
-static std::shared_ptr<odoo::infrastructure::Container> g_container;
+static std::shared_ptr<cerp::infrastructure::Container> g_container;
 
 void handleSignal(int sig) {
-    std::cout << "\n[odoo-cpp] Shutting down (signal " << sig << ")...\n";
+    std::cout << "\n[c-erp] Shutting down (signal " << sig << ")...\n";
     if (g_container) g_container->shutdown();
 }
 
@@ -56,47 +57,48 @@ int main(int argc, char** argv) {
     std::signal(SIGINT,  handleSignal);
     std::signal(SIGTERM, handleSignal);
 
-    auto cfg = odoo::infrastructure::AppConfig::fromFileOrEnv(configPath);
+    auto cfg = cerp::infrastructure::AppConfig::fromFileOrEnv(configPath);
 
-    g_container = std::make_shared<odoo::infrastructure::Container>(cfg);
+    g_container = std::make_shared<cerp::infrastructure::Container>(cfg);
 
     // Register modules in dependency order
-    g_container->addModule<odoo::modules::base::BaseModule>();
-    g_container->addModule<odoo::modules::auth::AuthModule>();
-    g_container->addModule<odoo::modules::mail::MailModule>();
-    g_container->addModule<odoo::modules::ir::IrModule>();
-    g_container->addModule<odoo::modules::account::AccountModule>();
-    g_container->addModule<odoo::modules::uom::UomModule>();
-    g_container->addModule<odoo::modules::product::ProductModule>();
-    g_container->addModule<odoo::modules::sale::SaleModule>();
-    g_container->addModule<odoo::modules::purchase::PurchaseModule>();
-    g_container->addModule<odoo::modules::hr::HrModule>();
-    g_container->addModule<odoo::modules::auth::AuthSignupModule>();
-    g_container->addModule<odoo::modules::stock::StockModule>();
-    g_container->addModule<odoo::modules::mrp::MrpModule>();
-    g_container->addModule<odoo::modules::project::ProjectModule>();
-    g_container->addModule<odoo::modules::help::HelpModule>();
-    g_container->addModule<odoo::modules::bom::BomModule>();
-    g_container->addModule<odoo::modules::report::ReportModule>();
-    g_container->addModule<odoo::modules::portal::PortalModule>();
-    g_container->addModule<odoo::modules::rental::RentalModule>();
+    g_container->addModule<cerp::modules::base::BaseModule>();
+    g_container->addModule<cerp::modules::auth::AuthModule>();
+    g_container->addModule<cerp::modules::mail::MailModule>();
+    g_container->addModule<cerp::modules::ir::IrModule>();
+    g_container->addModule<cerp::modules::account::AccountModule>();
+    g_container->addModule<cerp::modules::uom::UomModule>();
+    g_container->addModule<cerp::modules::product::ProductModule>();
+    g_container->addModule<cerp::modules::sale::SaleModule>();
+    g_container->addModule<cerp::modules::purchase::PurchaseModule>();
+    g_container->addModule<cerp::modules::hr::HrModule>();
+    g_container->addModule<cerp::modules::auth::AuthSignupModule>();
+    g_container->addModule<cerp::modules::stock::StockModule>();
+    g_container->addModule<cerp::modules::mrp::MrpModule>();
+    g_container->addModule<cerp::modules::project::ProjectModule>();
+    g_container->addModule<cerp::modules::help::HelpModule>();
+    g_container->addModule<cerp::modules::bom::BomModule>();
+    g_container->addModule<cerp::modules::report::ReportModule>();
+    g_container->addModule<cerp::modules::portal::PortalModule>();
+    g_container->addModule<cerp::modules::rental::RentalModule>();
+    g_container->addModule<cerp::modules::website::WebsiteModule>();
 
     try {
-        std::cout << "[odoo-cpp] Booting modules...\n";
+        std::cout << "[c-erp] Booting modules...\n";
         g_container->boot();
         if (provisionOnly) {
-            std::cout << "[odoo-cpp] Provisioning + migration complete for all "
+            std::cout << "[c-erp] Provisioning + migration complete for all "
                          "tenants. Exiting (--provision).\n";
             return 0;
         }
-        std::cout << "[odoo-cpp] Listening on http://"
+        std::cout << "[c-erp] Listening on http://"
                   << cfg.http.host << ":" << cfg.http.port << "\n";
         g_container->run();
     } catch (const std::exception& e) {
-        std::cerr << "[odoo-cpp] Fatal: " << e.what() << "\n";
+        std::cerr << "[c-erp] Fatal: " << e.what() << "\n";
         return 1;
     }
 
-    std::cout << "[odoo-cpp] Goodbye.\n";
+    std::cout << "[c-erp] Goodbye.\n";
     return 0;
 }

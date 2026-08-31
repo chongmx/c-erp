@@ -2,7 +2,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // IService
@@ -83,4 +83,4 @@ public:
     }
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

@@ -4,9 +4,9 @@
 #include "MoneyMigrations.hpp"
 #include "infrastructure/MigrationRunner.hpp"
 
-namespace odoo::core {
+namespace cerp::core {
 
-using odoo::infrastructure::MigrationRunner;
+using cerp::infrastructure::MigrationRunner;
 
 namespace {
 
@@ -379,4 +379,4 @@ void registerMoneyMigrations(MigrationRunner& runner) {
     )"});
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

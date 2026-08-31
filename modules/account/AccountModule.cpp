@@ -30,7 +30,7 @@
 #include <cmath>
 #include <algorithm>
 
-namespace odoo::modules::account {
+namespace cerp::modules::account {
 
 // ================================================================
 // helpers
@@ -826,7 +826,7 @@ private:
                 "AND NOT EXISTS (SELECT 1 FROM account_analytic_line al WHERE al.move_line_id=aml.id)",
                 pqxx::params{id, date});
 
-            odoo::modules::mail::postLog(txn, "account.move", id, 0,
+            cerp::modules::mail::postLog(txn, "account.move", id, 0,
                 "Invoice posted.", "log_note");
         }
 
@@ -848,7 +848,7 @@ private:
             "WHERE id = ANY($1::int[]) AND state = 'posted'",
             pqxx::params{idsArray_(ids)});
         for (int id : ids)
-            odoo::modules::mail::postLog(txn, "account.move", id, 0,
+            cerp::modules::mail::postLog(txn, "account.move", id, 0,
                 "Invoice cancelled.", "log_note");
         txn.commit();
         if (infrastructure::AuditService::ready())
@@ -929,7 +929,7 @@ private:
                 "FROM account_move_line WHERE move_id=$1",
                 pqxx::params{id, newId, srcName});
 
-            odoo::modules::mail::postLog(txn, "account.move", newId, 0,
+            cerp::modules::mail::postLog(txn, "account.move", newId, 0,
                 "Credit note / refund created as a reversal of " + srcName + ".", "log_note");
             created.push_back(newId);
         }
@@ -1185,10 +1185,10 @@ private:
             std::string invState   = invRow[0]["state"].c_str();
             std::string payState   = invRow[0]["payment_state"].c_str();
             if (invState != "posted")
-                throw odoo::infrastructure::AccessDeniedError(
+                throw cerp::infrastructure::AccessDeniedError(
                     "Payment can only be registered on posted invoices");
             if (payState == "paid")
-                throw odoo::infrastructure::AccessDeniedError(
+                throw cerp::infrastructure::AccessDeniedError(
                     "Invoice is already fully paid");
 
             // P2: amount_residual is BIGINT micro-units (migration 911).
@@ -1408,7 +1408,7 @@ private:
                     // a negative fxDiff means less base landed than was booked;
                     // on a payment the sign flips.
                     const bool isLoss = isOutInvoice ? (fxMicros < 0) : (fxMicros > 0);
-                    odoo::modules::mail::postLog(
+                    cerp::modules::mail::postLog(
                         txn, "account.move", id, 0,
                         std::string("Realised FX ") + (isLoss ? "loss " : "gain ") +
                             core::Money::fromMicros(mag).toString(2) + " posted to 7900.",
@@ -1422,7 +1422,7 @@ private:
                    << "Payment of " << payAmount << " registered on " << payDate << ".";
             if (!memo.empty() && memo != invName)
                 logMsg << " Ref: " << memo;
-            odoo::modules::mail::postLog(txn, "account.move", id, 0, logMsg.str(), "log_note");
+            cerp::modules::mail::postLog(txn, "account.move", id, 0, logMsg.str(), "log_note");
 
             // Residual and payment_state are DERIVED from the allocation rows
             // by PaymentAllocation::refreshResidual, so they are read back
@@ -1456,7 +1456,7 @@ private:
             "WHERE id = ANY($1::int[]) AND state = 'cancel'",
             pqxx::params{idsArray_(ids)});
         for (int id : ids)
-            odoo::modules::mail::postLog(txn, "account.move", id, 0,
+            cerp::modules::mail::postLog(txn, "account.move", id, 0,
                 "Reset to draft.", "log_note");
         txn.commit();
         return true;
@@ -3727,4 +3727,4 @@ void AccountModule::seedMenus_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::account
+} // namespace cerp::modules::account

@@ -1,4 +1,4 @@
-/* app.css — global styles for the odoo-cpp OWL frontend */
+/* app.css — global styles for the c-erp OWL frontend */
 
 *, *::before, *::after { box-sizing: border-box; }
 
@@ -380,6 +380,28 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
     font-size: .85rem;
     margin-bottom: 16px;
 }
+
+.login-ok {
+    background: rgba(34,168,102,.12);
+    border: 1px solid rgba(34,168,102,.3);
+    color: var(--ok, #1a8a54);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: .85rem;
+    margin-bottom: 16px;
+}
+
+.login-link {
+    width: 100%;
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: .82rem;
+    margin-top: 10px;
+    cursor: pointer;
+    text-decoration: underline;
+}
+.login-link:hover { color: var(--text, #1a1a1a); }
 
 .form-group { margin-bottom: 16px; }
 
@@ -2731,3 +2753,67 @@ body.ct-resizing { cursor:col-resize; user-select:none; }
 .ai-error { margin-top: 12px; padding: 9px 12px; border-radius: 5px;
             background: rgba(244,71,71,.15); color: var(--err); font-size: 13px; }
 .ai-note { color: var(--muted); font-size: 13px; }
+
+/* ---- prompt management ----
+   The prompts ship as git-tracked files; this screen edits an override. The
+   badge on each task says which of the two is actually being sent, because
+   that is the first question when an answer looks wrong. */
+.ai-tasks { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 12px; }
+.ai-task {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 7px 11px; cursor: pointer; font: inherit; font-size: 13px;
+}
+.ai-task:hover  { border-color: var(--accent); }
+.ai-task.active { border-color: var(--accent); background: var(--surface); }
+.ai-task-n { font-weight: 600; }
+.ai-src {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+    padding: 2px 6px; border-radius: 9px; font-weight: 600;
+}
+.ai-src.file     { background: rgba(78,201,176,.14); color: var(--ok, #4ec9b0); }
+.ai-src.override { background: rgba(215,153,33,.17); color: var(--warn, #d79921); }
+.ai-src.compiled { background: rgba(251,73,52,.15);  color: var(--danger, #fb4934); }
+
+.ai-note.warn { color: var(--warn, #d79921); }
+.ai-note.bad  { color: var(--danger, #fb4934); }
+
+.ai-ph { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0 6px; }
+.ai-ph .ai-muted { font-size: 12px; }
+.ai-chip {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 2px 7px; font-size: 12px; color: var(--muted);
+}
+/* A required placeholder is the difference between a prompt and a prompt that
+   asks about nothing, so it does not look like the optional ones. */
+.ai-chip.req { color: var(--accent); border-color: var(--accent); }
+
+.ai-prompt {
+    width: 100%; box-sizing: border-box; min-height: 320px; resize: vertical;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 12px; margin-top: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px; line-height: 1.5; white-space: pre;
+}
+.ai-prompt:focus { outline: none; border-color: var(--accent); }
+
+/* The workspace id is a long opaque identifier, so it gets a full row and a
+   width that actually fits one. `.ai-input` is flex-sized for the key form and
+   was being squeezed into a grid cell where the value ran past the edge. */
+.ai-ws { flex: 1 1 420px; min-width: 260px; max-width: 560px; box-sizing: border-box;
+         padding: 7px 10px; border: 1px solid var(--border); border-radius: 5px;
+         background: var(--bg); color: var(--text);
+         font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.ai-ws::placeholder { color: var(--muted); }
+.ai-ws:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.ai-help code { font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+                background: var(--bg); padding: 1px 5px; border-radius: 3px; }
+
+/* The model id is free text now (provider-specific), so it needs room. */
+.ai-num.wide { width: 100%; box-sizing: border-box;
+               font-family: ui-monospace, Consolas, monospace; }
+/* Line the checkbox up with the other controls in the grid instead of letting
+   it float against the top of a taller cell. */
+.ai-field input[type="checkbox"] { width: 16px; height: 16px; margin: 6px 0 0; }

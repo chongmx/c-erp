@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 class CacheInvalidation {
 public:
@@ -53,4 +53,4 @@ private:
     }
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

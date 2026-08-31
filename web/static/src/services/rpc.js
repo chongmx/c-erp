@@ -1,5 +1,5 @@
 /**
- * rpc.js — JSON-RPC 2.0 + session management for odoo-cpp.
+ * rpc.js — JSON-RPC 2.0 + session management for c-erp.
  */
 const RpcService = (() => {
     let _id = 1;

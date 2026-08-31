@@ -5,7 +5,7 @@
 #include <memory>
 #include <string>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // BaseService
@@ -49,4 +49,4 @@ protected:
     std::shared_ptr<infrastructure::DbConnection> db_;
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

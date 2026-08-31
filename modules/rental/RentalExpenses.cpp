@@ -15,10 +15,10 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 namespace {
 
@@ -177,4 +177,4 @@ void RentalExpenses::registerCron(std::shared_ptr<DbConnection> db) {
     });
 }
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

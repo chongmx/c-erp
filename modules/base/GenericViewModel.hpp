@@ -30,7 +30,7 @@
 #include <memory>
 #include <string>
 
-namespace odoo::core {
+namespace cerp::core {
 
 template<typename TModel>
 class GenericViewModel : public BaseViewModel {
@@ -111,7 +111,7 @@ protected:
     /**
      * docs/095 — grouped aggregation.
      *
-     * Odoo's call shape is read_group(domain, fields, groupby, ...), passed
+     * the reference ERP's call shape is read_group(domain, fields, groupby, ...), passed
      * positionally in args, but the OWL client also sends the same three in
      * kwargs. Both are accepted here because both turn up in practice and a
      * silently-empty group list is a miserable thing to debug.
@@ -161,4 +161,4 @@ protected:
     }
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

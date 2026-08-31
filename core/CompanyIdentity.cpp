@@ -6,7 +6,7 @@
 #include <drogon/drogon.h>
 #include <set>
 
-namespace odoo::core {
+namespace cerp::core {
 namespace {
 
 std::string s_(const pqxx::field& f) {
@@ -141,4 +141,4 @@ int backfillCompanyIds(infrastructure::DbConnection& db) {
     return touched;
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

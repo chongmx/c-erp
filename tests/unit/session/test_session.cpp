@@ -18,7 +18,7 @@
 #include <cstdio>
 #include <thread>
 
-using namespace odoo::infrastructure;
+using namespace cerp::infrastructure;
 
 static void check(bool cond, const char* what) {
     erptest::check(cond, what);

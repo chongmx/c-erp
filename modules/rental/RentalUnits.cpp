@@ -6,7 +6,7 @@
 
 #include <pqxx/pqxx>
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
 std::string RentalUnits::stateOf(pqxx::transaction_base& txn, int unitId) {
     auto r = txn.exec("SELECT state FROM rental_unit WHERE id = $1",
@@ -104,4 +104,4 @@ void RentalUnits::closeMaintenance(pqxx::transaction_base& txn, int unitId,
                        nlohmann::json{{"to", after}});
 }
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

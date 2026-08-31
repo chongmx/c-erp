@@ -26,7 +26,7 @@
 #include <sstream>
 #include <fstream>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 // ============================================================
 // LoginRateLimiter
@@ -111,14 +111,14 @@ private:
 // JsonRpcDispatcher
 // ============================================================
 /**
- * @brief Routes Odoo JSON-RPC 2.0 requests to the correct ViewModel.
+ * @brief Routes the reference ERP JSON-RPC 2.0 requests to the correct ViewModel.
  *
  * Mounts four routes on HttpServer that the OWL/JS frontend uses:
  *   POST /web/dataset/call_kw          — standard model method calls
  *   POST /web/dataset/call             — legacy alias
  *   POST /web/dataset/fields_get       — fields_get shortcut
  *   GET  /web/session/get_session_info — session introspection
- *   POST /web/session/authenticate     — direct login endpoint (Odoo 19)
+ *   POST /web/session/authenticate     — direct login endpoint (the reference ERP)
  *
  * Session cookie:
  *   Resolved from Cookie header on every request.
@@ -202,7 +202,7 @@ public:
                 return handleGetSessionInfo_(req);
             });
 
-        // Direct authenticate endpoint (Odoo 19 webclient uses this)
+        // Direct authenticate endpoint (the reference ERP webclient uses this)
         http.addJsonPostWithResponse("/web/session/authenticate",
             [this](const HttpRequestPtr& req,
                    const nlohmann::json& body,
@@ -316,7 +316,7 @@ public:
 
     // ── docs/095: grouped aggregation for every model ─────────────
     //
-    // Odoo's call is read_group(domain, fields, groupby) positionally, but the
+    // the reference ERP's call is read_group(domain, fields, groupby) positionally, but the
     // OWL client also sends the same three as kwargs. Both are accepted — both
     // occur in practice, and a silently empty group list is a miserable thing
     // to chase down.
@@ -814,7 +814,7 @@ public:
             pqxx::work txn{conn.get()};
             auto r = txn.exec("SELECT password FROM res_users WHERE id=$1", pqxx::params{s.uid});
             if (r.empty() || r[0][0].is_null()) return false;
-            return odoo::modules::auth::AuthService::verifyPassword(password, r[0][0].c_str());
+            return cerp::modules::auth::AuthService::verifyPassword(password, r[0][0].c_str());
         } catch (...) { return false; }
     }
     void dbAudit_(const Session& s, const std::string& op) {
@@ -1434,12 +1434,12 @@ private:
             // they bypass the devMode gate like AccessDeniedError. Reported as 400:
             // the request was understood but is not allowed to succeed.
             return errorResponse_(id, 400, "Validation Error", e.what(),
-                                  "odoo.exceptions.ValidationError");
+                                  "cerp.exceptions.ValidationError");
         } catch (const ConcurrencyConflictException& e) {
             // OCC: another user saved first — return 409 with a distinguishable name
             // so the frontend can show a conflict banner instead of a generic error toast
             return errorResponse_(id, 409, "Conflict", e.what(),
-                                  "odoo.exceptions.ConcurrencyConflict");
+                                  "cerp.exceptions.ConcurrencyConflict");
         } catch (const PoolExhaustedException& e) {
             // PERF-C: pool exhausted — return 503 so load balancers can route elsewhere
             LOG_ERROR << "[rpc] pool exhausted: " << e.what();
@@ -1452,7 +1452,7 @@ private:
         } catch (const std::exception& e) {
             // SEC-25: gate internal details (SQL errors, stack traces) behind devMode
             LOG_ERROR << "[rpc] " << e.what();
-            return errorResponse_(id, 200, "Odoo Server Error",
+            return errorResponse_(id, 200, "the reference ERP Server Error",
                                   devMode_ ? e.what() : "An internal error occurred");
         }
     }
@@ -1463,8 +1463,8 @@ private:
 
         nlohmann::json info = session.toJson();
 
-        // Standard Odoo session_info fields expected by the webclient
-        info["server_version"]   = "19.0+e (odoo-cpp)";
+        // Standard the reference ERP session_info fields expected by the webclient
+        info["server_version"]   = "19.0+e (c-erp)";
         info["is_public"]        = !session.isAuthenticated();
         info["is_internal_user"] = session.isAuthenticated() && session.hasGroup(2);
         info["username"]         = session.login;
@@ -1767,7 +1767,7 @@ private:
                                           int                    code,
                                           const std::string&     message,
                                           const std::string&     detail = "",
-                                          const std::string&     name   = "odoo.exceptions.UserError") {
+                                          const std::string&     name   = "cerp.exceptions.UserError") {
         return {
             {"jsonrpc","2.0"}, {"id",id},
             {"error", {
@@ -1907,7 +1907,7 @@ private:
 
         } catch (const std::exception& e) {
             LOG_ERROR << "[rpc/action_load] " << e.what();
-            return errorResponse_(id, 200, "Odoo Server Error",
+            return errorResponse_(id, 200, "the reference ERP Server Error",
                                   devMode_ ? e.what() : "An internal error occurred");
         }
     }
@@ -1980,4 +1980,4 @@ private:
     TtlCache<std::string, nlohmann::json>   fieldsGetCache_;  // 300 s TTL — keyed by model name
 };
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

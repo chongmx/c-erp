@@ -19,10 +19,10 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::mrp {
+namespace cerp::modules::mrp {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 // ── helpers ─────────────────────────────────────────────────
 static int mrpM2oId(const nlohmann::json& v) {
@@ -225,7 +225,7 @@ public:
 
 // ----------------------------------------------------------------
 // MrpRoutingWorkcenter — mrp.routing.workcenter (a BOM operation)
-// Odoo 14 attaches operations directly to the BOM; there is no
+// the reference ERP attaches operations directly to the BOM; there is no
 // standalone routing model. Each row is one step, on one work center.
 // ----------------------------------------------------------------
 class MrpRoutingWorkcenter : public BaseModel<MrpRoutingWorkcenter> {
@@ -2009,4 +2009,4 @@ void MrpModule::seedMenus_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::mrp
+} // namespace cerp::modules::mrp

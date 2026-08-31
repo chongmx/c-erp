@@ -16,10 +16,10 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::project {
+namespace cerp::modules::project {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 // ── helpers ─────────────────────────────────────────────────
 static int m2oId(const nlohmann::json& v) {
@@ -1030,4 +1030,4 @@ void ProjectModule::seedMenus_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::project
+} // namespace cerp::modules::project

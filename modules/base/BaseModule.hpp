@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::base {
+namespace cerp::modules::base {
 
 // ================================================================
 // 5. MODULE
@@ -31,7 +31,7 @@ public:
     void registerViews()      override;
     void registerViewModels() override;
     void registerRoutes()     override;
-    void registerMigrations(odoo::infrastructure::MigrationRunner&) override;
+    void registerMigrations(cerp::infrastructure::MigrationRunner&) override;
     void initialize()         override;
 
 private:
@@ -46,4 +46,4 @@ private:
     void seedCountries_();
 };
 
-} // namespace odoo::modules::base
+} // namespace cerp::modules::base

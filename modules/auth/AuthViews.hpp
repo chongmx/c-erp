@@ -3,7 +3,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
-namespace odoo::modules::auth {
+namespace cerp::modules::auth {
 
 // ================================================================
 // UsersFormView — res.users.form
@@ -164,4 +164,4 @@ public:
     }
 };
 
-} // namespace odoo::modules::auth
+} // namespace cerp::modules::auth

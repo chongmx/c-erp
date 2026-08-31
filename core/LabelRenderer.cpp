@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <algorithm>
 
-namespace odoo::core {
+namespace cerp::core {
 
 using qrcodegen::QrCode;
 
@@ -214,4 +214,4 @@ std::string renderLabelSheetHtml(const std::vector<LabelSpec>& labels,
     return os.str();
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

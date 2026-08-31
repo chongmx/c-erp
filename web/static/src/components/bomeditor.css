@@ -195,6 +195,72 @@ table.be-table td { padding: 5px 10px; border-bottom: 1px solid var(--border); v
 .be-srow-i { margin-top: 5px; display: flex; flex-direction: column; gap: 4px; }
 .be-ai-act { display: flex; gap: 8px; margin-top: 12px; }
 
+/* ---- column mapping ----
+   Shown before anything is parsed, never applied silently: it is a guess
+   about somebody's column layout, cheap to check here and expensive to
+   unpick once the lines are in. */
+.be-map {
+    margin-top: 12px; padding: 10px; border-radius: 6px;
+    background: var(--bg); border: 1px solid var(--border);
+}
+.be-map-h {
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--warn, #d79921); font-weight: 600; margin-bottom: 8px;
+}
+.be-map-note {
+    font-size: .78rem; color: var(--muted); line-height: 1.5; margin-bottom: 8px;
+}
+.be-map-grid {
+    display: grid; grid-template-columns: max-content 1fr;
+    gap: 6px 10px; align-items: center; margin: 8px 0;
+}
+.be-map-grid > label { color: var(--muted); font-size: .78rem; }
+.be-map-grid select {
+    width: 100%; box-sizing: border-box; min-width: 0;
+    background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 4px 7px; font-family: inherit; font-size: .8rem;
+}
+/* Getting this backwards populates exactly the parts meant to be left off,
+   so it reads as a sentence rather than a checkbox labelled "negated". */
+.be-map-neg {
+    display: flex; align-items: center; gap: 7px; margin-top: 8px;
+    font-size: .79rem; color: var(--text);
+}
+
+/* ---- tidy up ----
+   A proposed bulk rewrite, shown as a diff. Applied only on request: a bulk
+   change nobody reads is a bulk change nobody can undo. */
+.be-tidy {
+    margin: 10px 0; padding: 10px; border-radius: 6px;
+    background: var(--bg); border: 1px solid var(--border);
+}
+.be-tidy-h { font-size: .82rem; color: var(--text); margin-bottom: 6px; }
+.be-tidy-list { max-height: 220px; overflow-y: auto; margin: 8px 0; }
+.be-tidy-row {
+    display: grid; grid-template-columns: minmax(60px,1fr) 84px 1fr 1fr;
+    gap: 8px; align-items: baseline;
+    padding: 3px 0; font-size: .76rem; border-top: 1px solid var(--border);
+}
+.be-tidy-row:first-child { border-top: none; }
+.be-tidy-f { color: var(--muted); font-size: .72rem; text-transform: uppercase;
+             letter-spacing: .04em; }
+/* Before struck through, after in the accent: the direction of the change has
+   to be readable without reading the header. */
+.be-tidy-b { color: var(--muted); text-decoration: line-through; word-break: break-all; }
+.be-tidy-a { color: var(--accent); word-break: break-all; }
+
+/* ---- draft banner ----
+   A staged import already survived leaving the screen; this is what says so. */
+.be-draft {
+    margin-bottom: 10px; padding: 8px 10px; border-radius: 5px;
+    font-size: .78rem; line-height: 1.5; color: var(--text);
+    background: rgba(78,201,176,.08); border: 1px solid rgba(78,201,176,.3);
+}
+.be-draft.stale {
+    background: rgba(215,153,33,.1); border-color: rgba(215,153,33,.36);
+}
+
 /* ---- picker ---- */
 .be-modal {
     position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 50;

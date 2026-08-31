@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::purchase {
+namespace cerp::modules::purchase {
 
 class PurchaseModule : public core::IModule {
 public:
@@ -40,4 +40,4 @@ private:
     void seedMenus_();
 };
 
-} // namespace odoo::modules::purchase
+} // namespace cerp::modules::purchase

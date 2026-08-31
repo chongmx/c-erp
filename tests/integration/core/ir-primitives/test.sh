@@ -153,7 +153,7 @@ echo
 echo "############ cleanup ############"
 pg "DELETE FROM ir_model_data WHERE module='irptest'" >/dev/null
 # Remove the filestore blobs these uploads created. Blob reclamation is a
-# periodic sweep in production (Odoo does the same — dedup makes
+# periodic sweep in production (the reference ERP does the same — dedup makes
 # per-unlink refcounting racy), so deleting the rows does NOT remove the
 # bytes; the test cleans them explicitly.
 for sf in "$SF" "$SF2"; do

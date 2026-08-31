@@ -169,7 +169,7 @@ success "Privileges granted."
 # Write to the real user's .bashrc even when running under sudo
 REAL_HOME=$(getent passwd "${SUDO_USER:-$USER}" | cut -d: -f6)
 BASHRC="${REAL_HOME}/.bashrc"
-AUTOSTART_MARKER="# odoo-cpp: auto-start postgresql"
+AUTOSTART_MARKER="# c-erp: auto-start postgresql"
 
 if ! grep -q "${AUTOSTART_MARKER}" "${BASHRC}" 2>/dev/null; then
     info "Adding PostgreSQL auto-start to ${BASHRC}..."

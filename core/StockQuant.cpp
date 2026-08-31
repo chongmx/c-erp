@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // Add `deltaMicros` (may be negative) to the quant at (product, location, lot),
 // creating the row if absent. company_id 0 is stored as NULL (no FK target).
@@ -330,4 +330,4 @@ long long StockQuant::onHandInternal(pqxx::transaction_base& txn, int productId)
     return r.empty() ? 0 : r[0][0].as<long long>(0);
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

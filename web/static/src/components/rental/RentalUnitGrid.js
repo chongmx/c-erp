@@ -256,7 +256,7 @@ class RentalUnitGrid extends owl.Component {
     ariaFor(u)    { return `Unit ${u.code}, ${this.stateDef(u).label}`; }
 
     /**
-     * A many2one arrives as a BARE ID from this backend, not as Odoo's
+     * A many2one arrives as a BARE ID from this backend, not as the reference ERP's
      * [id, label] pair — see formatCell() in app.js, which copes with
      * both. Assuming the pair here rendered a blank Type column and
      * silently broke the type filter, with no error anywhere.

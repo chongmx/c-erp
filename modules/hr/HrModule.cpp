@@ -2,6 +2,10 @@
 // modules/hr/HrModule.cpp  — full implementation
 // =============================================================
 #include "HrModule.hpp"
+#include "HrAttendance.hpp"
+#include "HrLeave.hpp"
+#include "HrKiosk.hpp"
+#include "Errors.hpp"
 #include "IModule.hpp"
 #include "Factories.hpp"
 #include "BaseModel.hpp"
@@ -18,10 +22,10 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::hr {
+namespace cerp::modules::hr {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 // ----------------------------------------------------------------
 // helper
@@ -792,6 +796,78 @@ private:
     }
 };
 
+// hr.employee — plus kiosk PIN management (docs/113 §3a).
+//
+// The PIN is write-only from the outside: an admin can SET one and CLEAR one,
+// and nothing returns it or its hash. `has_pin` is the only readable fact,
+// because the screen has to show whether a PIN exists without showing what it
+// is.
+class HrEmployeeViewModel : public GenericViewModel<HrEmployee> {
+public:
+    explicit HrEmployeeViewModel(std::shared_ptr<DbConnection> db)
+        : GenericViewModel<HrEmployee>(std::move(db))
+    {
+        REGISTER_METHOD("set_pin",   handleSetPin)
+        REGISTER_METHOD("clear_pin", handleClearPin)
+        REGISTER_METHOD("has_pin",   handleHasPin)
+    }
+    std::string modelName() const override { return "hr.employee"; }
+
+private:
+    nlohmann::json handleSetPin(const core::CallKwArgs& call) {
+        const auto ids = call.ids();
+        if (ids.empty()) throw ValidationError("set_pin: no employee given.");
+        const std::string pin = call.kwargs.value("pin", std::string{});
+
+        // A 4-digit PIN is already a small secret; anything shorter is not one
+        // at all. The kiosk's rate limiter is what makes 4 digits defensible,
+        // so the floor here and the limiter there are a pair.
+        if (pin.size() < 4)
+            throw ValidationError("A PIN must be at least 4 digits.");
+        if (pin.size() > 32)
+            throw ValidationError("That PIN is too long.");
+        for (char c : pin)
+            if (c < '0' || c > '9')
+                throw ValidationError("A PIN must be digits only.");
+
+        const std::string hash = HrKiosk::hashPin(pin);
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        for (int id : ids)
+            txn.exec("UPDATE hr_employee SET pin_hash=$2, write_date=now() WHERE id=$1",
+                     pqxx::params{id, hash});
+        txn.commit();
+        return true;
+    }
+
+    nlohmann::json handleClearPin(const core::CallKwArgs& call) {
+        const auto ids = call.ids();
+        if (ids.empty()) throw ValidationError("clear_pin: no employee given.");
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        for (int id : ids)
+            txn.exec("UPDATE hr_employee SET pin_hash=NULL, write_date=now() WHERE id=$1",
+                     pqxx::params{id});
+        txn.commit();
+        return true;
+    }
+
+    // Whether a PIN exists — never the PIN, never the hash.
+    nlohmann::json handleHasPin(const core::CallKwArgs& call) {
+        const auto ids = call.ids();
+        if (ids.empty()) throw ValidationError("has_pin: no employee given.");
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        nlohmann::json out = nlohmann::json::object();
+        for (int id : ids) {
+            auto r = txn.exec("SELECT (pin_hash IS NOT NULL) FROM hr_employee WHERE id=$1",
+                              pqxx::params{id});
+            out[std::to_string(id)] = !r.empty() && r[0][0].as<bool>(false);
+        }
+        return out;
+    }
+};
+
 // hr.expense.sheet — the approval and posting workflow.
 class HrExpenseSheetViewModel : public GenericViewModel<HrExpenseSheet> {
 public:
@@ -1149,10 +1225,19 @@ void HrModule::registerModels() {
     models_.registerCreator("hr.employee",       [db]{ return std::make_shared<HrEmployee>(db); });
     models_.registerCreator("hr.expense",        [db]{ return std::make_shared<HrExpense>(db); });
     models_.registerCreator("hr.expense.sheet",  [db]{ return std::make_shared<HrExpenseSheet>(db); });
+    // Attendance and time off live in their own translation units (docs/113).
+    HrAttendance::registerModels(models_, db);
+    HrLeave::registerModels(models_, db);
 }
 
 void HrModule::registerServices()   {}
-void HrModule::registerRoutes()     {}
+
+void HrModule::registerRoutes() {
+    // The staff kiosk (docs/113 §3a) — the only unauthenticated surface this
+    // module exposes, and deliberately capable of exactly one action.
+    HrKiosk::registerRoutes(services_.db(), services_.devMode(),
+                            services_.trustedProxies());
+}
 
 void HrModule::registerViews() {
     views_.registerView<ResourceCalendarListView>("resource.calendar.list");
@@ -1181,7 +1266,7 @@ void HrModule::registerViewModels() {
         return std::make_shared<GenericViewModel<HrJob>>(db);
     });
     viewModels_.registerCreator("hr.employee", [db]{
-        return std::make_shared<GenericViewModel<HrEmployee>>(db);
+        return std::make_shared<HrEmployeeViewModel>(db);
     });
     viewModels_.registerCreator("hr.expense", [db]{
         return std::make_shared<HrExpenseViewModel>(db);
@@ -1189,12 +1274,28 @@ void HrModule::registerViewModels() {
     viewModels_.registerCreator("hr.expense.sheet", [db]{
         return std::make_shared<HrExpenseSheetViewModel>(db);
     });
+    HrAttendance::registerViewModels(viewModels_, db);
+    HrLeave::registerViewModels(viewModels_, db);
 }
 
 void HrModule::initialize() {
     ensureSchema_();
     seedDefaults_();
     seedMenus_();
+
+    // Attendance and time off. One transaction each so a failure in one does
+    // not leave the other half-created; all three steps are idempotent.
+    {
+        auto conn = services_.db()->acquire();
+        pqxx::work txn{conn.get()};
+        HrAttendance::ensureSchema(txn);
+        HrLeave::ensureSchema(txn);
+        HrLeave::seedDefaults(txn);
+        HrKiosk::ensureSchema(txn);
+        HrAttendance::seedMenus(txn);
+        HrLeave::seedMenus(txn);
+        txn.commit();
+    }
 }
 
 void HrModule::ensureSchema_() {
@@ -1438,4 +1539,4 @@ void HrModule::seedMenus_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::hr
+} // namespace cerp::modules::hr

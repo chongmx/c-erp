@@ -41,10 +41,10 @@
 #include <cstdio>
 #include <set>
 
-namespace odoo::modules::report {
+namespace cerp::modules::report {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 // ================================================================
 // TemplateRenderer — static mustache-like template renderer
@@ -157,10 +157,10 @@ static std::string fmtMoney(double v) {
 static double reportMicros(const pqxx::field& f) {
     if (f.is_null()) return 0.0;
     try {
-        return odoo::core::Money::fromMicros(f.as<long long>(0)).toJson();
+        return cerp::core::Money::fromMicros(f.as<long long>(0)).toJson();
     } catch (...) {
         // ::TEXT-cast columns come through as a decimal string of micro-units
-        try { return odoo::core::Money::parse(f.c_str()).toJson(); }
+        try { return cerp::core::Money::parse(f.c_str()).toJson(); }
         catch (...) { return 0.0; }
     }
 }
@@ -836,7 +836,7 @@ private:
             ids.push_back(idArg.get<int>());
         }
         if (ids.empty())
-            throw odoo::infrastructure::ValidationError("No template selected to reset.");
+            throw cerp::infrastructure::ValidationError("No template selected to reset.");
 
         std::string inClause;
         for (size_t i = 0; i < ids.size(); ++i) {
@@ -851,7 +851,7 @@ private:
             "SELECT count(*) AS n FROM ir_report_template "
             "WHERE id IN (" + inClause + ") AND COALESCE(default_html,'') = ''");
         if (!missing.empty() && missing[0]["n"].as<int>(0) > 0)
-            throw odoo::infrastructure::ValidationError(
+            throw cerp::infrastructure::ValidationError(
                 "This template has no shipped default recorded yet — restart the server once so it can be captured.");
 
         auto res = txn.exec(
@@ -2686,4 +2686,4 @@ void ReportModule::seedConfigParams_extra_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::report
+} // namespace cerp::modules::report

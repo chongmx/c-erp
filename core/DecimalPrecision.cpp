@@ -7,7 +7,7 @@
 #include <pqxx/pqxx>
 #include <trantor/utils/Logger.h>
 
-namespace odoo::core {
+namespace cerp::core {
 
 std::once_flag                           DecimalPrecision::s_once_;
 std::unique_ptr<DecimalPrecision>        DecimalPrecision::s_instance_;
@@ -63,4 +63,4 @@ int DecimalPrecision::digits(const std::string& name, int fallback) const {
     return fallback;
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

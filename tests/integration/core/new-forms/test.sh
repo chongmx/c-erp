@@ -13,10 +13,10 @@ source tests/lib/harness.sh
 # Regression guard for the "New … → Internal Error" class of bugs.
 #
 # Clicking "New" on a list and then Create used to 500 for most models: a
-# missing required field surfaced as a raw "Odoo Server Error" (Internal Error)
+# missing required field surfaced as a raw "the reference ERP Server Error" (Internal Error)
 # instead of a user-facing message. The contract we assert here:
 #
-#   create() with an empty/partial body must NEVER return a 500 "Odoo Server
+#   create() with an empty/partial body must NEVER return a 500 "the reference ERP Server
 #   Error". It must return either a real id (success) or a 400 ValidationError
 #   whose data.message tells the user what is missing.
 #
@@ -49,10 +49,10 @@ newcheck() {
     if echo "$r" | grep -q '"result":[0-9]'; then
         CREATED="$CREATED $model:$(echo "$r" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
         ok "$model — create succeeded"
-    elif echo "$r" | grep -q '"name":"odoo.exceptions.ValidationError"'; then
+    elif echo "$r" | grep -q '"name":"cerp.exceptions.ValidationError"'; then
         local m=$(echo "$r" | sed -n 's/.*"data":{"message":"\([^"]*\)".*/\1/p')
         ok "$model — clean validation error ('${m}')"
-    elif echo "$r" | grep -q '"name":"odoo.exceptions.AccessError"'; then
+    elif echo "$r" | grep -q '"name":"cerp.exceptions.AccessError"'; then
         ok "$model — access-gated (not an Internal Error)"
     else
         no "$model — 500/Internal Error on create: $(echo "$r" | head -c 160)"

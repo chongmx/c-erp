@@ -45,7 +45,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 /// One tax as configured in account_tax.
 struct TaxDef {
@@ -96,4 +96,4 @@ public:
                                   int dp);
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

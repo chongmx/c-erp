@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::uom {
+namespace cerp::modules::uom {
 
 // ================================================================
 // MODULE
@@ -50,4 +50,4 @@ private:
     void seedMenus_();
 };
 
-} // namespace odoo::modules::uom
+} // namespace cerp::modules::uom

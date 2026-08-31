@@ -22,10 +22,10 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 namespace {
 
@@ -245,7 +245,7 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             mp.append(origin);
             if (contractId > 0) mp.append(contractId); else mp.append(nullptr);
 
-            // The column is `due_date`, not Odoo's `invoice_date_due`.
+            // The column is `due_date`, not the reference ERP's `invoice_date_due`.
             auto mv = txn.exec(
                 "INSERT INTO account_move "
                 "(name, move_type, state, date, invoice_date, due_date, "
@@ -472,4 +472,4 @@ void RentalBilling::registerCron(std::shared_ptr<DbConnection> db) {
     });
 }
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

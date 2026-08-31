@@ -19,7 +19,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 // ── SecureTempDir ─────────────────────────────────────────────
 
@@ -130,4 +130,4 @@ ProcessResult runProcess(const std::vector<std::string>& argv,
     return ProcessResult::Timeout;
 }
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

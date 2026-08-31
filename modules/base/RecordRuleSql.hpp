@@ -30,7 +30,7 @@
 #include <cctype>
 #include <string>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // Shift every $N placeholder in `sql` up by `offset` (so a self-contained
 // clause can be spliced after params that are already bound). The string is
@@ -80,4 +80,4 @@ inline int appendRecordRuleSubquery(std::string&       sql,
     return existingParamCount + static_cast<int>(res.params.size());
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

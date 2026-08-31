@@ -22,7 +22,7 @@
 #include <pqxx/pqxx>
 #include <string>
 
-namespace odoo::core {
+namespace cerp::core {
 
 class DbExplorer {
 public:
@@ -55,4 +55,4 @@ public:
     static bool isSecretColumn(const std::string& column);
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

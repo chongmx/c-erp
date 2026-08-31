@@ -22,10 +22,10 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::sale {
+namespace cerp::modules::sale {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 // ================================================================
 // MODULE
@@ -61,4 +61,4 @@ private:
     void seedMenus_();
 };
 
-} // namespace odoo::modules::sale
+} // namespace cerp::modules::sale

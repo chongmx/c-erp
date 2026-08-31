@@ -45,7 +45,7 @@
 #include <vector>
 #include <cmath>
 
-namespace odoo::modules::stock {
+namespace cerp::modules::stock {
 
 // Parses a Many2one field that may arrive as int, string "1", or [1,"Name"] array.
 static int parseM2o(const nlohmann::json& j, const std::string& key) {
@@ -57,8 +57,8 @@ static int parseM2o(const nlohmann::json& j, const std::string& key) {
     return 0;
 }
 
-using namespace odoo::core;
-using namespace odoo::infrastructure;
+using namespace cerp::core;
+using namespace cerp::infrastructure;
 
 // ================================================================
 // 1. MODELS
@@ -626,7 +626,7 @@ private:
                 "UPDATE stock_move SET state='confirmed' WHERE picking_id=$1 AND state='draft'",
                 pqxx::params{id});
 
-            odoo::modules::mail::postLog(txn, "stock.picking", id, 0,
+            cerp::modules::mail::postLog(txn, "stock.picking", id, 0,
                 "Transfer confirmed.", "log_note");
             txn.commit();
         }
@@ -765,11 +765,11 @@ private:
                 // which told the operator nothing about what to fix. The whole
                 // point of this check is that the message reaches them.
                 if ((track == "lot" || track == "serial") && lot <= 0)
-                    throw odoo::infrastructure::ValidationError(
+                    throw cerp::infrastructure::ValidationError(
                         "A lot/serial number is required for " +
                         std::string(m["product_name"].is_null() ? "this product" : m["product_name"].c_str()) + ".");
                 if (track == "serial" && done != 1000000)
-                    throw odoo::infrastructure::ValidationError(
+                    throw cerp::infrastructure::ValidationError(
                         "A serial-tracked move must be exactly one unit — split the operation.");
                 if (reserved > 0)
                     core::StockQuant::release(txn, prod, src, reserved, lot);
@@ -927,7 +927,7 @@ private:
                 }
             }
 
-            odoo::modules::mail::postLog(txn, "stock.picking", id, 0,
+            cerp::modules::mail::postLog(txn, "stock.picking", id, 0,
                 "Transfer validated.", "log_note");
             txn.commit();
         }
@@ -2597,7 +2597,7 @@ private:
             pickingId = v.get<int>();
         }
         if (pickingId <= 0)
-            throw odoo::infrastructure::ValidationError("put_in_pack: a transfer is required.");
+            throw cerp::infrastructure::ValidationError("put_in_pack: a transfer is required.");
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
@@ -2605,10 +2605,10 @@ private:
             "SELECT state, location_dest_id, company_id FROM stock_picking WHERE id=$1",
             pqxx::params{pickingId});
         if (pick.empty())
-            throw odoo::infrastructure::ValidationError("Transfer not found.");
+            throw cerp::infrastructure::ValidationError("Transfer not found.");
         const std::string st = pick[0]["state"].c_str();
         if (st == "done" || st == "cancel")
-            throw odoo::infrastructure::ValidationError(
+            throw cerp::infrastructure::ValidationError(
                 "A " + std::string(st == "done" ? "completed" : "cancelled") +
                 " transfer cannot be packed.");
 
@@ -2628,7 +2628,7 @@ private:
         }
         auto rows = txn.exec(sql, p);
         if (rows.empty())
-            throw odoo::infrastructure::ValidationError(
+            throw cerp::infrastructure::ValidationError(
                 "Nothing left to pack on this transfer — every operation is already in a package.");
 
         const int dest = pick[0]["location_dest_id"].is_null() ? 0 : pick[0]["location_dest_id"].as<int>();
@@ -2659,7 +2659,7 @@ private:
 
     nlohmann::json handleUnpack(const CallKwArgs& call) {
         const auto ids = call.ids();
-        if (ids.empty()) throw odoo::infrastructure::ValidationError("No package selected.");
+        if (ids.empty()) throw cerp::infrastructure::ValidationError("No package selected.");
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
         for (int id : ids) {
@@ -2667,7 +2667,7 @@ private:
                 "SELECT count(*) FROM stock_move WHERE result_package_id=$1 AND state='done'",
                 pqxx::params{id});
             if (!done.empty() && done[0][0].as<int>(0) > 0)
-                throw odoo::infrastructure::ValidationError(
+                throw cerp::infrastructure::ValidationError(
                     "This package has already shipped — it cannot be unpacked.");
             txn.exec("UPDATE stock_move SET result_package_id=NULL WHERE result_package_id=$1",
                      pqxx::params{id});
@@ -3306,4 +3306,4 @@ void StockModule::seedMenus_() {
 }
 
 void StockModule::registerRoutes()   {}
-} // namespace odoo::modules::stock
+} // namespace cerp::modules::stock

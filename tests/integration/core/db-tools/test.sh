@@ -195,7 +195,9 @@ curl -s "$BASE/src/components/DbStudio.js" | grep -q 'class DbStudio' \
     && ok "the component is served" || no "DbStudio.js not served"
 curl -s "$BASE/src/components/dbstudio.css" | grep -q 'db-studio' \
     && ok "so is its stylesheet" || no "dbstudio.css not served"
-curl -s "$BASE/" | grep -q 'DbStudio.js' \
+# The application shell moved from "/" to "/login" — "/" is the public
+# website now (docs/126).
+curl -s "$BASE/login" | grep -q 'DbStudio.js' \
     && ok "and index.html loads it" || no "index.html does not load DbStudio.js"
 
 if [ -n "$FAILED" ]; then echo; echo "*** FAILURES ***"; exit 1; fi

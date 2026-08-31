@@ -141,22 +141,61 @@ class HelpCenter extends owl.Component {
                         <span class="hc-rail-t" t-if="!state.rightCollapsed">Assistant</span>
                     </div>
                     <div class="hc-rail-b" t-if="!state.rightCollapsed">
-                        <div class="hc-ai-note">
-                            Not connected yet. When it is, answers will be drawn from these
-                            articles and cite the ones they came from.
+                        <!-- Not configured is a STATE, not an apology: it tells an
+                             admin exactly where to go and says nothing to anyone
+                             who cannot act on it. -->
+                        <div class="hc-ai-note" t-if="!state.aiReady">
+                            <t t-if="state.aiAdmin">
+                                No AI provider is set up yet.
+                                <button class="hc-link" t-on-click="openAiSettings">Configure it in
+                                    Settings → AI Agent</button>, then answers here will be drawn
+                                from these articles and cite the ones they came from.
+                            </t>
+                            <t t-else="">
+                                The help assistant is not switched on. An administrator can enable
+                                it in Settings → AI Agent.
+                            </t>
                         </div>
+
                         <div class="hc-ai-box">
-                            <textarea class="hc-ai-in" rows="3" disabled="disabled"
+                            <textarea class="hc-ai-in" rows="3" t-att-disabled="!state.aiReady or state.aiBusy"
+                                      t-att-value="state.aiQ"
+                                      t-on-input="ev => state.aiQ = ev.target.value"
+                                      t-on-keydown="onAskKey"
                                       placeholder="Ask a question about this screen…"/>
-                            <button class="hc-btn" disabled="disabled">Ask</button>
+                            <button class="hc-btn" t-on-click="askAi"
+                                    t-att-disabled="!state.aiReady or state.aiBusy or !state.aiQ.trim()">
+                                <t t-esc="state.aiBusy ? 'Thinking…' : 'Ask'"/>
+                            </button>
                         </div>
+
+                        <div class="hc-ai-err" t-if="state.aiError" t-esc="state.aiError"/>
+
+                        <div class="hc-ai-answer" t-if="state.aiAnswer">
+                            <div class="hc-ai-h">Answer</div>
+                            <div class="hc-ai-text" t-esc="state.aiAnswer"/>
+                            <div class="hc-ai-cited" t-if="state.aiCited.length">
+                                <div class="hc-ai-h">Drawn from</div>
+                                <t t-foreach="state.aiCited" t-as="c" t-key="c.slug">
+                                    <button class="hc-art" t-on-click="() => this.open(c.slug)"
+                                            t-esc="c.title"/>
+                                </t>
+                            </div>
+                            <!-- The provenance line is the point. An answer you cannot
+                                 check is an answer you have to take on trust. -->
+                            <div class="hc-ai-foot">
+                                Written by <t t-esc="state.aiModel || 'the assistant'"/> from the
+                                articles above. Open them if the answer matters.
+                            </div>
+                        </div>
+
                         <div class="hc-ai-rel" t-if="state.related.length">
                             <div class="hc-ai-h">Related articles</div>
                             <t t-foreach="state.related" t-as="r" t-key="r.slug">
                                 <button class="hc-art" t-on-click="() => this.open(r.slug)" t-esc="r.title"/>
                             </t>
                             <div class="hc-ai-foot">
-                                This is the same retrieval step the assistant will run before answering.
+                                This is the same retrieval step the assistant runs before answering.
                             </div>
                         </div>
                     </div>
@@ -174,6 +213,8 @@ class HelpCenter extends owl.Component {
             rightCollapsed: localStorage.getItem('hcRightC') === '1',
             canScrollL: false, canScrollR: false,
             loading: false, error: '',
+            aiReady: false, aiAdmin: false, aiBusy: false, aiQ: '',
+            aiAnswer: '', aiCited: [], aiModel: '', aiError: '',
         });
         // Bound once so the same reference can be removed on drag end.
         this._onMove = (ev) => this.onDrag(ev);
@@ -184,6 +225,15 @@ class HelpCenter extends owl.Component {
                 this.state.books = await RpcService.call('help.article', 'books', [{}], {}) || [];
             } catch (e) {
                 this.state.error = (e && e.message) || 'Could not load the help index.';
+            }
+            // Whether an agent exists is a separate question from whether the
+            // manual loaded, so a missing agent must never break the reader.
+            try {
+                const s = await RpcService.call('ir.ai.settings', 'status', [{}], {}) || {};
+                this.state.aiReady = !!s.ready;
+                this.state.aiAdmin = !!s.admin;
+            } catch (e) {
+                this.state.aiReady = false;
             }
             const deep = this.readDeepLink();
             const first = (this.state.books.find(b => b.count) || this.state.books[0] || {}).slug || '';
@@ -199,6 +249,44 @@ class HelpCenter extends owl.Component {
     readW(key, dflt) {
         const v = parseInt(localStorage.getItem(key) || '', 10);
         return (v && v >= 160 && v <= 640) ? v : dflt;
+    }
+
+    // ---- assistant ---------------------------------------------------------
+    // Enter sends, Shift+Enter makes a new line — the convention everywhere
+    // else a message box exists.
+    onAskKey(ev) {
+        if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); this.askAi(); }
+    }
+
+    async askAi() {
+        const q = (this.state.aiQ || '').trim();
+        if (!q || this.state.aiBusy) return;
+        this.state.aiBusy = true;
+        this.state.aiError = '';
+        this.state.aiAnswer = '';
+        this.state.aiCited = [];
+        try {
+            // The book being read is sent as context: the same words mean
+            // different things in Accounting and in Inventory.
+            const r = await RpcService.call('ir.ai.settings', 'ask_help',
+                                            [{ question: q, book: this.state.book }], {});
+            if (!r || !r.ok) {
+                this.state.aiError = (r && r.detail) || 'The assistant could not answer.';
+            } else {
+                this.state.aiAnswer = r.answer || '';
+                this.state.aiCited = r.cited || [];
+                this.state.aiModel = r.mocked ? 'the mock provider' : (r.model || r.provider || '');
+            }
+        } catch (e) {
+            this.state.aiError = (e && e.message) || String(e);
+        }
+        this.state.aiBusy = false;
+    }
+
+    openAiSettings() {
+        // The Settings menu owns this action; jump straight at it rather than
+        // making an admin hunt for the entry.
+        window.location.hash = '#action=117&model=ir.ai.settings';
     }
 
     // ---- deep links --------------------------------------------------------

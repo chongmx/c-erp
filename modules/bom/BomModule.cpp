@@ -16,10 +16,10 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::bom {
+namespace cerp::modules::bom {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 // ── small helpers ───────────────────────────────────────────
 static int jint(const nlohmann::json& v, const char* k, int dflt = 0) {
@@ -157,14 +157,20 @@ private:
                 {"fitted",      "false for DNP / do-not-populate lines."}}},
             {"known_footprints", footprints},
             {"known_units", units},
-            {"header_aliases", {
-                {"designators", {"designator","designators","reference","references","refdes","ref","part reference"}},
-                {"quantity",    {"quantity","qty","count","amount"}},
-                {"mpn",         {"mpn","manufacturer part number","mfr part number","part number","mfg part #","supplier part number"}},
-                {"manufacturer",{"manufacturer","mfr","mfg","brand","maker"}},
-                {"value",       {"value","val","comment"}},
-                {"footprint",   {"footprint","package","pattern","case","pcb footprint"}},
-                {"description", {"description","desc","note","notes","comment"}}}},
+            // Generated from the SAME table the matcher uses. Two hand-kept
+            // copies had already disagreed about "comment", and an agent that
+            // believes describe() over the matcher is an agent being lied to.
+            {"header_aliases", [] {
+                nlohmann::json h = nlohmann::json::object();
+                for (const auto& g : aliasTable()) {
+                    nlohmann::json a = nlohmann::json::array();
+                    for (const char* s : g.alts) a.push_back(s);
+                    h[std::string(g.field) == "__notfitted" ? "fitted_inverted" : g.field] = a;
+                }
+                return h;
+            }()},
+            {"delimiters", "Comma, semicolon and tab are all accepted — EAGLE writes "
+                           "semicolons and some of its ULPs write tabs."},
             {"contract",
              "Call parse with {bom_id, text} and let the server map the headers. If the "
              "layout is unrecognised, call parse with {bom_id, rows:[{...row_fields...}]} "
@@ -175,33 +181,100 @@ private:
     }
 
     // ---- header mapping ---------------------------------------------------
+    //
+    // ONE table, used both to match headers and to answer describe(). They used
+    // to be two lists and had already drifted: describe advertised "comment" as
+    // a VALUE alias while the matcher filed it under description, so every
+    // Altium and JLCPCB export silently lost its component value — the field
+    // resolution leans on hardest when there is no MPN.
+    //
+    // The spellings are taken from what the tools actually emit:
+    //
+    //   KiCad    Reference, Qty, Value, Footprint, Datasheet, Description, DNP
+    //   Altium   Designator, Comment, Description, Footprint, Quantity, LibRef,
+    //            Manufacturer, Manufacturer Part Number
+    //   EAGLE    Part / Parts, Qty, Value, Device, Package
+    //            (bom.ulp writes SEMICOLONS, some variants tabs — csvLine
+    //             already accepts , ; and tab, which is why that works)
+    //   JLCPCB   Comment, Designator, Footprint, LCSC Part #
+    //
+    // Where two tools disagree, the majority meaning wins and the loser is
+    // reachable through an explicit mapping. "Comment" is the clearest case:
+    // it is the VALUE in Altium and JLCPCB, and a note almost nowhere.
     struct Mapping { int designators = -1, quantity = -1, mpn = -1, manufacturer = -1,
-                         value = -1, footprint = -1, description = -1; };
+                         value = -1, footprint = -1, description = -1, fitted = -1;
+                     bool fittedNegated = false; };
+
+    struct AliasGroup { const char* field; std::vector<const char*> alts; };
+
+    static const std::vector<AliasGroup>& aliasTable() {
+        static const std::vector<AliasGroup> kT = {
+            {"designators", {"designator","designators","reference","references","refdes",
+                             "ref","refs","part reference","part references","parts","part",
+                             "location","locations"}},
+            {"quantity",    {"quantity","qty","count","amount","qty per board",
+                             "quantity per unit","qnty"}},
+            {"mpn",         {"mpn","manufacturer part number","manufacturer part no",
+                             "manufacturer part","mfr part number","mfr. part #","mfr part #",
+                             "mfg part #","mfg part number","part number","part num",
+                             "supplier part number","vendor part number","orderable part number",
+                             "lcsc part #","lcsc part number","jlcpcb part #",
+                             "jlcpcb part number"}},
+            {"manufacturer",{"manufacturer","mfr","mfg","brand","maker","manufacturer name",
+                             "mfr name"}},
+            {"value",       {"value","val","comment","comments","component value"}},
+            {"footprint",   {"footprint","package","pattern","case","pcb footprint",
+                             "package/case","footprint name"}},
+            {"description", {"description","desc","note","notes","remarks","libref",
+                             "device","part type","designitemid","datasheet"}},
+            // Fitted, and the same question asked backwards. KiCad 8+ and
+            // Altium both export a DNP column, and reading it as "fitted"
+            // would populate exactly the parts meant to be left off.
+            {"fitted",      {"fitted","populate","populated","assemble","install"}},
+            {"__notfitted", {"dnp","do not populate","do not place","do not fit","nofit",
+                             "no fit","dni","exclude from bom","not fitted"}},
+        };
+        return kT;
+    }
 
     static Mapping mapHeaders(const std::vector<std::string>& hdr) {
         Mapping m;
-        auto match = [&](int i, const std::string& h) {
-            static const std::vector<std::pair<const char*, int Mapping::*>> kAliases = {};
-            (void)kAliases; (void)i; (void)h;
+        auto slot = [&](const std::string& f) -> int* {
+            if (f == "designators")  return &m.designators;
+            if (f == "quantity")     return &m.quantity;
+            if (f == "mpn")          return &m.mpn;
+            if (f == "manufacturer") return &m.manufacturer;
+            if (f == "value")        return &m.value;
+            if (f == "footprint")    return &m.footprint;
+            if (f == "description")  return &m.description;
+            return nullptr;
         };
-        (void)match;
         for (size_t i = 0; i < hdr.size(); ++i) {
             const std::string h = lower(trim(hdr[i]));
-            auto is = [&](std::initializer_list<const char*> alts) {
-                for (const char* a : alts) if (h == a) return true;
-                return false;
-            };
-            if (m.designators < 0 && is({"designator","designators","reference","references",
-                                         "refdes","ref","part reference"}))            m.designators  = static_cast<int>(i);
-            else if (m.quantity < 0 && is({"quantity","qty","count","amount"}))          m.quantity     = static_cast<int>(i);
-            else if (m.mpn < 0 && is({"mpn","manufacturer part number","mfr part number",
-                                      "part number","mfg part #","supplier part number"})) m.mpn       = static_cast<int>(i);
-            else if (m.manufacturer < 0 && is({"manufacturer","mfr","mfg","brand","maker"})) m.manufacturer = static_cast<int>(i);
-            else if (m.value < 0 && is({"value","val"}))                                 m.value        = static_cast<int>(i);
-            else if (m.footprint < 0 && is({"footprint","package","pattern","case","pcb footprint"})) m.footprint = static_cast<int>(i);
-            else if (m.description < 0 && is({"description","desc","note","notes","comment"})) m.description = static_cast<int>(i);
+            if (h.empty()) continue;
+            for (const auto& g : aliasTable()) {
+                bool hit = false;
+                for (const char* a : g.alts) if (h == a) { hit = true; break; }
+                if (!hit) continue;
+                const std::string f = g.field;
+                if (f == "fitted" || f == "__notfitted") {
+                    if (m.fitted < 0) { m.fitted = static_cast<int>(i);
+                                        m.fittedNegated = (f == "__notfitted"); }
+                } else if (int* p = slot(f)) {
+                    if (*p < 0) *p = static_cast<int>(i);   // first column wins
+                }
+                break;                                       // one field per column
+            }
         }
         return m;
+    }
+
+    /// Read a fitted/DNP cell. An empty cell says nothing and leaves the
+    /// default alone; anything that is not plainly a "no" counts as a yes,
+    /// because boards mark these with "x", "DNP", "1" and "TRUE" alike.
+    static bool cellIsAffirmative(const std::string& raw) {
+        const std::string s = lower(trim(raw));
+        return !(s.empty() || s == "0" || s == "false" || s == "no" || s == "n" || s == "-");
     }
 
     // ---- resolution -------------------------------------------------------
@@ -343,7 +416,13 @@ private:
                 m.designators = g("designators"); m.quantity = g("quantity");
                 m.mpn = g("mpn"); m.manufacturer = g("manufacturer");
                 m.value = g("value"); m.footprint = g("footprint");
-                m.description = g("description");
+                m.description = g("description"); m.fitted = g("fitted");
+                // A caller-supplied mapping can name the column the other way
+                // round, which matters more than it looks: read a DNP column as
+                // "fitted" and you populate exactly the parts meant to be left off.
+                if (m.fitted < 0) { m.fitted = g("dnp"); m.fittedNegated = m.fitted >= 0; }
+                if (mp.contains("fitted_negated") && mp["fitted_negated"].is_boolean())
+                    m.fittedNegated = mp["fitted_negated"].get<bool>();
                 if (v.contains("skip_header") && v["skip_header"].is_boolean()
                     && v["skip_header"].get<bool>()) first = 1;
             } else {
@@ -367,6 +446,12 @@ private:
                 row["value"]        = at(m.value);
                 row["footprint"]    = at(m.footprint);
                 row["description"]  = at(m.description);
+                if (m.fitted >= 0) {
+                    const std::string cell = at(m.fitted);
+                    if (!trim(cell).empty())
+                        row["fitted"] = m.fittedNegated ? !cellIsAffirmative(cell)
+                                                        :  cellIsAffirmative(cell);
+                }
                 const std::string q = at(m.quantity);
                 row["quantity"] = q.empty() ? 0 : (int)[&]{ try { return std::stoi(q); } catch (...) { return 0; } }();
                 if (row["designators"].get<std::string>().empty() &&
@@ -413,13 +498,18 @@ private:
                 "INSERT INTO mrp_bom_import_line "
                 "(bom_id, sequence, designators, quantity, mpn, manufacturer, value_text, "
                 " footprint, description, product_id, severity, issues, candidates, fitted) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,0),$11,$12,$13,TRUE)",
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,0),$11,$12,$13,$14)",
                 pqxx::params{bomId, seq,
                              jstr(row, "designators"), row["quantity"].get<int>(),
                              jstr(row, "mpn"), jstr(row, "manufacturer"),
                              jstr(row, "value"), jstr(row, "footprint"),
                              jstr(row, "description"), r.productId,
-                             r.severity, issues.dump(), r.candidates.dump()});
+                             r.severity, issues.dump(), r.candidates.dump(),
+                             // Was hardcoded TRUE, which quietly ignored both the
+                             // DNP column and the documented `fitted` row field —
+                             // every do-not-populate line was imported as fitted.
+                             (row.contains("fitted") && row["fitted"].is_boolean())
+                                 ? row["fitted"].get<bool>() : true});
             seq += 10;
         }
         txn.commit();
@@ -462,7 +552,24 @@ private:
                 {"issues", nlohmann::json::parse(r["issues"].c_str(), nullptr, false)},
                 {"candidates", nlohmann::json::parse(r["candidates"].c_str(), nullptr, false)}});
         }
-        return {{"bom_id", bomId}, {"rows", rows},
+        // A staged import IS the draft — it persists until it is committed or
+        // discarded, so leaving the screen loses nothing. What was missing was
+        // any way to TELL: coming back to a BOM with staged rows looked
+        // identical to one with none until the list finished loading. Age is
+        // the useful part, because a draft from three weeks ago probably wants
+        // re-importing from a newer file rather than resuming.
+        nlohmann::json draft = nlohmann::json(nullptr);
+        if (!rows.empty()) {
+            auto d = txn.exec("SELECT to_char(min(create_date),'YYYY-MM-DD HH24:MI'), "
+                              "       to_char(max(write_date),'YYYY-MM-DD HH24:MI'), "
+                              "       (now() - min(create_date) > interval '7 days') "
+                              "FROM mrp_bom_import_line WHERE bom_id=$1", pqxx::params{bomId});
+            if (!d.empty() && !d[0][0].is_null())
+                draft = {{"started", d[0][0].c_str()},
+                         {"touched", d[0][1].is_null() ? "" : d[0][1].c_str()},
+                         {"stale",   d[0][2].as<bool>(false)}};
+        }
+        return {{"bom_id", bomId}, {"rows", rows}, {"draft", draft},
                 {"counts", {{"ok", ok}, {"warning", warn}, {"error", err},
                             {"total", ok + warn + err}}}};
     }
@@ -888,4 +995,4 @@ void BomModule::seedMenus_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::bom
+} // namespace cerp::modules::bom

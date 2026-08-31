@@ -40,9 +40,9 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace odoo::infrastructure { class DbConnection; }
+namespace cerp::infrastructure { class DbConnection; }
 
-namespace odoo::core {
+namespace cerp::core {
 
 class IrCron {
 public:
@@ -99,4 +99,4 @@ private:
     static std::unique_ptr<IrCron> s_instance_;
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

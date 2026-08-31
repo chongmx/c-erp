@@ -38,6 +38,131 @@
 }
 .pl-hint { color: var(--muted); font-size: .84rem; padding: 14px 0; }
 
+/* ---- what the agent came back with ----
+   A panel above the queue, not inside it: these are candidates, and none of
+   them exists as a proposal until somebody stages one. */
+.pl-agent {
+    margin: 0 18px 12px; padding: 12px; border-radius: 6px;
+    background: var(--surface); border: 1px solid var(--border);
+}
+.pl-agent-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.pl-agent-model { color: var(--muted); font-size: .76rem; }
+.pl-badge {
+    font-size: .68rem; text-transform: uppercase; letter-spacing: .05em;
+    padding: 2px 7px; border-radius: 10px; font-weight: 600;
+}
+.pl-badge.ok   { background: rgba(78,201,176,.14);  color: var(--ok, #4ec9b0); }
+.pl-badge.warn { background: rgba(215,153,33,.16);  color: var(--warn, #d79921); }
+
+/* The agent's own commentary — what it searched, what it could not settle. */
+.pl-notes {
+    color: var(--text); font-size: .82rem; line-height: 1.55;
+    background: var(--bg); border-left: 3px solid var(--accent);
+    padding: 8px 10px; border-radius: 0 4px 4px 0; margin-bottom: 10px;
+    white-space: pre-wrap;
+}
+
+.pl-searches {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px;
+}
+.pl-searches code {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 3px;
+    padding: 2px 7px; font-size: .74rem; color: var(--text);
+}
+
+/* The source list can run to twenty-odd pages on a broad query — cap it and
+   let it scroll rather than pushing the candidates off the screen. */
+.pl-sources { margin-bottom: 12px; max-height: 132px; overflow-y: auto; }
+.pl-sources-h, .pl-cand-why {
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); font-weight: 600; margin-bottom: 4px;
+}
+.pl-sources a {
+    display: block; color: var(--accent); font-size: .78rem;
+    padding: 2px 0; text-decoration: none; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+}
+.pl-sources a:hover { text-decoration: underline; }
+
+/* Candidates sit side by side so they can be COMPARED — the whole reason for
+   showing more than one. They wrap rather than scroll: a hidden candidate is
+   one nobody weighs. */
+.pl-cands { display: flex; flex-wrap: wrap; gap: 10px; }
+.pl-cand {
+    flex: 1 1 240px; min-width: 240px; display: flex; flex-direction: column; gap: 4px;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 5px; padding: 10px;
+}
+.pl-cand-top { display: flex; align-items: baseline; gap: 8px; }
+.pl-cand-top .pl-mpn { font-weight: 600; }
+.pl-cand-top .pl-cbadge { margin-left: auto; }
+
+/* ---- confidence ----
+   Read-only by design: this is the agent's claim about its own certainty, and
+   a reviewer editing it would destroy the one signal that says how hard to
+   check the rest.
+
+   The colour answers "how much work is this?" rather than "is it right?" — the
+   number is always shown, so the colour only reinforces what the text already
+   says and nothing is carried by hue alone. */
+.pl-cbadge {
+    font-size: .72rem; font-weight: 600; white-space: nowrap;
+    padding: 2px 8px; border-radius: 10px; letter-spacing: .02em;
+}
+.pl-cbadge.c-high { background: rgba(78,201,176,.15); color: var(--ok, #4ec9b0); }
+.pl-cbadge.c-med  { background: rgba(215,153,33,.17); color: var(--warn, #d79921); }
+.pl-cbadge.c-low  { background: rgba(251,73,52,.15);  color: var(--danger, #fb4934); }
+.pl-cbadge.c-none { background: var(--bg); color: var(--muted); }
+
+/* In the queue the same bands are just tinted text — a row of pills would
+   compete with the state badge that is already there. */
+.pl-cdot.c-high { color: var(--ok, #4ec9b0); }
+.pl-cdot.c-med  { color: var(--warn, #d79921); }
+.pl-cdot.c-low  { color: var(--danger, #fb4934); }
+.pl-cdot.c-none { color: var(--muted); }
+.pl-cand-name { font-size: .82rem; color: var(--text); line-height: 1.4; }
+.pl-cand-sub  { font-size: .76rem; color: var(--muted); }
+.pl-cand-why  { text-transform: none; letter-spacing: 0; font-weight: 400; font-style: italic; }
+.pl-cand-adj  { color: var(--warn, #d79921); font-size: .74rem; line-height: 1.45; }
+.pl-cand-links { display: flex; gap: 12px; margin-top: 2px; }
+.pl-cand-links a { color: var(--accent); font-size: .76rem; text-decoration: none; }
+.pl-cand-links a:hover { text-decoration: underline; }
+.pl-cand .pl-btn { margin-top: 6px; align-self: flex-start; }
+
+/* ---- the editor ----
+   A two-column label/field grid. Every field stays editable until the
+   proposal is applied, at which point it is a record of what happened. */
+.pl-edit {
+    display: grid; grid-template-columns: var(--pl-label) 1fr;
+    gap: 6px 10px; align-items: center; margin: 10px 0 4px;
+}
+.pl-edit > label { color: var(--muted); font-size: .78rem; }
+.pl-edit input {
+    width: 100%; box-sizing: border-box;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 5px 8px; font-family: inherit; font-size: .82rem;
+}
+.pl-edit input:focus { outline: none; border-color: var(--accent); }
+.pl-edit input:disabled { opacity: .6; }
+.pl-url { display: flex; gap: 8px; align-items: center; }
+.pl-url a { color: var(--accent); font-size: .76rem; text-decoration: none; white-space: nowrap; }
+
+.pl-table input {
+    width: 100%; box-sizing: border-box;
+    background: transparent; color: var(--text);
+    border: 1px solid transparent; border-radius: 4px;
+    padding: 3px 6px; font-family: inherit; font-size: .82rem;
+}
+.pl-table input:hover:not(:disabled) { border-color: var(--border); }
+.pl-table input:focus { outline: none; border-color: var(--accent); background: var(--bg); }
+.pl-x {
+    background: none; border: none; color: var(--muted); cursor: pointer;
+    font-size: 1rem; line-height: 1; padding: 2px 6px; border-radius: 4px;
+}
+.pl-x:hover { color: var(--danger, #fb4934); background: var(--bg); }
+.pl-editbar { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; }
+
 /* ---- paste panel ---- */
 /* The paste panel is an EDITOR, so it takes the free vertical space rather
    than sitting at a fixed 150px above a mostly-empty list.
@@ -110,7 +235,10 @@
 .pl-state.s-rejected { background: rgba(122,139,163,.16); color: var(--muted); }
 
 /* ---- detail ---- */
-.pl-detail { flex: 1; overflow-y: auto; min-width: 0; padding: 16px 20px 30px; }
+/* One label column for every label/field grid in this pane, so the edit form
+   and the apply form line up instead of each sizing to its own longest word. */
+.pl-detail { flex: 1; overflow-y: auto; min-width: 0; padding: 16px 20px 30px;
+             --pl-label: 128px; }
 .pl-d-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .pl-d-head h3 { margin: 0; font-size: 1.05rem; }
 .pl-detail h4 {
@@ -150,14 +278,31 @@ table.pl-table td { padding: 7px 12px; border-bottom: 1px solid var(--border); }
 table.pl-table tr:last-child td { border-bottom: none; }
 .pl-mono { font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; }
 
-.pl-apply { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.pl-apply label { color: var(--muted); font-size: .78rem; letter-spacing: .04em; text-transform: uppercase; }
+/* Same grid as .pl-edit, on a shared label width, so the whole detail pane
+   reads as ONE form. As a wrapping flex row this put "Existing product" beside
+   the category select and dropped its input onto the next line — a label
+   sitting next to somebody else's field. */
+.pl-apply {
+    display: grid; grid-template-columns: var(--pl-label) 1fr;
+    gap: 6px 10px; align-items: center;
+}
+.pl-apply label { color: var(--muted); font-size: .78rem; }
 .pl-apply select, .pl-apply input {
+    width: 100%; box-sizing: border-box; min-width: 0;
     background: var(--bg); color: var(--text); border: 1px solid var(--border);
     border-radius: 5px; padding: 6px 9px; font-family: inherit; font-size: .84rem;
 }
-.pl-apply select { min-width: 340px; max-width: 100%; }
-.pl-apply input  { width: 190px; }
 .pl-apply select:focus-visible, .pl-apply input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 .pl-actions { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
+
+/* The ask bar sits above the queue: it is how proposals get INTO the queue,
+   so it reads before the list rather than beside it. */
+.pl-ask { display: flex; gap: 8px; align-items: center;
+          padding: 12px 18px; border-bottom: 1px solid var(--border);
+          background: var(--surface); }
+.pl-ask-in { flex: 1 1 auto; min-width: 0; padding: 8px 12px;
+             border: 1px solid var(--border); border-radius: 6px;
+             background: var(--bg); color: var(--text); font-size: .9rem; }
+.pl-ask-in::placeholder { color: var(--muted); }
+.pl-ask-in:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }

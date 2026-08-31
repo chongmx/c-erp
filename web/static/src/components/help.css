@@ -221,3 +221,29 @@ body.hc-resizing { cursor: col-resize; user-select: none; }
 }
 .hc-ai-rel .hc-art { padding-left: 8px; }
 .hc-ai-foot { color: #55688a; font-size: .7rem; line-height: 1.5; margin-top: 10px; }
+
+/* An inline "go and fix it" link inside the not-configured note. A button
+   rather than an anchor because it drives the router, not the browser. */
+.hc-link {
+    background: none; border: none; padding: 0; cursor: pointer;
+    color: var(--accent); font: inherit; text-decoration: underline;
+}
+
+.hc-ai-err {
+    color: var(--danger, #fb4934); font-size: .76rem; line-height: 1.5;
+    padding: 8px 10px; margin-bottom: 12px; border-radius: 5px;
+    background: rgba(251,73,52,.09); border: 1px solid rgba(251,73,52,.32);
+}
+
+/* The answer sits on a raised surface so it reads as something produced,
+   distinct from the article list beneath it which is navigation. */
+.hc-ai-answer {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px; margin-bottom: 16px;
+}
+.hc-ai-text {
+    color: var(--text); font-size: .82rem; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-word;
+}
+.hc-ai-cited { margin-top: 12px; }
+.hc-ai-cited .hc-art { padding-left: 8px; }

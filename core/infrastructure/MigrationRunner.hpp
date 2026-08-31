@@ -5,9 +5,9 @@
 #include <vector>
 
 // Forward declaration — keeps pqxx out of this header
-namespace odoo::infrastructure { class DbConnection; }
+namespace cerp::infrastructure { class DbConnection; }
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 // ============================================================
 // MigrationRunner — ordered, versioned schema migrations
@@ -70,4 +70,4 @@ private:
     std::vector<Migration>        migrations_;
 };
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

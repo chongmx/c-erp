@@ -30,7 +30,7 @@
 #include <utility>
 #include <vector>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 struct HttpResult {
     bool        ok = false;      ///< a response arrived AND its status was 2xx
@@ -136,4 +136,4 @@ private:
     }
 };
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

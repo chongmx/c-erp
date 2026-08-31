@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // ODOO_MODEL macro
@@ -103,7 +103,7 @@ public:
             // A missing/invalid field is a USER error, not a server fault: throw
             // ValidationError so the dispatcher returns it as a 400 with the
             // message ("Name is required") instead of a 500 "Internal Error".
-            throw odoo::infrastructure::ValidationError(errors[0]);
+            throw cerp::infrastructure::ValidationError(errors[0]);
 
         const auto cols = fieldRegistry_.storedColumnNames();
         nlohmann::json full = toJson();
@@ -152,10 +152,10 @@ public:
             const std::string what = e.what();
             const std::string col  = notNullColumn_(what);
             if (!col.empty())
-                throw odoo::infrastructure::ValidationError(
+                throw cerp::infrastructure::ValidationError(
                     "The field '" + col + "' is required.");
             if (what.find("violates check constraint") != std::string::npos)
-                throw odoo::infrastructure::ValidationError(
+                throw cerp::infrastructure::ValidationError(
                     "A value is out of the allowed range for this record.");
             throw;   // anything else stays a gated internal error
         }
@@ -377,7 +377,7 @@ public:
     // read_group — grouped aggregation (docs/095)
     // ----------------------------------------------------------
     /**
-     * @brief Aggregate rows into groups, Odoo's `read_group` contract.
+     * @brief Aggregate rows into groups, the reference ERP's `read_group` contract.
      *
      * This is the primitive the whole reporting surface stands on: grouped
      * lists, the pivot, the graph and the kanban board are all read_group with
@@ -388,7 +388,7 @@ public:
      * @param domainJson  filter, same as search
      * @param fieldsJson  fields to aggregate: numeric ones get SUM
      * @param groupbyJson one or more group keys. A date field may carry a
-     *                    granularity — "date:month" — as Odoo spells it.
+     *                    granularity — "date:month" — as the reference ERP spells it.
      * @param limit/offset/orderBy paging over the GROUPS, not the rows.
      *
      * Returns one object per group carrying the group key, `__count`, the
@@ -416,7 +416,7 @@ public:
                 interval = spec.substr(colon + 1);
             }
             if (!fieldRegistry_.has(field))
-                throw odoo::infrastructure::ValidationError("Unknown group-by field: " + field);
+                throw cerp::infrastructure::ValidationError("Unknown group-by field: " + field);
             const auto& fd = fieldRegistry_.get(field);
             GroupKey k;
             k.field    = field;
@@ -428,7 +428,7 @@ public:
                 static const std::set<std::string> kIntervals =
                     {"day", "week", "month", "quarter", "year"};
                 if (!kIntervals.count(interval))
-                    throw odoo::infrastructure::ValidationError(
+                    throw cerp::infrastructure::ValidationError(
                         "Unsupported group-by interval: " + interval);
                 k.expr = "date_trunc('" + interval + "', " + field + ")";
             } else if (fd.type == FieldType::Date || fd.type == FieldType::Datetime) {
@@ -444,10 +444,10 @@ public:
             for (const auto& g : groupbyJson)
                 if (g.is_string()) addKey(g.get<std::string>());
         if (keys.empty())
-            throw odoo::infrastructure::ValidationError("read_group needs at least one group-by field.");
+            throw cerp::infrastructure::ValidationError("read_group needs at least one group-by field.");
 
         // ---- resolve the measures --------------------------------------
-        // Odoo sends the whole field list; only the numeric ones can be summed,
+        // the reference ERP sends the whole field list; only the numeric ones can be summed,
         // and silently skipping the rest is what the client expects.
         struct Measure { std::string field, alias; bool scaled; };
         std::vector<Measure> measures;
@@ -693,7 +693,7 @@ private:
     // Every table that carries a company_id is filtered to the caller's ACTIVE
     // company, plus rows whose company_id IS NULL — those are shared records
     // (a product available to the whole group, a country, a currency), which is
-    // the same convention Odoo uses.
+    // the same convention the reference ERP uses.
     //
     // This deliberately does NOT go through ir.rule, for two reasons:
     //
@@ -805,7 +805,7 @@ private:
             // planted where their owner cannot see them; refuse rather than
             // silently rewrite, so the caller learns the request was wrong.
             if (want > 0 && want != u.companyId && !u.mayUseCompany(want))
-                throw odoo::infrastructure::ValidationError(
+                throw cerp::infrastructure::ValidationError(
                     "You cannot create records for another company.");
             return want > 0 ? want : u.companyId;
         }
@@ -953,7 +953,7 @@ private:
         }
     }
 
-    // Odoo JSON uses `false` for null FK/integer values and `[id,"Name"]` arrays
+    // the reference ERP JSON uses `false` for null FK/integer values and `[id,"Name"]` arrays
     // for set Many2one values.  Neither is accepted by PostgreSQL for integer
     // columns — normalise them before binding.
     nlohmann::json normalizeForDb_(const nlohmann::json& val,
@@ -1075,4 +1075,4 @@ private:
     }
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

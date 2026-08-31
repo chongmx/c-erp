@@ -26,7 +26,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::mrp {
+namespace cerp::modules::mrp {
 
 class MrpModule : public core::IModule {
 public:
@@ -57,4 +57,4 @@ private:
     void seedMenus_();
 };
 
-} // namespace odoo::modules::mrp
+} // namespace cerp::modules::mrp

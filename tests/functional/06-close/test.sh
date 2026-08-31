@@ -93,7 +93,7 @@ t_nonempty "$AINC"  "an income account exists"
 [ -z "$JRN" ] || [ -z "$ARECV" ] || [ -z "$AINC" ] && { verdict; exit 1; }
 
 # due_date is what the aged report buckets on (not `invoice_date_due` — that
-# is the Odoo name and this schema does not use it; naming it made the whole
+# is the reference ERP name and this schema does not use it; naming it made the whole
 # INSERT fail silently, and the invoice simply never existed). Without a due
 # date the invoice is real, posted and owed, yet appears in no ageing bucket,
 # which is indistinguishable from the report being broken.

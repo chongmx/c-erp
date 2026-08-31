@@ -30,11 +30,11 @@
 // ============================================================
 #include <string>
 
-namespace odoo::infrastructure { class MigrationRunner; }
+namespace cerp::infrastructure { class MigrationRunner; }
 
-namespace odoo::core {
+namespace cerp::core {
 
 /// Register every P2 migration on the runner.
-void registerMoneyMigrations(odoo::infrastructure::MigrationRunner& runner);
+void registerMoneyMigrations(cerp::infrastructure::MigrationRunner& runner);
 
-} // namespace odoo::core
+} // namespace cerp::core

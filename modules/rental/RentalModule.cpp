@@ -29,10 +29,10 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 // ================================================================
 // helpers
@@ -41,7 +41,7 @@ using namespace odoo::core;
 /**
  * Normalise a many2one value to a plain id.
  *
- * The client may send either a bare integer or Odoo's `[id, "display"]`
+ * The client may send either a bare integer or the reference ERP's `[id, "display"]`
  * pair depending on whether the value came from a form field or a
  * search_read result. Anything else — notably `false`, which is how the
  * client clears a many2one — becomes 0, meaning "not set".
@@ -1033,7 +1033,7 @@ void RentalModule::registerRoutes() {
         demoRoute("clear", &RentalDemo::clear), {drogon::Post});
 }
 
-void RentalModule::registerMigrations(odoo::infrastructure::MigrationRunner& runner) {
+void RentalModule::registerMigrations(cerp::infrastructure::MigrationRunner& runner) {
     registerRentalMigrations(runner);
 }
 
@@ -1125,4 +1125,4 @@ void RentalModule::seedMenus_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

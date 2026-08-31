@@ -10,7 +10,7 @@
 
 #include <algorithm>
 
-namespace odoo::core {
+namespace cerp::core {
 
 std::unique_ptr<IrCron> IrCron::s_instance_;
 
@@ -214,4 +214,4 @@ bool IrCron::runNow(const std::string& code) {
     return true;
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

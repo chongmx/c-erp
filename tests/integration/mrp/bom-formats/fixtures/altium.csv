@@ -1,0 +1,6 @@
+Designator,Comment,Description,Footprint,LibRef,Quantity,Manufacturer,Manufacturer Part Number
+"C1, C2, C5",100nF,Capacitor Ceramic 100nF 50V X7R,0603,CAP,3,Murata,GRM188R71H104KA93D
+"R1, R2, R3, R4",4k7,Resistor 4.7k 1% 1/10W,0603,RES,4,Yageo,RC0603FR-074K7L
+L1,1uH,Inductor Power Shielded 1uH,0603,IND,1,Abracon,ASMCI-0603-1R0M-T
+FB1,220R,Ferrite Bead 220 Ohm at 100MHz,0603,FB,1,Murata,BLM18PG221SN1D
+J1,CONN_40,Header 40 Position 2.54mm,HDR-40,CONN,1,Wurth,61304011121

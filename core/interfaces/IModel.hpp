@@ -5,7 +5,7 @@
 #include <vector>
 #include <optional>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // IModel
@@ -13,13 +13,13 @@ namespace odoo::core {
 /**
  * @brief Interface every ORM model must satisfy.
  *
- * Mirrors Odoo's Python model contract:
+ * Mirrors the reference ERP's Python model contract:
  *   - Identity    : name(), id()
  *   - Persistence : create(), read(), write(), unlink()
  *   - Introspection: fieldsGet(), toJson(), fromJson()
  *   - Search      : search(), searchRead()
  *
- * All JSON payloads use nlohmann::json and follow Odoo's JSON-RPC
+ * All JSON payloads use nlohmann::json and follow the reference ERP's JSON-RPC
  * wire format so the OWL/JS frontend needs zero adaptation.
  *
  * Concrete models inherit from BaseModel, which provides default
@@ -52,7 +52,7 @@ public:
     // ----------------------------------------------------------
 
     /**
-     * @brief Odoo technical model name, e.g. "res.partner".
+     * @brief the reference ERP technical model name, e.g. "res.partner".
      * Must be static-like — same value for all instances of a type.
      */
     virtual std::string name() const = 0;
@@ -106,7 +106,7 @@ public:
 
     /**
      * @brief Return ids matching domain.
-     * @param domain  Odoo domain expression encoded as JSON array.
+     * @param domain  the reference ERP domain expression encoded as JSON array.
      *                e.g. [["active","=",true],["name","ilike","acme"]]
      * @param limit   Max results; 0 = no limit.
      * @param offset  Pagination offset.
@@ -138,7 +138,7 @@ public:
     // ----------------------------------------------------------
 
     /**
-     * @brief Return Odoo-compatible fields_get() metadata.
+     * @brief Return the reference ERP-compatible fields_get() metadata.
      * @param fields      Subset of field names; empty = all fields.
      * @param attributes  Field attribute names to include (e.g. "string", "type").
      * @returns           JSON object: { field_name: { type, string, ... }, ... }
@@ -177,7 +177,7 @@ public:
     // ----------------------------------------------------------
 
     /**
-     * @brief Aggregate matching rows into groups — Odoo's `read_group`.
+     * @brief Aggregate matching rows into groups — the reference ERP's `read_group`.
      *
      * Virtual with a throwing default rather than pure, so the dozens of
      * existing models compile untouched; BaseModel overrides it, which is
@@ -200,4 +200,4 @@ public:
     }
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

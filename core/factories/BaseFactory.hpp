@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // Lifetime is defined in IFactory.hpp — no redeclaration needed here.
 
@@ -127,4 +127,4 @@ private:
     Order    insertionOrder_;   // preserves registration order for deterministic boot
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

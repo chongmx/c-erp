@@ -14,7 +14,7 @@
 
 namespace fs = std::filesystem;
 
-namespace odoo::core {
+namespace cerp::core {
 
 std::string Filestore::root() {
     return "data/filestore";
@@ -111,4 +111,4 @@ void Filestore::gc(const std::string& storeFname, long long remainingRefs) {
     fs::remove(abs, ec);
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

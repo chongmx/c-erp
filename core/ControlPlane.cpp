@@ -1,7 +1,7 @@
 #include "ControlPlane.hpp"
 #include <pqxx/pqxx>
 
-namespace odoo::core {
+namespace cerp::core {
 
 using infrastructure::DbConnection;
 using infrastructure::DbConfig;
@@ -150,4 +150,4 @@ std::vector<ControlPlane::MembershipRow> ControlPlane::allMemberships() const {
     return out;
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

@@ -10,7 +10,7 @@
 // cite them back to the user ("see Filling in your timesheet"), so renaming one
 // breaks a link somebody may have followed.
 // =============================================================
-namespace odoo::modules::help {
+namespace cerp::modules::help {
 
 struct HelpSeed {
     const char* book;        ///< the tab this belongs to
@@ -482,21 +482,41 @@ open straight back to it — useful in a message to a colleague.
 )MD"},
 
 {"help","Using Help","help-basics","help-assistant","The assistant panel",20,
- "ai assistant chat ask question future",
-R"MD(The right-hand panel is where an **AI assistant** will answer questions about
-this system, grounded in these help articles.
+ "ai assistant chat ask question cite grounded retrieval",
+R"MD(The right-hand panel answers questions about this system **from these help
+articles**, and shows you which ones it used.
 
-It is not connected yet. The panel is present, and the help content is already
-stored in the shape it needs — one row per article, each with a stable slug, a
-title, keywords and a markdown body — so answers can be retrieved from specific
-articles and **cited back to you** rather than invented.
+## How it answers
 
-Until it is wired up, the panel lists the articles most related to whatever you
-are reading, which is the same retrieval step the assistant will use.
+Your question is matched against every article, the best few are retrieved, and
+those are what the assistant is given to work from. It is told to answer from
+them and to say so plainly when they do not cover something — an invented menu
+path costs you more time than an honest "that is not in the manual".
+
+Under **Drawn from** are the articles the answer actually rests on, as buttons.
+Press them. An answer you cannot check is one you have to take on trust, and
+the whole reason the manual is stored as articles with stable slugs is so that
+an answer can be traced back to one.
+
+## What it will not do
+
+It does not search the web. This manual is the authority on how *this* ERP
+works, and a web search would invite a confident answer about a different one.
+
+It cannot change anything. It reads the manual and writes a reply.
+
+## If the panel says it is not switched on
+
+An administrator sets the provider up in **Settings → AI Agent**. Until then the
+panel still lists the articles related to whatever you are reading — the same
+retrieval step, without the writing.
+
+Questions are answered for anyone signed in, and every answer counts against the
+daily call cap the administrator set.
 )MD"},
 
 };
 
 static constexpr int kHelpSeedCount = sizeof(kHelpSeeds) / sizeof(kHelpSeeds[0]);
 
-} // namespace odoo::modules::help
+} // namespace cerp::modules::help

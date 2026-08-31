@@ -194,12 +194,91 @@ class BomEditor extends owl.Component {
                                 </div>
                                 <input type="file" accept=".csv,.txt,.tsv" class="be-file" t-ref="file"
                                        t-on-change="onFileChosen"/>
-                                <button class="be-btn primary" t-att-disabled="state.busy or !state.pasteText.trim()"
-                                        t-on-click="parseText"
-                                        t-esc="state.busy ? 'Parsing…' : 'Parse and resolve'"/>
+                                <div class="be-ai-act">
+                                    <button class="be-btn primary" t-att-disabled="state.busy or !state.pasteText.trim()"
+                                            t-on-click="() => this.parseText()"
+                                            t-esc="state.busy ? 'Parsing…' : 'Parse and resolve'"/>
+                                    <!-- Cancel is available WHILE it parses, not only before.
+                                         A big file against a slow catalogue is exactly when
+                                         somebody realises they dropped the wrong one. -->
+                                    <button class="be-btn ghost" t-if="state.pasteText.trim() or state.busy"
+                                            t-on-click="cancelUpload">Cancel</button>
+                                </div>
+
+                                <!-- The header row was not recognised. This is the only
+                                     parse failure a person can actually act on, so it
+                                     gets an action rather than just an error. -->
+                                <t t-if="state.needsMapping">
+                                    <div class="be-map">
+                                        <div class="be-map-h">These column names are not ones I know</div>
+                                        <t t-if="!state.mapping">
+                                            <div class="be-ai-note">
+                                                Every EDA tool names them differently. The assistant can
+                                                read the header row and say which column is which — you
+                                                get to check it before anything is imported.
+                                            </div>
+                                            <button class="be-btn primary" t-if="state.aiReady"
+                                                    t-att-disabled="state.mapBusy" t-on-click="askMapping"
+                                                    t-esc="state.mapBusy ? 'Reading the header…' : 'Ask the assistant'"/>
+                                            <div class="be-ai-note" t-else="">
+                                                No AI provider is set up. An administrator can enable one in
+                                                Settings → AI Agent, or you can map the columns by hand below.
+                                            </div>
+                                            <button class="be-btn ghost" t-on-click="mapByHand">Map by hand</button>
+                                        </t>
+
+                                        <!-- Shown, never applied silently: it is a guess about
+                                             somebody's column layout, cheap to check here and
+                                             expensive to unpick after an import. -->
+                                        <t t-else="">
+                                            <div class="be-map-note" t-if="state.mapTool">
+                                                Looks like <b t-esc="state.mapTool"/>.
+                                            </div>
+                                            <div class="be-map-note" t-if="state.mapNotes" t-esc="state.mapNotes"/>
+                                            <div class="be-map-grid">
+                                                <t t-foreach="mapFields" t-as="f" t-key="f.key">
+                                                    <label t-esc="f.label"/>
+                                                    <select t-on-change="(ev) => this.setMap(f.key, ev)">
+                                                        <option value="">— not in this file —</option>
+                                                        <t t-foreach="state.mapHeaders" t-as="h" t-key="h_index">
+                                                            <option t-att-value="h_index"
+                                                                    t-att-selected="state.mapping[f.key] === h_index"
+                                                                    t-esc="h_index + ': ' + h"/>
+                                                        </t>
+                                                    </select>
+                                                </t>
+                                            </div>
+                                            <!-- Getting this backwards populates exactly the parts
+                                                 that were meant to be left off the board. -->
+                                            <label class="be-map-neg" t-if="state.mapping.fitted !== undefined">
+                                                <input type="checkbox" t-att-checked="state.mapFittedNeg"
+                                                       t-on-change="(ev) => { state.mapFittedNeg = ev.target.checked; }"/>
+                                                A mark in that column means <b>do not populate</b>
+                                            </label>
+                                            <div class="be-ai-act">
+                                                <button class="be-btn primary" t-on-click="applyMapping"
+                                                        t-att-disabled="state.busy">Parse with this mapping</button>
+                                                <button class="be-btn ghost" t-on-click="cancelUpload">Cancel</button>
+                                            </div>
+                                        </t>
+                                    </div>
+                                </t>
                             </t>
 
                             <t t-else="">
+                                <!-- A staged import IS the draft: it survives leaving the
+                                     screen and is only lost on commit or discard. Saying
+                                     so is the whole feature — coming back to it looked
+                                     identical to a fresh start. -->
+                                <div t-attf-class="be-draft{{ state.draft and state.draft.stale ? ' stale' : '' }}"
+                                     t-if="state.draft">
+                                    <b>Draft import</b> started <t t-esc="state.draft.started"/>.
+                                    <t t-if="state.draft.stale">
+                                        That was a while ago — if the file has moved on since,
+                                        discard this and import the newer one.
+                                    </t>
+                                    <t t-else="">Nothing is written until you import it.</t>
+                                </div>
                                 <div class="be-ai-sum">
                                     <span class="be-badge ok" t-if="staged.ok"><t t-esc="staged.ok"/> ready</span>
                                     <span class="be-badge warn" t-if="staged.warning"><t t-esc="staged.warning"/> warning</span>
@@ -248,6 +327,51 @@ class BomEditor extends owl.Component {
                                         </div>
                                     </t>
                                 </div>
+                                <!-- Offered where it pays: rows that did not resolve are
+                                     usually rows written in a way the ERP does not read,
+                                     not rows for parts you do not stock. -->
+                                <div class="be-tidy" t-if="!state.tidy">
+                                    <button class="be-btn" t-if="state.aiReady"
+                                            t-att-disabled="state.tidyBusy or state.busy"
+                                            t-on-click="tidyRows"
+                                            t-esc="state.tidyBusy ? 'Tidying…' : 'Tidy up with the assistant'"/>
+                                    <div class="be-ai-note">
+                                        Rewrites values, packages and designators to this ERP's
+                                        conventions — 4.7K to 4k7, C_0603_1608Metric to 0603. It
+                                        never chooses a part; rows are resolved again afterwards.
+                                    </div>
+                                </div>
+
+                                <!-- Shown as a diff, and applied only on request. A
+                                     bulk rewrite nobody reads is a bulk rewrite nobody
+                                     can undo. -->
+                                <div class="be-tidy" t-if="state.tidy">
+                                    <div class="be-tidy-h">
+                                        <t t-if="state.tidy.changed.length">
+                                            <b t-esc="state.tidy.changed.length"/> change(s) proposed
+                                        </t>
+                                        <t t-else="">Nothing needed changing.</t>
+                                    </div>
+                                    <div class="be-ai-note" t-if="state.tidy.notes" t-esc="state.tidy.notes"/>
+                                    <div class="be-tidy-list" t-if="state.tidy.changed.length">
+                                        <t t-foreach="state.tidy.changed" t-as="c" t-key="c_index">
+                                            <div class="be-tidy-row">
+                                                <span class="mono" t-esc="c.designators || ('row ' + (c.row + 1))"/>
+                                                <span class="be-tidy-f" t-esc="c.field"/>
+                                                <span class="be-tidy-b" t-esc="c.from || '(empty)'"/>
+                                                <span class="be-tidy-a" t-esc="c.to || '(empty)'"/>
+                                            </div>
+                                        </t>
+                                    </div>
+                                    <div class="be-ai-act">
+                                        <button class="be-btn primary"
+                                                t-att-disabled="state.busy or !state.tidy.changed.length"
+                                                t-on-click="applyTidy">Apply and re-resolve</button>
+                                        <button class="be-btn ghost"
+                                                t-on-click="() => { state.tidy = null; }">Keep as it is</button>
+                                    </div>
+                                </div>
+
                                 <div class="be-ai-act">
                                     <button class="be-btn primary" t-att-disabled="staged.error > 0 or state.busy"
                                             t-on-click="commit"
@@ -291,15 +415,28 @@ class BomEditor extends owl.Component {
 
     setup() {
         this.fileRef = owl.useRef('file');
+        // Bumped by every parse and by cancel. A parse whose token has moved on
+        // drops its answer — the closest thing to recalling an RPC in flight.
+        this._parseToken = 0;
+        this._reader = null;
         this.state = owl.useState({
             boms: [], products: [], bomId: 0, bom: null, lines: [],
-            staged: [], hits: {},
+            staged: [], hits: {}, draft: null,
             aiOpen: true, pasteText: '', dragging: false,
+            aiReady: false, needsMapping: false, mapBusy: false,
+            tidy: null, tidyBusy: false,
+            mapping: null, mapHeaders: [], mapFittedNeg: false, mapNotes: '', mapTool: '',
             picker: null, pickerHits: [],
             newProduct: 0, newKind: 'pcba',
             busy: false, error: '', notice: '',
         });
         owl.onWillStart(async () => {
+            // Whether an agent exists decides whether to offer the button at
+            // all. Offering it and then failing is worse than not offering it.
+            try {
+                const s = await RpcService.call('ir.ai.settings', 'status', [{}], {}) || {};
+                this.state.aiReady = !!s.ready;
+            } catch (e) { this.state.aiReady = false; }
             await this.loadBoms();
             try {
                 this.state.products = await RpcService.call('product.product', 'search_read', [[]],
@@ -335,6 +472,8 @@ class BomEditor extends owl.Component {
         this.state.bomId = parseInt(ev.target.value, 10) || 0;
         this.state.staged = [];
         this.state.hits = {};
+        // An abandoned mapping must not follow you to another BOM.
+        this.cancelUpload();
         await this.reload();
     }
 
@@ -347,6 +486,7 @@ class BomEditor extends owl.Component {
             this.state.lines = d.lines || [];
             const st = await RpcService.call('bom.import', 'staged', [{ bom_id: this.state.bomId }], {});
             this.state.staged = (st && st.rows) || [];
+            this.state.draft  = (st && st.draft) || null;
         } catch (e) {
             this.state.error = (e && e.message) || 'Could not load this BOM.';
         }
@@ -419,27 +559,191 @@ class BomEditor extends owl.Component {
         if (f) this.readFile(f);
     }
     readFile(file) {
+        const token = this._parseToken;
         const r = new FileReader();
-        r.onload = () => { this.state.pasteText = String(r.result || ''); this.parseText(); };
+        this._reader = r;
+        r.onload = () => {
+            if (token !== this._parseToken) return;      // cancelled while reading
+            this.state.pasteText = String(r.result || '');
+            this.parseText();
+        };
         r.onerror = () => { this.state.error = 'That file could not be read.'; };
         r.readAsText(file);
     }
 
-    async parseText() {
+    /**
+     * Abandon whatever is in progress.
+     *
+     * There is no way to recall an RPC that is already on the wire, so the
+     * result is ignored instead: every parse carries a token, and a stale one
+     * drops its answer on the floor. Cancelling has to work DURING the parse,
+     * not only before it — a large file against a slow catalogue is exactly
+     * when somebody notices they dropped the wrong export.
+     *
+     * Nothing staged is touched. Cancel abandons an attempt; Discard throws
+     * away a draft. Conflating them would make one of the two a trap.
+     */
+    cancelUpload() {
+        this._parseToken++;
+        if (this._reader) { try { this._reader.abort(); } catch (_) {} this._reader = null; }
+        this.state.pasteText = '';
+        this.state.needsMapping = false;
+        this.state.mapping = null;
+        this.state.mapNotes = '';
+        this.state.mapTool = '';
+        this.state.dragging = false;
+        this.state.busy = false;
+        this.state.error = '';
+        // Without this the same file cannot be chosen twice — the input still
+        // holds it, so `change` never fires again.
+        if (this.fileRef.el) this.fileRef.el.value = '';
+    }
+
+    async parseText(mapping) {
         if (!this.state.bomId || !this.state.pasteText.trim()) return;
+        const token = ++this._parseToken;
         this.state.busy = true;
         this.state.error = '';
         this.state.notice = '';
         try {
-            const d = await RpcService.call('bom.import', 'parse',
-                [{ bom_id: this.state.bomId, text: this.state.pasteText }], {});
+            const args = { bom_id: this.state.bomId, text: this.state.pasteText };
+            if (mapping) { args.mapping = mapping; args.skip_header = true; }
+            const d = await RpcService.call('bom.import', 'parse', [args], {});
+            if (token !== this._parseToken) return;
             this.state.staged = (d && d.rows) || [];
+            this.state.draft = (d && d.draft) || null;
+            this.state.needsMapping = false;
+            this.state.mapping = null;
             this.state.pasteText = '';
+            if (this.fileRef.el) this.fileRef.el.value = '';
         } catch (e) {
-            this.state.error = (e && e.message) || 'That BOM could not be parsed.';
+            if (token !== this._parseToken) return;
+            const msg = (e && e.message) || 'That BOM could not be parsed.';
+            this.state.error = msg;
+            // The one parse failure a person can do something about. Keep the
+            // text — the mapping step needs it.
+            if (/header row was not recognised/i.test(msg)) this.state.needsMapping = true;
         } finally {
-            this.state.busy = false;
+            if (token === this._parseToken) this.state.busy = false;
         }
+    }
+
+    // ---- column mapping -----------------------------------------------------
+    get mapFields() {
+        return [
+            { key: 'designators',  label: 'Designators' },
+            { key: 'quantity',     label: 'Quantity' },
+            { key: 'value',        label: 'Value' },
+            { key: 'footprint',    label: 'Footprint' },
+            { key: 'mpn',          label: 'Part number' },
+            { key: 'manufacturer', label: 'Manufacturer' },
+            { key: 'description',  label: 'Description' },
+            { key: 'fitted',       label: 'Fitted / DNP' },
+        ];
+    }
+
+    /** Split a header row the same way the server does — , ; and tab. */
+    splitRow(line) {
+        return String(line || '').split(/[,;\t]/).map(s => s.trim().replace(/^"|"$/g, ''));
+    }
+
+    async askMapping() {
+        const lines = this.state.pasteText.split(/\r?\n/).filter(l => l.trim());
+        if (!lines.length) return;
+        this.state.mapBusy = true;
+        this.state.error = '';
+        try {
+            // Only the header and a couple of rows: the mapping is decidable
+            // from the shape, and shipping the whole BOM to a vendor costs
+            // tokens and gives away the part list for nothing.
+            const r = await RpcService.call('ir.ai.settings', 'map_bom_headers',
+                [{ header: lines[0], samples: lines.slice(1, 4) }], {});
+            if (!r || !r.ok) {
+                this.state.error = (r && r.detail) || 'The assistant could not map those columns.';
+            } else {
+                this.state.mapHeaders = this.splitRow(lines[0]);
+                this.state.mapping = r.mapping || {};
+                this.state.mapFittedNeg = !!r.fitted_negated;
+                this.state.mapNotes = r.notes || '';
+                this.state.mapTool = r.mocked ? 'the mock provider' : (r.tool || '');
+            }
+        } catch (e) {
+            this.state.error = (e && e.message) || String(e);
+        }
+        this.state.mapBusy = false;
+    }
+
+    /** Map the columns without asking anyone — an empty grid to fill in. */
+    mapByHand() {
+        const lines = this.state.pasteText.split(/\r?\n/).filter(l => l.trim());
+        this.state.mapHeaders = this.splitRow(lines[0] || '');
+        this.state.mapping = {};
+        this.state.mapFittedNeg = false;
+        this.state.mapNotes = '';
+        this.state.mapTool = '';
+    }
+
+    // ---- tidy up ------------------------------------------------------------
+    /**
+     * Ask the assistant to normalise the staged rows to house conventions.
+     *
+     * Proposes only. The rewritten rows go back through `parse`, which
+     * re-resolves every one of them against the catalogue — so tidying changes
+     * how a row is WRITTEN, never which part it becomes.
+     */
+    async tidyRows() {
+        if (!this.state.staged.length) return;
+        this.state.tidyBusy = true;
+        this.state.error = '';
+        try {
+            const rows = this.state.staged.map(s => ({
+                designators: s.designators || '', quantity: s.quantity || 0,
+                mpn: s.mpn || '', manufacturer: s.manufacturer || '',
+                value: s.value || '', footprint: s.footprint || '',
+                description: s.description || '', fitted: s.fitted !== false,
+            }));
+            const r = await RpcService.call('ir.ai.settings', 'clean_bom_rows', [{ rows }], {});
+            if (!r || !r.ok) {
+                this.state.error = (r && r.detail) || 'The assistant could not tidy these rows.';
+            } else {
+                this.state.tidy = { rows: r.rows || [], changed: r.changed || [], notes: r.notes || '' };
+            }
+        } catch (e) {
+            this.state.error = (e && e.message) || String(e);
+        }
+        this.state.tidyBusy = false;
+    }
+
+    async applyTidy() {
+        if (!this.state.tidy) return;
+        this.state.busy = true;
+        this.state.error = '';
+        try {
+            // `rows` is the importer's own agent path — the tidied rows are
+            // validated and resolved exactly like any other import.
+            const d = await RpcService.call('bom.import', 'parse',
+                [{ bom_id: this.state.bomId, rows: this.state.tidy.rows }], {});
+            this.state.staged = (d && d.rows) || [];
+            this.state.draft = (d && d.draft) || null;
+            this.state.notice = 'Tidied and re-resolved.';
+            this.state.tidy = null;
+        } catch (e) {
+            this.state.error = (e && e.message) || 'Those rows could not be re-imported.';
+        }
+        this.state.busy = false;
+    }
+
+    setMap(field, ev) {
+        const v = ev.target.value;
+        const m = Object.assign({}, this.state.mapping);
+        if (v === '') delete m[field]; else m[field] = parseInt(v, 10);
+        this.state.mapping = m;
+    }
+
+    applyMapping() {
+        const m = Object.assign({}, this.state.mapping);
+        if (m.fitted !== undefined) m.fitted_negated = this.state.mapFittedNeg;
+        this.parseText(m);
     }
 
     async chooseCandidate(row, ev) {

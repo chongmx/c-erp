@@ -19,7 +19,7 @@ source tests/lib/harness.sh
 #   * inventory adjustment (set_on_hand) books the difference through
 #     the Inventory Adjustments location
 #   * allow-negative: a delivery beyond on-hand still validates and
-#     drives the location negative (Odoo default)
+#     drives the location negative (the reference ERP default)
 #   * the On Hand report lists internal-location quants only
 # =============================================================
 BASE=${BASE:-http://127.0.0.1:8069}

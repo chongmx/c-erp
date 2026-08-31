@@ -32,6 +32,7 @@ target_include_directories(c-erp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core/factories
     ${CMAKE_CURRENT_SOURCE_DIR}/core/infrastructure
     ${CMAKE_CURRENT_SOURCE_DIR}/core/interfaces
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/website
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/base
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/ir
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/auth
@@ -86,11 +87,18 @@ add_executable(erp_tests EXCLUDE_FROM_ALL
     ${TEST_SOURCES}
     core/Money.cpp
     core/TaxEngine.cpp
+    # The website sanitiser and slug validator are pure functions guarding a
+    # PUBLIC page, so they belong in the millisecond tier where every XSS
+    # vector can be asserted without a server (docs/115 §5).
+    modules/website/WebsiteRender.cpp
+    modules/website/WebsitePalette.cpp
+    modules/website/WebsiteMedia.cpp
     # SessionManager is header-only; test_session.cpp includes it directly.
 )
 target_include_directories(erp_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/website
     ${CMAKE_CURRENT_SOURCE_DIR}/core/infrastructure
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/include

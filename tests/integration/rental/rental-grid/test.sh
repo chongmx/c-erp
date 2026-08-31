@@ -92,7 +92,7 @@ for f in '"code"' '"state"' '"zone"' '"type_id"'; do
     printf '%s' "$R" | grep -q "$f" && ok "response carries $f" || no "$f missing from search_read"
 done
 
-# This backend returns a many2one as a BARE ID, not Odoo's [id, label]
+# This backend returns a many2one as a BARE ID, not the reference ERP's [id, label]
 # pair — formatCell() in app.js copes with both, and that is the
 # convention here. The component must therefore resolve the label itself
 # from the unit types it loads separately. Assuming the pair rendered a

@@ -107,4 +107,50 @@ has_error(){
 http_get(){ curl -s -H "Cookie: session_id=${SID:-}" "$BASE$1"; }
 http_code(){ curl -s -o /dev/null -w '%{http_code}' -H "Cookie: session_id=${SID:-}" "$BASE$1"; }
 
+# =============================================================
+# The customer portal — a SEPARATE authentication surface.
+#
+# Different login route, different cookie (`portal_sid`), different session
+# store, and a partner id rather than a user id. A staff `session_id` buys
+# nothing on /portal/api/*, and a portal cookie buys nothing on
+# /web/dataset/call_kw — which is the entire point, and why these are their own
+# helpers rather than a flag on call().
+#
+# Every helper takes the session EXPLICITLY. A portal test is mostly about what
+# customer B cannot see, so it juggles two live sessions at once; a cached
+# global like $SID would quietly make half those assertions test the wrong
+# customer and pass.
+# =============================================================
+PORTAL_COOKIE=${PORTAL_COOKIE:-portal_sid}
+
+# portal_login <email> <password> -> portal session id, empty when refused.
+# Read off Set-Cookie rather than the body: the cookie IS the credential, so a
+# route that answers 200 without setting one has not logged anybody in.
+portal_login(){
+    curl -s -i -X POST "$BASE/portal/api/login" -H 'Content-Type: application/json' \
+        --data "{\"email\":\"$1\",\"password\":\"$2\"}" \
+    | tr -d '\r' \
+    | sed -n "s/^[Ss]et-[Cc]ookie: *$PORTAL_COOKIE=\([^;]*\).*/\1/p" | head -1
+}
+
+# portal_get  <psid> <path>  -> body
+# portal_code <psid> <path>  -> HTTP status only
+# portal_post <psid> <path> <json-body> -> body
+#
+# Pass an empty psid to make the call as an anonymous visitor.
+portal_get(){  curl -s               -H "Cookie: $PORTAL_COOKIE=${1:-}" "$BASE$2"; }
+portal_code(){ curl -s -o /dev/null -w '%{http_code}' \
+                                     -H "Cookie: $PORTAL_COOKIE=${1:-}" "$BASE$2"; }
+portal_post(){ curl -s -X POST -H 'Content-Type: application/json' \
+                                     -H "Cookie: $PORTAL_COOKIE=${1:-}" \
+                   --data "${3:-{\}}" "$BASE$2"; }
+portal_post_code(){ curl -s -o /dev/null -w '%{http_code}' -X POST \
+                   -H 'Content-Type: application/json' \
+                   -H "Cookie: $PORTAL_COOKIE=${1:-}" \
+                   --data "${3:-{\}}" "$BASE$2"; }
+
+# portal_upload <psid> <path> <file> -> body   (multipart, for payment proofs)
+portal_upload(){ curl -s -X POST -H "Cookie: $PORTAL_COOKIE=${1:-}" \
+                     -F "file=@$3" "$BASE$2"; }
+
 export PYTHONIOENCODING=utf-8

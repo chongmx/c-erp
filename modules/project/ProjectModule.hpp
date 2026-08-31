@@ -32,7 +32,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::project {
+namespace cerp::modules::project {
 
 class ProjectModule : public core::IModule {
 public:
@@ -64,4 +64,4 @@ private:
     void seedMenus_();
 };
 
-} // namespace odoo::modules::project
+} // namespace cerp::modules::project
