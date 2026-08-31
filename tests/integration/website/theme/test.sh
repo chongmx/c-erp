@@ -93,6 +93,18 @@ t_nonempty "$PID" "a published page exists"
 sec "10. the front door — / is the website, /login is the ERP (docs/126)"
 # ------------------------------------------------------------------
 # Make this page the homepage so "/" has something to serve.
+#
+# is_homepage is GLOBAL state — exactly one row carries it — so the row that
+# had it is remembered and handed back at the end. Without that, running this
+# file against a working database (--no-baseline) would silently leave the real
+# site with no homepage, and "/" would redirect to /login for everyone.
+PREV_HOME=$(pg "SELECT id FROM website_page WHERE is_homepage=TRUE LIMIT 1" | tr -dc '0-9')
+restore_home() {
+    pg "UPDATE website_page SET is_homepage=FALSE WHERE is_homepage=TRUE" >/dev/null
+    [ -n "$PREV_HOME" ] && \
+        pg "UPDATE website_page SET is_homepage=TRUE WHERE id=$PREV_HOME" >/dev/null
+}
+trap 'restore_home; cleanup' EXIT
 pg "UPDATE website_page SET is_homepage=FALSE WHERE is_homepage=TRUE" >/dev/null
 pg "UPDATE website_page SET is_homepage=TRUE, is_published=TRUE, is_indexed=TRUE WHERE id=$PID" >/dev/null
 
