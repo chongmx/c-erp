@@ -64,9 +64,14 @@ if (!gen?.reset_url) { report.errors.push('no reset_url from generator'); done(1
 report.steps.linkMinted = true;
 
 // The generator builds the URL from web.base.url, which may be a non-local
-// host; drive the LOCAL server with the same query string.
-const q = gen.reset_url.split('?')[1] || '';
-const targetUrl = `${BASE}/?${q}`;
+// host; drive the LOCAL server with the same PATH and query.
+//
+// The path is taken from the minted link rather than assumed to be "/". It
+// used to be hardcoded, which meant this test kept passing against a path the
+// test invented while the product's real link pointed somewhere else — the
+// exact failure that happened when the application moved to /login (docs/126).
+const minted = new URL(gen.reset_url);
+const targetUrl = `${BASE}${minted.pathname}${minted.search}`;
 
 // 2. Open the link as an anonymous visitor (no session cookie at all).
 const browser = await puppeteer.launch({ executablePath: CHROME,

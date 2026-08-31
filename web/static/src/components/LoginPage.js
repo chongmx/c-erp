@@ -10,7 +10,7 @@
  * There is no "Sign up" and no "Forgot password?" here, by design: accounts are
  * created by an administrator, and a password reset only happens through a link
  * an administrator generates and sends. When the user opens such a link
- * (…/?reset_login=…&reset_token=…) this same page detects the token in the URL
+ * (…/login?reset_login=&reset_token=…) this same page detects the token in the URL
  * and shows a "set a new password" panel instead of the login form — that is
  * the only self-service moment, and it needs a token the user could only have
  * received from an admin.

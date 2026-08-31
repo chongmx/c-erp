@@ -531,7 +531,11 @@ private:
         // The link lands on the SPA (served unauthenticated → the login page),
         // which reads these params and shows a "set a new password" panel that
         // POSTs the completion. login is percent-encoded because it is an email.
-        const std::string url = base + "/?reset_login=" + urlEncode_(login)
+        // /login, not "/" — the bare domain is the public website now
+        // (docs/126). A reset link pointing at "/" opens the marketing site,
+        // which renders no reset panel at all, so every admin-issued link
+        // would be silently dead.
+        const std::string url = base + "/login?reset_login=" + urlEncode_(login)
                                      + "&reset_token=" + token;
 
         return nlohmann::json{
