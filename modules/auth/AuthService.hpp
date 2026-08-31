@@ -15,16 +15,16 @@
 #include <openssl/bio.h>
 #include <openssl/buffer.h>
 
-namespace odoo::modules::auth {
+namespace cerp::modules::auth {
 
 // ================================================================
 // AuthService
 // ================================================================
 /**
- * @brief Authentication service implementing Odoo's PBKDF2-SHA512
+ * @brief Authentication service implementing the reference ERP's PBKDF2-SHA512
  *        password scheme.
  *
- * Odoo 19 stores passwords in the format used by passlib / Django:
+ * the reference ERP stores passwords in the format used by passlib / Django:
  *   $pbkdf2-sha512$<rounds>$<base64-salt>$<base64-hash>
  *
  * Example:
@@ -106,11 +106,11 @@ public:
     /**
      * @brief Hash a plaintext password using PBKDF2-SHA512.
      *
-     * Produces a string in Odoo's passlib format:
+     * Produces a string in the reference ERP's passlib format:
      *   $pbkdf2-sha512$<rounds>$<base64-salt>$<base64-hash>
      *
      * @param password  Plaintext password.
-     * @param rounds    Iteration count (Odoo 19 default: 600000).
+     * @param rounds    Iteration count (the reference ERP default: 600000).
      * @returns         Hash string ready for storage in res_users.password.
      */
     static std::string hashPassword(const std::string& password,
@@ -139,6 +139,31 @@ public:
              + base64Encode_(hash,  sizeof(hash));
     }
 
+    /**
+     * @brief A cryptographically-random opaque token, hex-encoded.
+     *
+     * Used for admin-issued password-reset links: the admin generates one, it
+     * is stored against the user (with an expiry) and handed to the user out of
+     * band. `nbytes` bytes of RAND give `2*nbytes` hex chars — 24 bytes (48
+     * hex) is well beyond guessing range for a 24-hour, single-use secret.
+     */
+    static std::string randomToken(std::size_t nbytes = 24) {
+        std::vector<unsigned char> buf(nbytes);
+        if (RAND_bytes(buf.data(), static_cast<int>(buf.size())) != 1)
+            throw std::runtime_error("AuthService: failed to generate random token");
+        static const char* hexd = "0123456789abcdef";
+        std::string out;
+        out.reserve(nbytes * 2);
+        for (unsigned char b : buf) { out += hexd[b >> 4]; out += hexd[b & 0x0F]; }
+        return out;
+    }
+
+    /// Public wrapper: verify a plaintext password against a stored PBKDF2 hash.
+    /// Used for re-confirming identity before destructive admin actions.
+    static bool verifyPassword(const std::string& plaintext, const std::string& storedHash) {
+        return verifyPassword_(plaintext, storedHash);
+    }
+
     // ----------------------------------------------------------
     // Health check
     // ----------------------------------------------------------
@@ -159,7 +184,7 @@ private:
     // ----------------------------------------------------------
 
     /**
-     * Parse Odoo's passlib PBKDF2-SHA512 hash string and verify.
+     * Parse the reference ERP's passlib PBKDF2-SHA512 hash string and verify.
      *
      * Format: $pbkdf2-sha512$<rounds>$<base64-salt>$<base64-hash>
      *
@@ -244,4 +269,4 @@ private:
     }
 };
 
-} // namespace odoo::modules::auth
+} // namespace cerp::modules::auth

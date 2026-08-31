@@ -18,9 +18,9 @@
 
 #include <nlohmann/json.hpp>
 
-namespace odoo::infrastructure { class DbConnection; }
+namespace cerp::infrastructure { class DbConnection; }
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
 class RentalDashboard {
 public:
@@ -33,4 +33,4 @@ public:
                                 bool fresh  = false);
 };
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

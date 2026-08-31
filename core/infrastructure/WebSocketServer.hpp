@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 class WebSocketServer;
 
@@ -247,4 +247,4 @@ inline void BusController::handleNewMessage(
         service_->onMessage(conn, msg);
 }
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

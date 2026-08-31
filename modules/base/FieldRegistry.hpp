@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <stdexcept>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // FieldType
@@ -98,7 +98,7 @@ struct FieldDef {
      * Override afterwards for the handful that differ — unit prices want
      * "Product Price" (5 dp), not "Account" (2 dp).
      *
-     * Surfaces in fields_get as `digits: [16, N]`, the Odoo convention the
+     * Surfaces in fields_get as `digits: [16, N]`, the reference ERP convention the
      * OWL client already understands.
      */
     std::string precisionName;
@@ -210,7 +210,7 @@ public:
     const std::vector<FieldDef>& all() const { return fields_; }
 
     /**
-     * @brief Produce an Odoo-compatible fields_get() JSON object.
+     * @brief Produce an the reference ERP-compatible fields_get() JSON object.
      *
      * @param filter  If non-empty, only include these field names.
      * @param attrs   If non-empty, only include these attribute keys per field.
@@ -320,4 +320,4 @@ private:
     std::unordered_map<std::string, std::size_t> index_;
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

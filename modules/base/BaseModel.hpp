@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // ODOO_MODEL macro
@@ -94,10 +94,16 @@ public:
     // IModel — CRUD
     // ----------------------------------------------------------
     int create(const nlohmann::json& values) override {
-        fromJson(values);
+        nlohmann::json vals = values;
+        coerceNumericStrings_(vals);   // "330" -> 330 before the member round-trip
+        const int stampedCompany = stampCompany_(vals);   // docs/094
+        fromJson(vals);
         const auto errors = static_cast<TDerived*>(this)->validate();
         if (!errors.empty())
-            throw std::runtime_error("Validation failed: " + errors[0]);
+            // A missing/invalid field is a USER error, not a server fault: throw
+            // ValidationError so the dispatcher returns it as a 400 with the
+            // message ("Name is required") instead of a 500 "Internal Error".
+            throw cerp::infrastructure::ValidationError(errors[0]);
 
         const auto cols = fieldRegistry_.storedColumnNames();
         nlohmann::json full = toJson();
@@ -116,16 +122,58 @@ public:
             first = false;
         }
 
+        // docs/094: most models with a company_id column never register it as a
+        // field, so the loop above — which walks the field registry — would drop
+        // the stamp and insert NULL, which under the NULL-is-shared rule means
+        // the record would be visible to every company. Add the column here when
+        // the registry did not carry it.
+        if (stampedCompany > 0 && !fieldRegistry_.has("company_id")) {
+            if (!first) { colList += ","; placeholders += ","; }
+            colList      += "company_id";
+            placeholders += "$" + std::to_string(idx++);
+            params.append(stampedCompany);
+            first = false;
+        }
+
         const std::string sql =
             "INSERT INTO " + std::string(TDerived::TABLE_NAME) +
             " (" + colList + ") VALUES (" + placeholders + ") RETURNING id";
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
-        auto row = txn.exec(sql, params).one_row();
+        pqxx::result res;
+        try {
+            res = txn.exec(sql, params);
+        } catch (const pqxx::sql_error& e) {
+            // A NOT NULL / CHECK violation means the user omitted a required
+            // field. Surface it as a ValidationError (400 "… is required")
+            // rather than a raw 500 "Internal Error". The column name is not
+            // sensitive; the full SQL text (SEC-28) is never included.
+            const std::string what = e.what();
+            const std::string col  = notNullColumn_(what);
+            if (!col.empty())
+                throw cerp::infrastructure::ValidationError(
+                    "The field '" + col + "' is required.");
+            if (what.find("violates check constraint") != std::string::npos)
+                throw cerp::infrastructure::ValidationError(
+                    "A value is out of the allowed range for this record.");
+            throw;   // anything else stays a gated internal error
+        }
+        auto row = res.one_row();
         txn.commit();
         id_ = row[0].as<int>();
         return id_;
+    }
+
+    // Extract the column from a Postgres "null value in column \"x\" ... violates
+    // not-null constraint" message; empty string if it isn't that error.
+    static std::string notNullColumn_(const std::string& msg) {
+        if (msg.find("not-null constraint") == std::string::npos) return {};
+        const auto a = msg.find("column \"");
+        if (a == std::string::npos) return {};
+        const auto b = msg.find('"', a + 8);
+        if (b == std::string::npos) return {};
+        return msg.substr(a + 8, b - (a + 8));
     }
 
     nlohmann::json read(const std::vector<int>&         ids,
@@ -140,6 +188,7 @@ public:
 
         // S-30: inject record-rule filter after the ids param ($2+)
         appendRuleClause_(sql, params, RuleOp::Read, 1);
+        appendCompanyClause_(sql);   // docs/094
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
@@ -151,6 +200,7 @@ public:
                const nlohmann::json&    values) override {
         // OCC: work on a mutable copy so we can strip the concurrency sentinel
         nlohmann::json vals = values;
+        coerceNumericStrings_(vals);   // "330" -> 330 so scaled fields scale
 
         // OCC: extract __expected_write_date before building SET clause
         std::string expectedWd;
@@ -199,6 +249,8 @@ public:
 
         // S-30: inject record-rule filter after all explicit params
         appendRuleClause_(sql, params, RuleOp::Write, paramCount);
+        appendCompanyClause_(sql);   // docs/094 — an id from another company
+                                     // must not be updatable by guessing it
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
@@ -223,6 +275,7 @@ public:
 
         // S-30: inject record-rule filter after the ids param
         appendRuleClause_(sql, params, RuleOp::Unlink, 1);
+        appendCompanyClause_(sql);   // docs/094 — likewise for delete
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
@@ -244,6 +297,7 @@ public:
         std::string sql =
             "SELECT id FROM " + std::string(TDerived::TABLE_NAME) +
             " WHERE " + where;
+        appendCompanyClause_(sql);   // docs/094
         if (!order.empty()) sql += " ORDER BY " + order;
         if (limit  > 0)     sql += " LIMIT "  + std::to_string(limit);
         if (offset > 0)     sql += " OFFSET " + std::to_string(offset);
@@ -281,6 +335,7 @@ public:
         std::string sql =
             "SELECT " + cols + " FROM " + std::string(TDerived::TABLE_NAME) +
             " WHERE " + where;
+        appendCompanyClause_(sql);   // docs/094
         if (!order.empty()) sql += " ORDER BY " + order;
         if (limit  > 0)     sql += " LIMIT "  + std::to_string(limit);
         if (offset > 0)     sql += " OFFSET " + std::to_string(offset);
@@ -301,9 +356,11 @@ public:
         // S-30: merge rule domain
         const nlohmann::json merged = mergeRuleDomain_(domainJson, RuleOp::Read);
         auto [where, paramVec] = domainFromJson(merged).toSql(&filterableColumns_());
-        const std::string sql =
+        std::string sql =
             "SELECT COUNT(*) FROM " + std::string(TDerived::TABLE_NAME) +
             " WHERE " + where;
+        appendCompanyClause_(sql);   // docs/094 — a count must not reveal rows
+                                     // the same domain would refuse to return
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
         pqxx::result res;
@@ -314,6 +371,236 @@ public:
             res = txn.exec(sql, p);
         }
         return res[0][0].as<int>();
+    }
+
+    // ----------------------------------------------------------
+    // read_group — grouped aggregation (docs/095)
+    // ----------------------------------------------------------
+    /**
+     * @brief Aggregate rows into groups, the reference ERP's `read_group` contract.
+     *
+     * This is the primitive the whole reporting surface stands on: grouped
+     * lists, the pivot, the graph and the kanban board are all read_group with
+     * a different renderer. Before it existed, every one of those had to be a
+     * bespoke screen with its own hand-written SQL — which is exactly why the
+     * dashboards in this codebase are bespoke screens with hand-written SQL.
+     *
+     * @param domainJson  filter, same as search
+     * @param fieldsJson  fields to aggregate: numeric ones get SUM
+     * @param groupbyJson one or more group keys. A date field may carry a
+     *                    granularity — "date:month" — as the reference ERP spells it.
+     * @param limit/offset/orderBy paging over the GROUPS, not the rows.
+     *
+     * Returns one object per group carrying the group key, `__count`, the
+     * aggregates, and `__domain` — the filter that selects exactly this
+     * group's rows, so a client can drill in without reconstructing it.
+     */
+    nlohmann::json readGroup(const nlohmann::json& domainJson,
+                             const nlohmann::json& fieldsJson,
+                             const nlohmann::json& groupbyJson,
+                             int limit = 0, int offset = 0,
+                             const std::string& orderBy = "") override {
+        // ---- resolve the group keys ------------------------------------
+        struct GroupKey {
+            std::string field;      // registered column
+            std::string interval;   // "" | day | week | month | quarter | year
+            std::string expr;       // SQL expression to GROUP BY
+            std::string alias;      // result column name
+        };
+        std::vector<GroupKey> keys;
+        auto addKey = [&](const std::string& spec) {
+            std::string field = spec, interval;
+            const auto colon = spec.find(':');
+            if (colon != std::string::npos) {
+                field    = spec.substr(0, colon);
+                interval = spec.substr(colon + 1);
+            }
+            if (!fieldRegistry_.has(field))
+                throw cerp::infrastructure::ValidationError("Unknown group-by field: " + field);
+            const auto& fd = fieldRegistry_.get(field);
+            GroupKey k;
+            k.field    = field;
+            k.interval = interval;
+            k.alias    = "g" + std::to_string(keys.size());
+            if (!interval.empty()) {
+                // Only these five, and matched exactly — the value reaches
+                // date_trunc as SQL text, so it can never be caller-supplied.
+                static const std::set<std::string> kIntervals =
+                    {"day", "week", "month", "quarter", "year"};
+                if (!kIntervals.count(interval))
+                    throw cerp::infrastructure::ValidationError(
+                        "Unsupported group-by interval: " + interval);
+                k.expr = "date_trunc('" + interval + "', " + field + ")";
+            } else if (fd.type == FieldType::Date || fd.type == FieldType::Datetime) {
+                k.expr = "date_trunc('month', " + field + ")";
+                k.interval = "month";
+            } else {
+                k.expr = field;
+            }
+            keys.push_back(std::move(k));
+        };
+        if (groupbyJson.is_string()) addKey(groupbyJson.get<std::string>());
+        else if (groupbyJson.is_array())
+            for (const auto& g : groupbyJson)
+                if (g.is_string()) addKey(g.get<std::string>());
+        if (keys.empty())
+            throw cerp::infrastructure::ValidationError("read_group needs at least one group-by field.");
+
+        // ---- resolve the measures --------------------------------------
+        // the reference ERP sends the whole field list; only the numeric ones can be summed,
+        // and silently skipping the rest is what the client expects.
+        struct Measure { std::string field, alias; bool scaled; };
+        std::vector<Measure> measures;
+        auto addMeasure = [&](std::string spec) {
+            // "amount_total:sum" — the aggregate suffix is accepted and ignored;
+            // SUM is the only one the client ever asks for here.
+            const auto colon = spec.find(':');
+            if (colon != std::string::npos) spec = spec.substr(0, colon);
+            if (spec == "id" || !fieldRegistry_.has(spec)) return;
+            const auto& fd = fieldRegistry_.get(spec);
+            const bool numeric = fd.type == FieldType::Integer || fd.type == FieldType::Float ||
+                                 fd.type == FieldType::Monetary;
+            if (!numeric) return;
+            for (const auto& k : keys) if (k.field == spec) return;   // never sum a group key
+            for (const auto& m : measures) if (m.field == spec) return;
+            measures.push_back({spec, "m" + std::to_string(measures.size()), fd.scaled});
+        };
+        if (fieldsJson.is_array())
+            for (const auto& f : fieldsJson) if (f.is_string()) addMeasure(f.get<std::string>());
+
+        // ---- build the statement ---------------------------------------
+        const nlohmann::json merged = mergeRuleDomain_(domainJson, RuleOp::Read);
+        auto [where, paramVec] = domainFromJson(merged).toSql(&filterableColumns_());
+
+        std::string sel, grp;
+        for (std::size_t i = 0; i < keys.size(); ++i) {
+            if (i) { sel += ", "; grp += ", "; }
+            sel += keys[i].expr + " AS " + keys[i].alias;
+            grp += keys[i].expr;
+            // Select the bucket's exclusive end next to its start so the group's
+            // __domain is half-open and two adjacent buckets can never both
+            // claim the same row.
+            if (!keys[i].interval.empty())
+                sel += ", (" + keys[i].expr + " + interval '" +
+                       bucketStep_(keys[i].interval) + "') AS " + keys[i].alias + "_end";
+        }
+        sel += ", COUNT(*) AS __count";
+        for (const auto& m : measures)
+            sel += ", SUM(" + m.field + ") AS " + m.alias;
+
+        std::string sql = "SELECT " + sel + " FROM " + std::string(TDerived::TABLE_NAME) +
+                          " WHERE " + where;
+        appendCompanyClause_(sql);          // docs/094 — groups must not span companies
+        sql += " GROUP BY " + grp;
+
+        // ORDER BY over groups: an aggregate alias or a group key, nothing else.
+        std::string order;
+        if (!orderBy.empty()) {
+            std::string col = orderBy, dir = "ASC";
+            const auto sp = orderBy.find(' ');
+            if (sp != std::string::npos) {
+                col = orderBy.substr(0, sp);
+                dir = lowerAscii_(orderBy.substr(sp + 1)) == "desc" ? "DESC" : "ASC";
+            }
+            if (col == "__count") order = " ORDER BY __count " + dir;
+            for (const auto& k : keys) if (k.field == col) order = " ORDER BY " + k.alias + " " + dir;
+            for (const auto& m : measures) if (m.field == col) order = " ORDER BY " + m.alias + " " + dir;
+        }
+        if (order.empty()) order = " ORDER BY " + keys[0].alias + " ASC NULLS LAST";
+        sql += order;
+        if (limit  > 0) sql += " LIMIT "  + std::to_string(limit);
+        if (offset > 0) sql += " OFFSET " + std::to_string(offset);
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        pqxx::result res;
+        if (paramVec.empty()) res = txn.exec(sql);
+        else { pqxx::params p; for (auto& s : paramVec) p.append(s); res = txn.exec(sql, p); }
+
+        // ---- shape the reply -------------------------------------------
+        // Many2one keys are resolved to [id, display_name] in one extra query
+        // per key rather than one per row.
+        std::map<std::string, std::map<int, std::string>> labels;
+        for (const auto& k : keys) {
+            const auto& fd = fieldRegistry_.get(k.field);
+            if (fd.type != FieldType::Many2one || fd.relation.empty()) continue;
+            std::set<int> ids;
+            const auto ci = res.column_number(k.alias);
+            for (const auto& row : res)
+                if (!row[ci].is_null()) ids.insert(row[ci].template as<int>(0));
+            if (ids.empty()) continue;
+            labels[k.field] = resolveM2oLabels_(txn, fd.relation, ids);
+        }
+
+        // Resolve column positions once. Indexing a row by name inside this
+        // template also makes `as<>` a dependent name, which is a needless
+        // fight with the compiler for something that is faster done by index.
+        struct KeyCol { std::size_t idx; std::size_t endIdx; bool hasEnd; };
+        std::vector<KeyCol> keyCols;
+        for (const auto& k : keys) {
+            KeyCol kc{res.column_number(k.alias), 0, !k.interval.empty()};
+            if (kc.hasEnd) kc.endIdx = res.column_number(k.alias + "_end");
+            keyCols.push_back(kc);
+        }
+        std::vector<std::size_t> measureCols;
+        for (const auto& m : measures) measureCols.push_back(res.column_number(m.alias));
+        const auto countCol = res.column_number("__count");
+
+        nlohmann::json out = nlohmann::json::array();
+        for (const auto& row : res) {
+            nlohmann::json g = nlohmann::json::object();
+            nlohmann::json gdom = nlohmann::json::array();
+
+            for (std::size_t i = 0; i < keys.size(); ++i) {
+                const auto& k  = keys[i];
+                const auto& fd = fieldRegistry_.get(k.field);
+                const auto& f  = row[keyCols[i].idx];
+                const std::string outKey = k.interval.empty() ? k.field
+                                                              : (k.field + ":" + k.interval);
+                if (f.is_null()) {
+                    g[outKey] = false;
+                    gdom.push_back({k.field, "=", nullptr});
+                } else if (fd.type == FieldType::Many2one) {
+                    const int id = f.template as<int>(0);
+                    const auto it = labels.find(k.field);
+                    std::string lbl = (it != labels.end() && it->second.count(id))
+                                          ? it->second.at(id) : ("#" + std::to_string(id));
+                    g[outKey] = nlohmann::json::array({id, lbl});
+                    gdom.push_back({k.field, "=", id});
+                } else if (!k.interval.empty()) {
+                    // date_trunc returns a timestamp; the client wants the bucket
+                    // start plus the half-open range it can filter on.
+                    std::string v = f.c_str();
+                    if (v.size() >= 10) v = v.substr(0, 10);
+                    const auto& fe = row[keyCols[i].endIdx];
+                    std::string endv = fe.is_null() ? std::string{} : std::string(fe.c_str());
+                    if (endv.size() >= 10) endv = endv.substr(0, 10);
+                    g[outKey] = v;
+                    gdom.push_back({k.field, ">=", v});
+                    if (!endv.empty()) gdom.push_back({k.field, "<", endv});
+                } else if (fd.type == FieldType::Boolean) {
+                    const bool b = f.template as<bool>(false);
+                    g[outKey] = b;
+                    gdom.push_back({k.field, "=", b});
+                } else {
+                    const std::string v = f.c_str();
+                    g[outKey] = v;
+                    gdom.push_back({k.field, "=", v});
+                }
+            }
+
+            g["__count"] = row[countCol].template as<long long>(0);
+            for (std::size_t i = 0; i < measures.size(); ++i) {
+                const auto& f = row[measureCols[i]];
+                if (f.is_null())            g[measures[i].field] = 0;
+                else if (measures[i].scaled)
+                    g[measures[i].field] = Money::fromMicros(f.template as<long long>(0)).toJson();
+                else                        g[measures[i].field] = f.template as<double>(0);
+            }
+            g["__domain"] = std::move(gdom);
+            out.push_back(std::move(g));
+        }
+        return out;
     }
 
     // ----------------------------------------------------------
@@ -345,6 +632,197 @@ private:
             return std::set<std::string>(v.begin(), v.end());
         }();
         return cols;
+    }
+
+    // ── read_group helpers (docs/095) ──────────────────────────
+
+    static std::string lowerAscii_(std::string s) {
+        for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    }
+
+    /// The SQL interval that advances one bucket. Used to select the bucket's
+    /// exclusive end alongside its start, so PostgreSQL does the calendar
+    /// arithmetic — month lengths and leap years are not worth reimplementing.
+    static const char* bucketStep_(const std::string& interval) {
+        if (interval == "day")     return "1 day";
+        if (interval == "week")    return "1 week";
+        if (interval == "quarter") return "3 months";
+        if (interval == "year")    return "1 year";
+        return "1 month";
+    }
+
+    /// Resolve display names for a set of many2one ids in one round trip.
+    /// Falls back to the id when the target has no obvious label column, which
+    /// keeps a group readable rather than blank.
+    std::map<int, std::string> resolveM2oLabels_(pqxx::transaction_base& txn,
+                                                 const std::string& model,
+                                                 const std::set<int>& ids) const {
+        std::map<int, std::string> out;
+        if (ids.empty()) return out;
+        std::string table;
+        for (char c : model) table += (c == '.') ? '_' : c;
+        try {
+            // Pick the first label-ish column this table actually has.
+            static const std::vector<std::string> kCandidates =
+                {"name", "complete_name", "display_name", "code", "login"};
+            std::string labelCol;
+            for (const auto& c : kCandidates) {
+                auto r = txn.exec(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name=$1 AND column_name=$2",
+                    pqxx::params{table, c});
+                if (!r.empty()) { labelCol = c; break; }
+            }
+            if (labelCol.empty()) return out;
+            std::string idList;
+            for (int id : ids) { if (!idList.empty()) idList += ","; idList += std::to_string(id); }
+            auto r = txn.exec("SELECT id, " + txn.quote_name(labelCol) +
+                              " FROM " + txn.quote_name(table) +
+                              " WHERE id IN (" + idList + ")");
+            for (const auto& row : r)
+                out[row[0].as<int>()] = row[1].is_null() ? "" : row[1].c_str();
+        } catch (const std::exception&) {
+            // A missing or unreadable relation must not fail the whole grouping.
+        }
+        return out;
+    }
+
+    // ── docs/094: multi-company scoping ────────────────────────
+    //
+    // Every table that carries a company_id is filtered to the caller's ACTIVE
+    // company, plus rows whose company_id IS NULL — those are shared records
+    // (a product available to the whole group, a country, a currency), which is
+    // the same convention the reference ERP uses.
+    //
+    // This deliberately does NOT go through ir.rule, for two reasons:
+    //
+    //  1. RuleEngine::buildRuleDomain returns immediately for ctx.isAdmin, so a
+    //     company rule expressed as an ir.rule would not apply to the admin —
+    //     which is the account nearly everyone actually uses. Company scoping
+    //     that the main user bypasses is not scoping.
+    //  2. Rules are per-model rows someone has to remember to add. This applies
+    //     to every model with a company_id automatically, so a new module cannot
+    //     forget to opt in.
+    //
+    // It is applied on read, search, write AND unlink. Read-side filtering alone
+    // would still let a caller who guesses an id modify or delete another
+    // company's row, because write/unlink address rows by id, not by domain.
+    //
+    // uid == 0 means an internal caller (migrations, cron, startup seeding) that
+    // never had a session; those legitimately operate across companies. Every
+    // HTTP path is authenticated before it reaches a model, so uid == 0 is not
+    // reachable from outside.
+    // Whether this model's TABLE has a company_id column.
+    //
+    // Deliberately not `fieldRegistry_.has("company_id")`. The registry lists
+    // the fields a model chose to declare, and most models with a company_id
+    // column never declare it — res.partner is one — so keying on the registry
+    // left scoping switched off for exactly the models that carry the column.
+    // The table is the ground truth; one catalogue query answers it for every
+    // model at once and is cached for the process lifetime.
+    static const std::set<std::string>& companyTables_(infrastructure::DbConnection& db) {
+        static const std::set<std::string> tables = [&db] {
+            std::set<std::string> t;
+            try {
+                auto conn = db.acquire();
+                pqxx::work txn{conn.get()};
+                for (const auto& r : txn.exec(
+                         "SELECT table_name FROM information_schema.columns "
+                         "WHERE table_schema='public' AND column_name='company_id'"))
+                    t.insert(r[0].c_str());
+            } catch (const std::exception&) {
+                // Leave empty; hasCompanyColumn_ falls back to the registry.
+            }
+            return t;
+        }();
+        return tables;
+    }
+
+    bool hasCompanyColumn_() const {
+        if (!db_) return false;
+        const auto& t = companyTables_(*db_);
+        if (t.empty()) return fieldRegistry_.has("company_id");   // catalogue unavailable
+        return t.count(std::string(TDerived::TABLE_NAME)) > 0;
+    }
+
+    // The context to scope by. ctx_ is what the ViewModel handed us; when it is
+    // anonymous we fall back to the request-scoped CurrentUser, so a ViewModel
+    // that forgets to call setUserContext cannot switch company scoping off.
+    const UserContext& scopeCtx_() const {
+        return ctx_.uid > 0 ? ctx_ : CurrentUser::get();
+    }
+
+    bool companyScoped_() const {
+        return scopeCtx_().uid > 0 && hasCompanyColumn_();
+    }
+
+    // SQL fragment, already parenthesised, or "" when no scoping applies.
+    // The company id is a C++ int taken from the session, never client text, so
+    // interpolating it cannot inject; doing so keeps every caller's $N numbering
+    // untouched, which is what makes this safe to bolt onto five different
+    // query builders.
+    std::string companyClause_() const {
+        if (!companyScoped_()) return {};
+        const int cid = scopeCtx_().companyId;
+        if (cid > 0)
+            return "(company_id IS NULL OR company_id = " + std::to_string(cid) + ")";
+        // Authenticated but with no company: they may only ever see shared rows.
+        return "(company_id IS NULL)";
+    }
+
+    // Appends " AND (...)" to a WHERE that already has at least one condition.
+    void appendCompanyClause_(std::string& sql) const {
+        const std::string c = companyClause_();
+        if (!c.empty()) sql += " AND " + c;
+    }
+
+    // Decide the company of a record being created.
+    //
+    // Unstamped, a new record would land with company_id NULL, which under the
+    // NULL-is-shared rule above means "visible to every company" — so simply
+    // not filling the field in would quietly publish it group-wide. Records
+    // therefore belong to the company that created them unless someone says
+    // otherwise, and only an admin can say otherwise.
+    /// Returns the company the new row must carry, or 0 for "leave it NULL"
+    /// (a shared record, or no scoping in force). Also validates any
+    /// company_id the caller supplied.
+    int stampCompany_(nlohmann::json& vals) const {
+        if (!companyScoped_()) return 0;
+        const UserContext& u = scopeCtx_();
+
+        const bool supplied = vals.contains("company_id") &&
+                              !vals["company_id"].is_null() &&
+                              !(vals["company_id"].is_boolean() && !vals["company_id"].get<bool>());
+
+        if (supplied) {
+            int want = 0;
+            if (vals["company_id"].is_number()) want = vals["company_id"].get<int>();
+            else if (vals["company_id"].is_string()) {
+                try { want = std::stoi(vals["company_id"].get<std::string>()); } catch (...) { want = 0; }
+            }
+            // Writing into a company you are not a member of is how records get
+            // planted where their owner cannot see them; refuse rather than
+            // silently rewrite, so the caller learns the request was wrong.
+            if (want > 0 && want != u.companyId && !u.mayUseCompany(want))
+                throw cerp::infrastructure::ValidationError(
+                    "You cannot create records for another company.");
+            return want > 0 ? want : u.companyId;
+        }
+
+        // Explicit null/false = "shared across all companies". Reserved for
+        // admins; for anyone else an omitted company means their own.
+        const bool explicitlyShared =
+            vals.contains("company_id") &&
+            (vals["company_id"].is_null() ||
+             (vals["company_id"].is_boolean() && !vals["company_id"].get<bool>()));
+        if (explicitlyShared && u.isAdmin) { vals.erase("company_id"); return 0; }
+
+        if (u.companyId > 0) {
+            vals["company_id"] = u.companyId;
+            return u.companyId;
+        }
+        return 0;
     }
 
     // ── S-30: Record-rule helpers ──────────────────────────────
@@ -438,7 +916,44 @@ private:
         return s;
     }
 
-    // Odoo JSON uses `false` for null FK/integer values and `[id,"Name"]` arrays
+    // HTML <input type="number"> sends its value as a STRING ("330"), and so do
+    // CSV import and many API clients. Coerce those to JSON numbers for every
+    // registered NUMERIC field, up front, so both write paths agree:
+    //   • create() round-trips through typed members whose deserializeFields do
+    //     `is_number()` checks — a string was dropped, leaving the 0 default;
+    //   • write()/create() then scale via normalizeForDb_, which needs a number.
+    // Without this, keying 330 into a rate stored 0 (create) or 0.00033 (write).
+    // Non-numeric strings and non-registered keys are left untouched.
+    void coerceNumericStrings_(nlohmann::json& v) const {
+        if (!v.is_object()) return;
+        for (auto it = v.begin(); it != v.end(); ++it) {
+            if (!it.value().is_string() || !fieldRegistry_.has(it.key())) continue;
+            const auto& fd = fieldRegistry_.get(it.key());
+            const bool numeric = fd.scaled
+                              || fd.type == FieldType::Monetary
+                              || fd.type == FieldType::Float
+                              || fd.type == FieldType::Integer;
+            if (!numeric) continue;
+            const std::string s = it.value().get<std::string>();
+            if (s.empty()) {                       // cleared numeric field -> 0
+                it.value() = (fd.type == FieldType::Integer)
+                                 ? nlohmann::json(0) : nlohmann::json(0.0);
+                continue;
+            }
+            try {
+                std::size_t pos = 0;
+                if (fd.type == FieldType::Integer) {
+                    long long n = std::stoll(s, &pos);
+                    if (pos == s.size()) it.value() = n;
+                } else {
+                    double d = std::stod(s, &pos);
+                    if (pos == s.size()) it.value() = d;
+                }
+            } catch (...) { /* not numeric — leave as-is, let validation reject */ }
+        }
+    }
+
+    // the reference ERP JSON uses `false` for null FK/integer values and `[id,"Name"]` arrays
     // for set Many2one values.  Neither is accepted by PostgreSQL for integer
     // columns — normalise them before binding.
     nlohmann::json normalizeForDb_(const nlohmann::json& val,
@@ -466,8 +981,22 @@ private:
         // write(), CSV import — is covered in one place. Money::fromJson
         // rounds at scale 6, so 0.1 arriving as 0.09999999999999999 still
         // lands on exactly 100000 micros.
-        if (fdef.scaled && val.is_number())
-            return nlohmann::json(core::Money::fromJson(val.get<double>()).toDb());
+        //
+        // MUST handle numeric STRINGS as well as JSON numbers: HTML <input
+        // type="number"> yields e.target.value as a STRING ("330"), and so do
+        // CSV import and many API clients. A string skipped this conversion,
+        // landing "330" in the BIGINT column raw — read back ÷1e6 = 0.00033,
+        // the factor-of-a-million bug. Scale the string too.
+        if (fdef.scaled) {
+            if (val.is_number())
+                return nlohmann::json(core::Money::fromJson(val.get<double>()).toDb());
+            if (val.is_string()) {
+                const std::string s = val.get<std::string>();
+                if (s.empty()) return nlohmann::json(static_cast<long long>(0));  // cleared -> 0
+                try { return nlohmann::json(core::Money::parse(s).toDb()); }
+                catch (...) { /* not a number — leave as-is, let the DB reject it */ }
+            }
+        }
 
         return val;
     }
@@ -546,4 +1075,4 @@ private:
     }
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

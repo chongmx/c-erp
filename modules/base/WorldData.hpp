@@ -1,7 +1,7 @@
 #pragma once
 #include <pqxx/pqxx>
 
-namespace odoo::modules::base {
+namespace cerp::modules::base {
 
 // Seed all world countries and states.
 // Safe to run on every boot: ON CONFLICT DO NOTHING skips existing rows.
@@ -459,4 +459,4 @@ inline void seedWorldData_(pqxx::work& txn) {
     )SQL");
 }
 
-} // namespace odoo::modules::base
+} // namespace cerp::modules::base

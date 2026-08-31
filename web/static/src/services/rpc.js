@@ -1,5 +1,5 @@
 /**
- * rpc.js — JSON-RPC 2.0 + session management for odoo-cpp.
+ * rpc.js — JSON-RPC 2.0 + session management for c-erp.
  */
 const RpcService = (() => {
     let _id = 1;
@@ -144,8 +144,139 @@ const RpcService = (() => {
         return data.result ?? data;
     }
 
+    // --------------------------------------------------------
+    // Multi-company (docs/072): the companies this identity can reach, and
+    // cross-tenant SSO switching between them (top-bar switcher).
+    // --------------------------------------------------------
+    async function listCompanies() {
+        try {
+            const res = await fetch('/web/session/companies', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ jsonrpc: '2.0', method: 'call', id: _id++,
+                    params: { context: { session_id: _session.sessionId } } }),
+            });
+            const data = await res.json();
+            return (data.result ?? data) || [];
+        } catch (_) { return []; }
+    }
+
+    async function switchCompany(db) {
+        const res = await fetch('/web/session/switch_company', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', method: 'call', id: _id++,
+                params: { company: db, context: { session_id: _session.sessionId } } }),
+        });
+        const data = await res.json();
+        const info = data.result ?? data;
+        if (!info || info.error) throw new Error((info && info.error) || 'switch failed');
+        Object.assign(_session, {
+            uid:       info.uid,
+            login:     info.login,
+            sessionId: info.session_id || '',
+            db:        info.db || db,
+            context:   info.context || {},
+        });
+        return info;
+    }
+
+    // Pre-login chooser: the companies an email/login can reach.
+    async function lookupCompanies(login) {
+        try {
+            const res = await fetch('/web/session/lookup_companies', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ jsonrpc: '2.0', method: 'call', id: _id++,
+                    params: { login } }),
+            });
+            const data = await res.json();
+            return (data.result ?? data) || [];
+        } catch (_) { return []; }
+    }
+
+    // Control-plane admin (identity memberships + shared catalogue). Admin only.
+    async function controlAdmin(op, args = {}) {
+        const res = await fetch('/web/control/admin', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', method: 'call', id: _id++,
+                params: Object.assign({ op, context: { session_id: _session.sessionId } }, args) }),
+        });
+        const data = await res.json();
+        const info = data.result ?? data;
+        if (info && info.error) throw new Error(info.error);
+        return info;
+    }
+
+    // Database section (docs/075) — per-tenant snapshots, admin + password gated.
+    async function _dbPost(path, extra = {}) {
+        const res = await fetch(path, {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', method: 'call', id: _id++,
+                params: Object.assign({ context: { session_id: _session.sessionId } }, extra) }),
+        });
+        const data = await res.json();
+        return data.result ?? data;
+    }
+    const dbList    = ()               => _dbPost('/web/db/list');
+    const dbBackup  = (label = '')     => _dbPost('/web/db/backup', { label });
+    const dbRestore = (file, password) => _dbPost('/web/db/restore', { file, password });
+    const dbDelete  = (file)           => _dbPost('/web/db/delete', { file });
+    async function dbUpload(file) {
+        const buf = await file.arrayBuffer();
+        const res = await fetch('/web/db/upload?name=' + encodeURIComponent(file.name), {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/octet-stream' }, body: buf,
+        });
+        return res.json();
+    }
+    const dbDownloadUrl = (file) =>
+        '/web/db/download?file=' + encodeURIComponent(file) +
+        '&session_id=' + encodeURIComponent(_session.sessionId);
+
+    // In-database multi-company (docs/094). Distinct from switchCompany() above,
+    // which moves the session to a different tenant DATABASE (docs/072); these
+    // stay in the same database and change which company's records are visible.
+    async function myCompanies() {
+        const info = await _dbPost('/web/session/my_companies');
+        if (info && info.error) throw new Error(info.error);
+        return info || { companies: [], active: 0 };
+    }
+    async function setActiveCompany(companyId) {
+        const info = await _dbPost('/web/session/set_active_company', { company_id: companyId });
+        if (info && info.error) throw new Error(info.error);
+        return info;
+    }
+    async function companyAccess(op, args = {}) {
+        const info = await _dbPost('/web/company/access', Object.assign({ op }, args));
+        if (info && info.error) throw new Error(info.error);
+        return info;
+    }
+
+    // Database Tools (docs/093) — read-only browser / console / schema map.
+    // Every op is admin-gated and runs inside a READ ONLY transaction server-side.
+    // Errors come back as {error}; throwing here keeps the callers to try/catch.
+    // The payload arrives under `data`, not `result`. _dbPost above ends with
+    // `data.result ?? data` to peel a JSON-RPC envelope; when this endpoint also
+    // used `result` that line peeled it, and the unwrap below peeled it a second
+    // time, so every call returned {} and the whole screen rendered blank.
+    async function dbTool(op, args = {}) {
+        const info = await _dbPost('/web/dbtool', Object.assign({ op }, args));
+        if (info && info.error) {
+            const err = new Error(info.error);
+            err.isSqlError = !!info.sql_error;   // console shows these verbatim
+            throw err;
+        }
+        return (info && info.data) || {};
+    }
+
     return { call, authenticate, logout, restoreSession,
              isAuthenticated, getSession,
              loadMenus, loadAction, getViews,
-             health, sessionInfo };
+             health, sessionInfo,
+             listCompanies, switchCompany, lookupCompanies, controlAdmin,
+             dbList, dbBackup, dbRestore, dbDelete, dbUpload, dbDownloadUrl,
+             dbTool, myCompanies, setActiveCompany, companyAccess };
 })();

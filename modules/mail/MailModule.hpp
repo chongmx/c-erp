@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::mail {
+namespace cerp::modules::mail {
 
 // ================================================================
 // MailModule — IModule implementation
@@ -56,4 +56,4 @@ private:
     void ensureSchema_();
 };
 
-} // namespace odoo::modules::mail
+} // namespace cerp::modules::mail

@@ -54,3 +54,10 @@ plan.md
 # log files
 log/
 review/
+# Node dev dependencies (puppeteer-core, for tests/lib/render.mjs).
+# The browser itself is NOT vendored - it is the system Chrome.
+node_modules/
+package-lock.json
+
+# secret files
+secret/

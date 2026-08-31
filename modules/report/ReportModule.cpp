@@ -23,6 +23,7 @@
 #include "SessionManager.hpp"
 #include "ProcessRunner.hpp"
 #include "Money.hpp"
+#include "CompanyIdentity.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <drogon/drogon.h>
@@ -31,6 +32,8 @@
 #include <vector>
 #include <map>
 #include <sstream>
+#include <array>
+#include <algorithm>
 #include <iomanip>
 #include <cmath>
 #include <fstream>
@@ -38,10 +41,10 @@
 #include <cstdio>
 #include <set>
 
-namespace odoo::modules::report {
+namespace cerp::modules::report {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 // ================================================================
 // TemplateRenderer — static mustache-like template renderer
@@ -154,10 +157,10 @@ static std::string fmtMoney(double v) {
 static double reportMicros(const pqxx::field& f) {
     if (f.is_null()) return 0.0;
     try {
-        return odoo::core::Money::fromMicros(f.as<long long>(0)).toJson();
+        return cerp::core::Money::fromMicros(f.as<long long>(0)).toJson();
     } catch (...) {
         // ::TEXT-cast columns come through as a decimal string of micro-units
-        try { return odoo::core::Money::parse(f.c_str()).toJson(); }
+        try { return cerp::core::Money::parse(f.c_str()).toJson(); }
         catch (...) { return 0.0; }
     }
 }
@@ -377,7 +380,7 @@ static const std::string SALE_ORDER_TEMPLATE = R"HTML(<!DOCTYPE html><html><head
   </tr></thead>
   <tbody>
     {{#each lines}}
-    <tr>
+    <tr class="row-{{line_type}}">
       <td>{{product_name}}</td>
       <td class="c">{{qty}}</td>
       <td>{{uom}}</td>
@@ -574,6 +577,7 @@ public:
         REGISTER_METHOD("web_search_read", handleSearchRead)
         REGISTER_METHOD("read",            handleRead)
         REGISTER_MUTATOR("write",           handleWrite)
+        REGISTER_MUTATOR("action_reset_default", handleResetDefault)
         REGISTER_METHOD("fields_get",      handleFieldsGet)
     }
 
@@ -608,7 +612,8 @@ private:
                 "COALESCE(margin_top,15)::float AS margin_top, COALESCE(margin_right,18)::float AS margin_right, "
                 "COALESCE(margin_bottom,18)::float AS margin_bottom, COALESCE(margin_left,18)::float AS margin_left, "
                 "COALESCE(font_size,10) AS font_size, COALESCE(font_color,'#333333') AS font_color, "
-                "COALESCE(line_height,1.5)::float AS line_height, COALESCE(footer_text,'') AS footer_text "
+                "COALESCE(line_height,1.5)::float AS line_height, COALESCE(footer_text,'') AS footer_text, "
+                "(template_html IS DISTINCT FROM default_html) AS is_customized "
                 "FROM ir_report_template WHERE active=true ORDER BY id");
         } else {
             rows = txn.exec(
@@ -617,7 +622,8 @@ private:
                 "COALESCE(margin_top,15)::float AS margin_top, COALESCE(margin_right,18)::float AS margin_right, "
                 "COALESCE(margin_bottom,18)::float AS margin_bottom, COALESCE(margin_left,18)::float AS margin_left, "
                 "COALESCE(font_size,10) AS font_size, COALESCE(font_color,'#333333') AS font_color, "
-                "COALESCE(line_height,1.5)::float AS line_height, COALESCE(footer_text,'') AS footer_text "
+                "COALESCE(line_height,1.5)::float AS line_height, COALESCE(footer_text,'') AS footer_text, "
+                "(template_html IS DISTINCT FROM default_html) AS is_customized "
                 "FROM ir_report_template WHERE active=true AND model=$1 ORDER BY id LIMIT 1",
                 pqxx::params{modelFilter});
         }
@@ -642,6 +648,7 @@ private:
             rec["font_color"]       = safeStr(row["font_color"]);
             rec["line_height"]      = row["line_height"].as<double>(1.5);
             rec["footer_text"]      = safeStr(row["footer_text"]);
+            rec["is_customized"]    = row["is_customized"].is_null() ? false : row["is_customized"].as<bool>();
             result.push_back(rec);
         }
         return result;
@@ -682,7 +689,9 @@ private:
             "COALESCE(footer_page_num_fmt,'Page {p} of {t}') AS footer_page_num_fmt, "
             "COALESCE(footer_text_source,'custom') AS footer_text_source, "
             "COALESCE(footer_line_color,'#cccccc') AS footer_line_color, "
-            "COALESCE(footer_line_width,0.5)::float AS footer_line_width "
+            "COALESCE(footer_line_width,0.5)::float AS footer_line_width, "
+            "COALESCE(default_html,'') AS default_html, "
+            "(template_html IS DISTINCT FROM default_html) AS is_customized "
             "FROM ir_report_template WHERE id IN (" + inClause + ") ORDER BY id");
 
         nlohmann::json result = nlohmann::json::array();
@@ -711,6 +720,8 @@ private:
             rec["footer_text_source"]   = safeStr(row["footer_text_source"]);
             rec["footer_line_color"]    = safeStr(row["footer_line_color"]);
             rec["footer_line_width"]    = row["footer_line_width"].as<double>(0.5);
+            rec["default_html"]         = safeStr(row["default_html"]);
+            rec["is_customized"]        = row["is_customized"].is_null() ? false : row["is_customized"].as<bool>();
             result.push_back(rec);
         }
         return result;
@@ -806,12 +817,66 @@ private:
         return true;
     }
 
+    // action_reset_default — restore the shipped template.
+    //
+    // Copies default_html (owned by the source tree, refreshed on every start)
+    // over template_html (owned by the database). Also clears the saved block
+    // layout for the template's model, because the Document Templates editor
+    // regenerates template_html from those blocks on its next Save and would
+    // otherwise put the customisation straight back.
+    nlohmann::json handleResetDefault(const CallKwArgs& call) {
+        const auto& idArg = call.arg(0);
+        std::vector<int> ids;
+        if (idArg.is_array()) {
+            for (const auto& v : idArg) {
+                if (v.is_number_integer()) ids.push_back(v.get<int>());
+                else if (v.is_array() && !v.empty() && v[0].is_number_integer()) ids.push_back(v[0].get<int>());
+            }
+        } else if (idArg.is_number_integer()) {
+            ids.push_back(idArg.get<int>());
+        }
+        if (ids.empty())
+            throw cerp::infrastructure::ValidationError("No template selected to reset.");
+
+        std::string inClause;
+        for (size_t i = 0; i < ids.size(); ++i) {
+            if (i > 0) inClause += ",";
+            inClause += std::to_string(ids[i]);
+        }
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        auto missing = txn.exec(
+            "SELECT count(*) AS n FROM ir_report_template "
+            "WHERE id IN (" + inClause + ") AND COALESCE(default_html,'') = ''");
+        if (!missing.empty() && missing[0]["n"].as<int>(0) > 0)
+            throw cerp::infrastructure::ValidationError(
+                "This template has no shipped default recorded yet — restart the server once so it can be captured.");
+
+        auto res = txn.exec(
+            "UPDATE ir_report_template SET template_html = default_html "
+            "WHERE id IN (" + inClause + ") RETURNING model");
+        // Drop the block layout so the editor's next Save does not re-apply it.
+        for (const auto& row : res) {
+            txn.exec("DELETE FROM ir_config_parameter WHERE key = $1",
+                     pqxx::params{"layout.blocks." + safeStr(row["model"])});
+        }
+        txn.commit();
+
+        nlohmann::json out;
+        out["reset"] = static_cast<int>(res.size());
+        return out;
+    }
+
     nlohmann::json handleFieldsGet(const CallKwArgs&) {
         return {
             {"id",            {{"type","integer"}, {"string","ID"}}},
             {"name",          {{"type","char"},    {"string","Template Name"}}},
             {"model",         {{"type","char"},    {"string","Model"}}},
             {"template_html", {{"type","text"},    {"string","Template HTML"}}},
+            {"default_html",  {{"type","text"},    {"string","Shipped Template"}}},
+            {"is_customized", {{"type","boolean"}, {"string","Customized"}}},
             {"paper_format",  {{"type","char"},    {"string","Paper Format"}}},
             {"orientation",   {{"type","char"},    {"string","Orientation"}}},
             {"active",        {{"type","boolean"}, {"string","Active"}}},
@@ -863,7 +928,8 @@ void ReportModule::registerViewModels() {
 static std::string renderDoc_(
     pqxx::work& txn,
     const std::string& model,
-    int recordId)
+    int recordId,
+    bool proforma = false)
 {
     // Load template
     auto tplRows = txn.exec(
@@ -893,16 +959,8 @@ static std::string renderDoc_(
     vars["paper_format"] = paperFormat;
     vars["orientation"]  = orientation;
 
-    auto loadCfg = [&](const std::string& key, const std::string& def = "") -> std::string {
-        try {
-            auto r = txn.exec(
-                "SELECT value FROM ir_config_parameter WHERE key=$1",
-                pqxx::params{key});
-            if (!r.empty() && !r[0]["value"].is_null())
-                return r[0]["value"].c_str();
-        } catch (...) {}
-        return def;
-    };
+    // (the ir_config_parameter reader that used to live here is gone — company
+    //  identity comes from core::CompanyIdentity now, see docs/094)
 
     int companyId = 1;
     int partnerId = 0;
@@ -925,7 +983,9 @@ static std::string renderDoc_(
                     partnerId = r["partner_id"].is_null() ? 0 : r["partner_id"].as<int>();
 
                     std::string soState = safeStr(r["state"]);
-                    vars["document_title"] = (soState == "sale" || soState == "done") ? "Sales Order" : "Quotation";
+                    vars["document_title"] = proforma
+                        ? "Pro-Forma Invoice"
+                        : ((soState == "sale" || soState == "done") ? "Sales Order" : "Quotation");
                     vars["doc_number"]     = safeStr(r["name"]);
                     vars["doc_date"]       = ymdToDisplay(safeStr(r["date_order"]));
                     vars["validity_date"]  = ymdToDisplay(safeStr(r["validity_date"]));
@@ -933,13 +993,15 @@ static std::string renderDoc_(
                     vars["amount_tax"]     = fmtMoneyField(r["amount_tax"]);
                     vars["amount_total"]   = fmtMoneyField(r["amount_total"]);
 
-                    // Lines
+                    // Lines — sections/notes (display_type) render as full-width
+                    // annotation rows (styled .row-line_section / .row-line_note).
                     auto lrows = txn.exec(
                         "SELECT COALESCE(sol.name, pp.name, '') AS product_name, "
                         "COALESCE(sol.product_uom_qty, 0) AS qty, "
                         "COALESCE(sol.price_unit, 0) AS price_unit, "
                         "COALESCE(sol.price_subtotal, 0) AS subtotal, "
-                        "COALESCE(uu.name,'') AS uom "
+                        "COALESCE(uu.name,'') AS uom, "
+                        "COALESCE(NULLIF(sol.display_type,''),'product') AS line_type "
                         "FROM sale_order_line sol "
                         "LEFT JOIN product_product pp ON pp.id = sol.product_id "
                         "LEFT JOIN uom_uom uu ON uu.id = sol.product_uom_id "
@@ -947,11 +1009,17 @@ static std::string renderDoc_(
                         pqxx::params{recordId});
   for(const auto& lr : lrows) {
                         std::map<std::string, std::string> line;
+                        const std::string ltype = safeStr(lr["line_type"]);
+                        line["line_type"]    = ltype;
                         line["product_name"] = safeStr(lr["product_name"]);
-                        line["qty"]          = fmtPrecF(lr["qty"],      qtyPrec);
                         line["uom"]          = safeStr(lr["uom"]);
-                        line["price_unit"]   = fmtPrecF(lr["price_unit"], prcPrec);
-                        line["subtotal"]     = fmtPrecF(lr["subtotal"],  subPrec);
+                        if (ltype == "product") {
+                            line["qty"]        = fmtPrecF(lr["qty"],       qtyPrec);
+                            line["price_unit"] = fmtPrecF(lr["price_unit"], prcPrec);
+                            line["subtotal"]   = fmtPrecF(lr["subtotal"],  subPrec);
+                        } else {
+                            line["qty"] = ""; line["price_unit"] = ""; line["subtotal"] = "";
+                        }
                         lines.push_back(line);
                     }
 
@@ -1119,57 +1187,11 @@ static std::string renderDoc_(
                     throw std::runtime_error("Unsupported model: " + model);
                 }
 
-                // ---- Company info ----
-                auto crows = txn.exec(
-                    "SELECT rc.name, COALESCE(rc.phone,'') AS phone, COALESCE(rc.email,'') AS email, "
-                    "COALESCE(rc.website,'') AS website, "
-                    "COALESCE(rp.street,'') AS street, COALESCE(rp.city,'') AS city "
-                    "FROM res_company rc "
-                    "LEFT JOIN res_partner rp ON rp.id = rc.partner_id "
-                    "WHERE rc.id = $1",
-                    pqxx::params{companyId});
-
-                std::string companyStreet, companyCity;
-                if (!crows.empty()) {
-                    vars["company_name"]    = safeStr(crows[0]["name"]);
-                    vars["company_phone"]   = safeStr(crows[0]["phone"]);
-                    vars["company_email"]   = safeStr(crows[0]["email"]);
-                    vars["company_website"] = safeStr(crows[0]["website"]);
-                    companyStreet           = safeStr(crows[0]["street"]);
-                    companyCity             = safeStr(crows[0]["city"]);
-                } else {
-                    vars["company_name"]    = "";
-                    vars["company_phone"]   = "";
-                    vars["company_email"]   = "";
-                    vars["company_website"] = "";
-                }
-
-                // ---- Load report config params ----
-                std::string regNumber   = loadCfg("report.reg_number");
-                std::string addr1       = loadCfg("report.addr1");
-                std::string addr2       = loadCfg("report.addr2");
-                std::string addr3       = loadCfg("report.addr3");
-                std::string cityCountry = loadCfg("report.city_country");
-                std::string currCode    = loadCfg("report.currency_code", "MYR");
-                std::string ptDays      = loadCfg("report.payment_term_days", "30");
-                std::string bankAccName = loadCfg("report.bank.account_name");
-                std::string bankAccNo   = loadCfg("report.bank.account_no");
-                std::string bankName    = loadCfg("report.bank.bank_name");
-                std::string bankAddr    = loadCfg("report.bank.bank_address");
-                std::string bankSwift   = loadCfg("report.bank.swift_code");
-
-                vars["company_reg"]          = regNumber;
-                vars["company_addr1"]        = addr1.empty() ? companyStreet : addr1;
-                vars["company_addr2"]        = addr2;
-                vars["company_addr3"]        = addr3;
-                vars["company_city_country"] = cityCountry.empty() ? companyCity : cityCountry;
-                vars["currency_code"]        = currCode;
-                vars["payment_term_days"]    = ptDays;
-                vars["bank_account_name"]    = bankAccName;
-                vars["bank_account_no"]      = bankAccNo;
-                vars["bank_name"]            = bankName;
-                vars["bank_address"]         = bankAddr;
-                vars["bank_swift"]           = bankSwift;
+                // ---- Company info (docs/094) ----
+                // One loader, shared with the preview route and the portal, so
+                // a document and its preview can never disagree about who the
+                // company is.
+                core::CompanyIdentity::load(txn, companyId).fillVars(vars);
 
                 // ---- Partner info ----
   if(partnerId > 0) {
@@ -1211,6 +1233,494 @@ static std::string renderDoc_(
                 return TemplateRenderer::render(tplHtml, vars, lines);
 }
 
+// ================================================================
+// Financial statement reports (docs/081)
+//   trial_balance | balance_sheet | profit_loss | general_ledger | aged_receivable
+// Computed from POSTED account_move_line (BIGINT micro-units). Returns a uniform
+//   { title, subtitle, columns[], rows[] }  where each row is
+//   { type: line|section|subtotal|total, cells:[...] }
+// so both the on-screen UI and the print view render it the same way.
+// ================================================================
+static std::string fmtMicros_(long long micros) { return fmtMoney(micros / 1000000.0); }
+
+// docs/094 — `companyId` scopes every figure in the report to one company.
+//
+// These are hand-written aggregate queries, so they do not pass through
+// BaseModel and get none of its scoping for free. Rather than appending a
+// predicate to twenty different WHERE clauses — where one missed branch is a
+// silent cross-company total — the two source tables are replaced by
+// company-scoped subqueries. Every branch is then scoped identically, and a
+// branch added later inherits it without anyone having to remember.
+//
+// companyId <= 0 means "no scoping": that is the internal/no-session case, not
+// something an HTTP caller can ask for.
+static nlohmann::json financialReport_(pqxx::work& txn,
+                                       const std::string& report,
+                                       const std::string& dateFrom,
+                                       const std::string& dateTo,
+                                       int companyId = 0) {
+    using nlohmann::json;
+    const std::string AML = companyId > 0
+        ? "(SELECT * FROM account_move_line WHERE company_id=" + std::to_string(companyId) + ")"
+        : std::string("account_move_line");
+    const std::string AM = companyId > 0
+        ? "(SELECT * FROM account_move WHERE company_id=" + std::to_string(companyId) + ")"
+        : std::string("account_move");
+    json out;
+    out["report"]    = report;
+    out["date_from"] = dateFrom;
+    out["date_to"]   = dateTo;
+    json rows = json::array();
+    auto R = [](const char* type, std::vector<std::string> cells) {
+        return json{{"type", type}, {"cells", std::move(cells)}};
+    };
+    auto cols = [](std::vector<std::string> labels) {
+        json c = json::array();
+        for (size_t i = 0; i < labels.size(); ++i)
+            c.push_back(json{{"label", labels[i]}, {"align", i == 0 ? "left" : "right"}});
+        return c;
+    };
+
+    // ---- Trial Balance (as of date_to) ----
+    if (report == "trial_balance") {
+        out["title"]    = "Trial Balance";
+        out["subtitle"] = "As at " + ymdToDisplay(dateTo);
+        out["columns"]  = cols({"Account", "Debit", "Credit", "Balance"});
+        auto r = txn.exec(
+            "SELECT a.code, a.name, COALESCE(SUM(l.debit),0) d, COALESCE(SUM(l.credit),0) c "
+            "FROM account_account a "
+            "LEFT JOIN " + AML + " l ON l.account_id=a.id AND l.date <= $1 "
+            "  AND EXISTS (SELECT 1 FROM " + AM + " m WHERE m.id=l.move_id AND m.state='posted') "
+            "GROUP BY a.id, a.code, a.name "
+            "HAVING COALESCE(SUM(l.debit),0)<>0 OR COALESCE(SUM(l.credit),0)<>0 "
+            "ORDER BY a.code", pqxx::params{dateTo});
+        long long td = 0, tc = 0;
+        for (const auto& x : r) {
+            long long d = x["d"].as<long long>(0), c = x["c"].as<long long>(0);
+            td += d; tc += c;
+            rows.push_back(R("line", { safeStr(x["code"]) + "  " + safeStr(x["name"]),
+                                       fmtMicros_(d), fmtMicros_(c), fmtMicros_(d - c) }));
+        }
+        rows.push_back(R("total", { "TOTAL", fmtMicros_(td), fmtMicros_(tc), fmtMicros_(td - tc) }));
+    }
+    // ---- Profit & Loss (date_from .. date_to) ----
+    else if (report == "profit_loss") {
+        out["title"]    = "Profit and Loss";
+        out["subtitle"] = ymdToDisplay(dateFrom) + " — " + ymdToDisplay(dateTo);
+        out["columns"]  = cols({"", "Amount"});
+        auto r = txn.exec(
+            "SELECT a.code, a.name, a.account_type, "
+            "COALESCE(SUM(l.credit),0)-COALESCE(SUM(l.debit),0) AS bal "
+            "FROM account_account a "
+            "JOIN " + AML + " l ON l.account_id=a.id AND l.date BETWEEN $1 AND $2 "
+            "JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' "
+            "WHERE a.account_type IN ('income','income_other','expense','expense_depreciation','expense_direct_cost') "
+            "GROUP BY a.id, a.code, a.name, a.account_type ORDER BY a.account_type, a.code",
+            pqxx::params{dateFrom, dateTo});
+        long long income = 0, expense = 0;
+        json incRows = json::array(), expRows = json::array();
+        for (const auto& x : r) {
+            std::string t = safeStr(x["account_type"]);
+            long long bal = x["bal"].as<long long>(0);   // credit-debit
+            std::string label = safeStr(x["code"]) + "  " + safeStr(x["name"]);
+            if (t == "income" || t == "income_other") {
+                income += bal;
+                incRows.push_back(R("line", { label, fmtMicros_(bal) }));
+            } else {
+                expense += -bal;   // expense is debit-normal: debit-credit = -bal
+                expRows.push_back(R("line", { label, fmtMicros_(-bal) }));
+            }
+        }
+        rows.push_back(R("section", { "Income", "" }));
+        for (auto& x : incRows) rows.push_back(x);
+        rows.push_back(R("subtotal", { "Total Income", fmtMicros_(income) }));
+        rows.push_back(R("section", { "Expenses", "" }));
+        for (auto& x : expRows) rows.push_back(x);
+        rows.push_back(R("subtotal", { "Total Expenses", fmtMicros_(expense) }));
+        rows.push_back(R("total", { "Net Profit", fmtMicros_(income - expense) }));
+    }
+    // ---- Balance Sheet (as of date_to) ----
+    else if (report == "balance_sheet") {
+        out["title"]    = "Balance Sheet";
+        out["subtitle"] = "As at " + ymdToDisplay(dateTo);
+        out["columns"]  = cols({"", "Amount"});
+        // Per-account cumulative balance up to date_to (posted only).
+        auto r = txn.exec(
+            "SELECT a.code, a.name, a.account_type, "
+            "COALESCE(SUM(l.debit),0)-COALESCE(SUM(l.credit),0) AS dr, "
+            "COALESCE(SUM(l.credit),0)-COALESCE(SUM(l.debit),0) AS cr "
+            "FROM account_account a "
+            "JOIN " + AML + " l ON l.account_id=a.id AND l.date <= $1 "
+            "JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' "
+            "GROUP BY a.id, a.code, a.name, a.account_type ORDER BY a.account_type, a.code",
+            pqxx::params{dateTo});
+        long long assets = 0, liab = 0, equity = 0, earnings = 0;
+        json assetRows = json::array(), liabRows = json::array(), eqRows = json::array();
+        for (const auto& x : r) {
+            std::string t = safeStr(x["account_type"]);
+            long long dr = x["dr"].as<long long>(0);   // debit-credit
+            long long cr = x["cr"].as<long long>(0);   // credit-debit
+            std::string label = safeStr(x["code"]) + "  " + safeStr(x["name"]);
+            if (t.rfind("asset", 0) == 0) {
+                assets += dr; assetRows.push_back(R("line", { label, fmtMicros_(dr) }));
+            } else if (t.rfind("liability", 0) == 0) {
+                liab += cr; liabRows.push_back(R("line", { label, fmtMicros_(cr) }));
+            } else if (t.rfind("equity", 0) == 0) {
+                equity += cr; eqRows.push_back(R("line", { label, fmtMicros_(cr) }));
+            } else if (t.rfind("income", 0) == 0 || t.rfind("expense", 0) == 0) {
+                earnings += cr;   // income+expense net (credit-debit) = current-year profit
+            }
+        }
+        rows.push_back(R("section", { "Assets", "" }));
+        for (auto& x : assetRows) rows.push_back(x);
+        rows.push_back(R("subtotal", { "Total Assets", fmtMicros_(assets) }));
+        rows.push_back(R("section", { "Liabilities", "" }));
+        for (auto& x : liabRows) rows.push_back(x);
+        rows.push_back(R("subtotal", { "Total Liabilities", fmtMicros_(liab) }));
+        rows.push_back(R("section", { "Equity", "" }));
+        for (auto& x : eqRows) rows.push_back(x);
+        rows.push_back(R("line", { "Current Year Earnings", fmtMicros_(earnings) }));
+        rows.push_back(R("subtotal", { "Total Equity", fmtMicros_(equity + earnings) }));
+        rows.push_back(R("total", { "Total Liabilities + Equity", fmtMicros_(liab + equity + earnings) }));
+    }
+    // ---- General Ledger (date_from .. date_to) ----
+    else if (report == "general_ledger") {
+        out["title"]    = "General Ledger";
+        out["subtitle"] = ymdToDisplay(dateFrom) + " — " + ymdToDisplay(dateTo);
+        out["columns"]  = cols({"Date / Entry", "Debit", "Credit", "Balance"});
+        auto accs = txn.exec(
+            "SELECT DISTINCT a.id, a.code, a.name FROM account_account a "
+            "JOIN " + AML + " l ON l.account_id=a.id "
+            "JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' AND l.date<=$1 "
+            "ORDER BY a.code", pqxx::params{dateTo});
+        for (const auto& a : accs) {
+            int aid = a["id"].as<int>();
+            long long opening = txn.exec(
+                "SELECT COALESCE(SUM(l.debit-l.credit),0) FROM " + AML + " l "
+                "JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' "
+                "WHERE l.account_id=$1 AND l.date < $2", pqxx::params{aid, dateFrom})[0][0].as<long long>(0);
+            auto lns = txn.exec(
+                "SELECT to_char(l.date,'YYYY-MM-DD') dt, COALESCE(m.name,'') ref, "
+                "COALESCE(l.name,'') lbl, l.debit d, l.credit c "
+                "FROM " + AML + " l JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' "
+                "WHERE l.account_id=$1 AND l.date BETWEEN $2 AND $3 ORDER BY l.date, l.id",
+                pqxx::params{aid, dateFrom, dateTo});
+            if (lns.empty() && opening == 0) continue;
+            rows.push_back(R("section", { safeStr(a["code"]) + "  " + safeStr(a["name"]), "", "", "" }));
+            rows.push_back(R("line", { "Opening balance", "", "", fmtMicros_(opening) }));
+            long long bal = opening;
+            for (const auto& x : lns) {
+                long long d = x["d"].as<long long>(0), c = x["c"].as<long long>(0);
+                bal += d - c;
+                std::string lbl = ymdToDisplay(safeStr(x["dt"])) + "  " + safeStr(x["ref"]);
+                std::string note = safeStr(x["lbl"]);
+                if (!note.empty()) lbl += " — " + note;
+                rows.push_back(R("line", { lbl, fmtMicros_(d), fmtMicros_(c), fmtMicros_(bal) }));
+            }
+            rows.push_back(R("subtotal", { "Closing balance", "", "", fmtMicros_(bal) }));
+        }
+    }
+    // ---- Aged Receivable (as of date_to) ----
+    else if (report == "aged_receivable") {
+        out["title"]    = "Aged Receivable";
+        out["subtitle"] = "As at " + ymdToDisplay(dateTo);
+        out["columns"]  = cols({"Partner", "Not due", "1-30", "31-60", "61-90", "90+", "Total"});
+        auto r = txn.exec(
+            "SELECT COALESCE(p.name,'(no partner)') partner, m.amount_residual amt, "
+            "GREATEST(0, ($1::date - COALESCE(m.due_date, m.invoice_date))) AS age "
+            "FROM " + AM + " m LEFT JOIN res_partner p ON p.id=m.partner_id "
+            "WHERE m.move_type='out_invoice' AND m.state='posted' AND m.amount_residual>0 "
+            "AND m.invoice_date <= $1 ORDER BY p.name", pqxx::params{dateTo});
+        // partner -> [notdue,1-30,31-60,61-90,90+]
+        std::vector<std::pair<std::string, std::array<long long,5>>> agg;
+        std::array<long long,5> grand{0,0,0,0,0};
+        for (const auto& x : r) {
+            std::string partner = safeStr(x["partner"]);
+            long long amt = x["amt"].as<long long>(0);
+            int age = x["age"].as<int>(0);
+            int b = age <= 0 ? 0 : age <= 30 ? 1 : age <= 60 ? 2 : age <= 90 ? 3 : 4;
+            auto it = std::find_if(agg.begin(), agg.end(), [&](auto& e){ return e.first == partner; });
+            if (it == agg.end()) { agg.push_back({partner, {0,0,0,0,0}}); it = agg.end() - 1; }
+            it->second[b] += amt; grand[b] += amt;
+        }
+        for (auto& e : agg) {
+            long long tot = 0; for (int i=0;i<5;i++) tot += e.second[i];
+            rows.push_back(R("line", { e.first,
+                fmtMicros_(e.second[0]), fmtMicros_(e.second[1]), fmtMicros_(e.second[2]),
+                fmtMicros_(e.second[3]), fmtMicros_(e.second[4]), fmtMicros_(tot) }));
+        }
+        long long gtot = 0; for (int i=0;i<5;i++) gtot += grand[i];
+        rows.push_back(R("total", { "TOTAL",
+            fmtMicros_(grand[0]), fmtMicros_(grand[1]), fmtMicros_(grand[2]),
+            fmtMicros_(grand[3]), fmtMicros_(grand[4]), fmtMicros_(gtot) }));
+    }
+    // ---- Tax Report — Malaysian SST-02 output tax (date_from .. date_to) ----
+    else if (report == "tax_report") {
+        out["title"]    = "Tax Report (SST-02)";
+        out["subtitle"] = "Output tax collected  ·  " + ymdToDisplay(dateFrom) + " — " + ymdToDisplay(dateTo);
+        out["columns"]  = cols({"Tax", "Rate", "Taxable amount", "Tax"});
+        // Output tax per tax code from the posted tax lines of customer invoices
+        // and credit notes. base is derived from tax and rate (SST is single-stage,
+        // so tax = base × rate exactly).
+        auto r = txn.exec(
+            "SELECT t.name, t.amount AS rate, "
+            "  CASE WHEN t.tax_group IN ('sales','service') THEN t.tax_group ELSE 'other' END AS grp, "
+            "  COALESCE(SUM(aml.credit - aml.debit),0) AS tax_amt "
+            "FROM account_tax t "
+            "JOIN " + AML + " aml ON aml.tax_line_id = t.id "
+            "JOIN " + AM + " m ON m.id = aml.move_id AND m.state='posted' "
+            "  AND m.date BETWEEN $1 AND $2 "
+            "  AND m.move_type IN ('out_invoice','out_refund') "
+            "GROUP BY t.id, t.name, t.amount, t.tax_group "
+            "HAVING COALESCE(SUM(aml.credit - aml.debit),0) <> 0 "
+            "ORDER BY CASE WHEN t.tax_group='sales' THEN 1 WHEN t.tax_group='service' THEN 2 ELSE 3 END, t.amount",
+            pqxx::params{dateFrom, dateTo});
+
+        auto grpLabel = [](const std::string& g) -> const char* {
+            return g == "sales" ? "Sales Tax" : g == "service" ? "Service Tax" : "Other Output Tax";
+        };
+        auto rateStr = [](double rate) {
+            std::ostringstream o;
+            if (rate == static_cast<double>(static_cast<long long>(rate))) o << static_cast<long long>(rate);
+            else o << rate;
+            return o.str() + "%";
+        };
+        std::string curGrp;
+        long long sb = 0, st = 0, gBase = 0, gTax = 0;
+        auto flush = [&]() {
+            if (curGrp.empty()) return;
+            rows.push_back(R("subtotal", { std::string("Total ") + grpLabel(curGrp), "",
+                                           fmtMicros_(sb), fmtMicros_(st) }));
+            gBase += sb; gTax += st; sb = 0; st = 0;
+        };
+        for (const auto& x : r) {
+            const std::string grp = safeStr(x["grp"]);
+            if (grp != curGrp) { flush(); rows.push_back(R("section", { grpLabel(grp), "", "", "" })); curGrp = grp; }
+            const double    rate = x["rate"].as<double>(0.0);
+            const long long tax  = x["tax_amt"].as<long long>(0);
+            const long long base = rate > 0.0
+                ? static_cast<long long>(tax * 100.0 / rate + (tax >= 0 ? 0.5 : -0.5)) : 0;
+            rows.push_back(R("line", { safeStr(x["name"]), rateStr(rate), fmtMicros_(base), fmtMicros_(tax) }));
+            sb += base; st += tax;
+        }
+        flush();
+        rows.push_back(R("total", { "Total Tax Payable", "", fmtMicros_(gBase), fmtMicros_(gTax) }));
+    }
+    // ---- Aged Payable (as of date_to) — mirror of the receivable ageing ----
+    else if (report == "aged_payable") {
+        out["title"]    = "Aged Payable";
+        out["subtitle"] = "As at " + ymdToDisplay(dateTo);
+        out["columns"]  = cols({"Vendor", "Not due", "1-30", "31-60", "61-90", "90+", "Total"});
+        auto r = txn.exec(
+            "SELECT COALESCE(p.name,'(no vendor)') partner, m.amount_residual amt, "
+            "GREATEST(0, ($1::date - COALESCE(m.due_date, m.invoice_date))) AS age "
+            "FROM " + AM + " m LEFT JOIN res_partner p ON p.id=m.partner_id "
+            "WHERE m.move_type='in_invoice' AND m.state='posted' AND m.amount_residual>0 "
+            "AND m.invoice_date <= $1 ORDER BY p.name", pqxx::params{dateTo});
+        std::vector<std::pair<std::string, std::array<long long,5>>> agg;
+        std::array<long long,5> grand{0,0,0,0,0};
+        for (const auto& x : r) {
+            std::string partner = safeStr(x["partner"]);
+            long long amt = x["amt"].as<long long>(0);
+            int age = x["age"].as<int>(0);
+            int b = age <= 0 ? 0 : age <= 30 ? 1 : age <= 60 ? 2 : age <= 90 ? 3 : 4;
+            auto it = std::find_if(agg.begin(), agg.end(), [&](auto& e){ return e.first == partner; });
+            if (it == agg.end()) { agg.push_back({partner, {0,0,0,0,0}}); it = agg.end() - 1; }
+            it->second[b] += amt; grand[b] += amt;
+        }
+        for (auto& e : agg) {
+            long long tot = 0; for (int i=0;i<5;i++) tot += e.second[i];
+            rows.push_back(R("line", { e.first, fmtMicros_(e.second[0]), fmtMicros_(e.second[1]),
+                fmtMicros_(e.second[2]), fmtMicros_(e.second[3]), fmtMicros_(e.second[4]), fmtMicros_(tot) }));
+        }
+        long long gtot = 0; for (int i=0;i<5;i++) gtot += grand[i];
+        rows.push_back(R("total", { "TOTAL", fmtMicros_(grand[0]), fmtMicros_(grand[1]),
+            fmtMicros_(grand[2]), fmtMicros_(grand[3]), fmtMicros_(grand[4]), fmtMicros_(gtot) }));
+    }
+    // ---- Partner Ledger (date_from .. date_to) ----
+    else if (report == "partner_ledger") {
+        out["title"]    = "Partner Ledger";
+        out["subtitle"] = ymdToDisplay(dateFrom) + " — " + ymdToDisplay(dateTo);
+        out["columns"]  = cols({"Date / Entry", "Debit", "Credit", "Balance"});
+        auto partners = txn.exec(
+            "SELECT DISTINCT p.id, p.name FROM res_partner p "
+            "JOIN " + AML + " l ON l.partner_id=p.id "
+            "JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' AND l.date<=$1 "
+            "JOIN account_account a ON a.id=l.account_id "
+            "WHERE a.account_type IN ('asset_receivable','liability_payable') "
+            "ORDER BY p.name", pqxx::params{dateTo});
+        for (const auto& p : partners) {
+            const int pid = p["id"].as<int>();
+            long long opening = txn.exec(
+                "SELECT COALESCE(SUM(l.debit-l.credit),0) FROM " + AML + " l "
+                "JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' "
+                "JOIN account_account a ON a.id=l.account_id "
+                "WHERE l.partner_id=$1 AND l.date < $2 "
+                "AND a.account_type IN ('asset_receivable','liability_payable')",
+                pqxx::params{pid, dateFrom})[0][0].as<long long>(0);
+            auto lns = txn.exec(
+                "SELECT to_char(l.date,'YYYY-MM-DD') dt, COALESCE(m.name,'') ref, "
+                "COALESCE(l.name,'') lbl, l.debit d, l.credit c "
+                "FROM " + AML + " l JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' "
+                "JOIN account_account a ON a.id=l.account_id "
+                "WHERE l.partner_id=$1 AND l.date BETWEEN $2 AND $3 "
+                "AND a.account_type IN ('asset_receivable','liability_payable') "
+                "ORDER BY l.date, l.id", pqxx::params{pid, dateFrom, dateTo});
+            if (lns.empty() && opening == 0) continue;
+            rows.push_back(R("section", { safeStr(p["name"]), "", "", "" }));
+            rows.push_back(R("line", { "Opening balance", "", "", fmtMicros_(opening) }));
+            long long bal = opening;
+            for (const auto& x : lns) {
+                long long d = x["d"].as<long long>(0), c = x["c"].as<long long>(0);
+                bal += d - c;
+                std::string lbl = ymdToDisplay(safeStr(x["dt"])) + "  " + safeStr(x["ref"]);
+                const std::string note = safeStr(x["lbl"]);
+                if (!note.empty()) lbl += " — " + note;
+                rows.push_back(R("line", { lbl, fmtMicros_(d), fmtMicros_(c), fmtMicros_(bal) }));
+            }
+            rows.push_back(R("subtotal", { "Closing balance", "", "", fmtMicros_(bal) }));
+        }
+    }
+    // ---- Journals Audit (date_from .. date_to) ----
+    else if (report == "journals_audit") {
+        out["title"]    = "Journals Audit";
+        out["subtitle"] = ymdToDisplay(dateFrom) + " — " + ymdToDisplay(dateTo);
+        out["columns"]  = cols({"Journal / Entry", "Entries", "Debit", "Credit"});
+        auto js = txn.exec(
+            "SELECT j.id, j.name, j.code, COUNT(DISTINCT m.id) n, "
+            "COALESCE(SUM(l.debit),0) d, COALESCE(SUM(l.credit),0) c "
+            "FROM account_journal j "
+            "JOIN " + AM + " m ON m.journal_id=j.id AND m.state='posted' AND m.date BETWEEN $1 AND $2 "
+            "JOIN " + AML + " l ON l.move_id=m.id "
+            "GROUP BY j.id, j.name, j.code ORDER BY j.code",
+            pqxx::params{dateFrom, dateTo});
+        long long td = 0, tc = 0; long long tn = 0;
+        for (const auto& j : js) {
+            const long long d = j["d"].as<long long>(0), c = j["c"].as<long long>(0);
+            const long long n = j["n"].as<long long>(0);
+            td += d; tc += c; tn += n;
+            rows.push_back(R("section", { safeStr(j["code"]) + "  " + safeStr(j["name"]),
+                                          std::to_string(n), fmtMicros_(d), fmtMicros_(c) }));
+            auto ms = txn.exec(
+                "SELECT to_char(m.date,'YYYY-MM-DD') dt, COALESCE(m.name,'') nm, "
+                "COALESCE(SUM(l.debit),0) d, COALESCE(SUM(l.credit),0) c "
+                "FROM " + AM + " m JOIN " + AML + " l ON l.move_id=m.id "
+                "WHERE m.journal_id=$1 AND m.state='posted' AND m.date BETWEEN $2 AND $3 "
+                "GROUP BY m.id, m.date, m.name ORDER BY m.date, m.id LIMIT 500",
+                pqxx::params{j["id"].as<int>(), dateFrom, dateTo});
+            for (const auto& m : ms)
+                rows.push_back(R("line", { ymdToDisplay(safeStr(m["dt"])) + "  " + safeStr(m["nm"]), "",
+                                           fmtMicros_(m["d"].as<long long>(0)),
+                                           fmtMicros_(m["c"].as<long long>(0)) }));
+        }
+        rows.push_back(R("total", { "TOTAL", std::to_string(tn), fmtMicros_(td), fmtMicros_(tc) }));
+    }
+    // ---- Invoice Analysis (date_from .. date_to) ----
+    else if (report == "invoice_analysis") {
+        out["title"]    = "Invoice Analysis";
+        out["subtitle"] = ymdToDisplay(dateFrom) + " — " + ymdToDisplay(dateTo);
+        out["columns"]  = cols({"Customer", "Invoices", "Untaxed", "Tax", "Total", "Outstanding"});
+        auto r = txn.exec(
+            "SELECT COALESCE(p.name,'(no customer)') partner, COUNT(*) n, "
+            "COALESCE(SUM(m.amount_untaxed),0) u, COALESCE(SUM(m.amount_tax),0) t, "
+            "COALESCE(SUM(m.amount_total),0) g, COALESCE(SUM(m.amount_residual),0) res "
+            "FROM " + AM + " m LEFT JOIN res_partner p ON p.id=m.partner_id "
+            "WHERE m.move_type IN ('out_invoice','out_refund') AND m.state='posted' "
+            "AND m.date BETWEEN $1 AND $2 "
+            "GROUP BY p.name ORDER BY SUM(m.amount_total) DESC",
+            pqxx::params{dateFrom, dateTo});
+        long long n = 0, u = 0, t = 0, g = 0, res = 0;
+        for (const auto& x : r) {
+            n += x["n"].as<long long>(0); u += x["u"].as<long long>(0);
+            t += x["t"].as<long long>(0); g += x["g"].as<long long>(0);
+            res += x["res"].as<long long>(0);
+            rows.push_back(R("line", { safeStr(x["partner"]), std::to_string(x["n"].as<long long>(0)),
+                fmtMicros_(x["u"].as<long long>(0)), fmtMicros_(x["t"].as<long long>(0)),
+                fmtMicros_(x["g"].as<long long>(0)), fmtMicros_(x["res"].as<long long>(0)) }));
+        }
+        rows.push_back(R("total", { "TOTAL", std::to_string(n), fmtMicros_(u), fmtMicros_(t),
+                                    fmtMicros_(g), fmtMicros_(res) }));
+    }
+    // ---- Product Margins (date_from .. date_to) ----
+    else if (report == "product_margins") {
+        out["title"]    = "Product Margins";
+        out["subtitle"] = ymdToDisplay(dateFrom) + " — " + ymdToDisplay(dateTo);
+        out["columns"]  = cols({"Product", "Qty sold", "Revenue", "Cost", "Margin", "Margin %"});
+        // Revenue from confirmed sale order lines; cost from the product's standard cost.
+        auto r = txn.exec(
+            "SELECT COALESCE(pp.name, sol.name, '(no product)') AS product, "
+            "COALESCE(SUM(sol.product_uom_qty),0) qty, "
+            "COALESCE(SUM(sol.price_subtotal),0) rev, "
+            "COALESCE(SUM(sol.product_uom_qty * COALESCE(pp.standard_price,0) / 1000000),0) cost "
+            "FROM sale_order_line sol "
+            "JOIN sale_order so ON so.id=sol.order_id AND so.state IN ('sale','done') "
+            "LEFT JOIN product_product pp ON pp.id=sol.product_id "
+            "WHERE COALESCE(sol.display_type,'')='' "
+            "AND so.date_order::date BETWEEN $1 AND $2 "
+            "GROUP BY COALESCE(pp.name, sol.name, '(no product)') "
+            "ORDER BY SUM(sol.price_subtotal) DESC LIMIT 200",
+            pqxx::params{dateFrom, dateTo});
+        long long trev = 0, tcost = 0;
+        for (const auto& x : r) {
+            const long long rev = x["rev"].as<long long>(0);
+            const long long cost = x["cost"].as<long long>(0);
+            const long long margin = rev - cost;
+            trev += rev; tcost += cost;
+            std::ostringstream pct;
+            if (rev != 0) pct << std::fixed << std::setprecision(1) << (margin * 100.0 / rev) << "%";
+            else pct << "—";
+            rows.push_back(R("line", { safeStr(x["product"]),
+                fmtMicros_(x["qty"].as<long long>(0)), fmtMicros_(rev), fmtMicros_(cost),
+                fmtMicros_(margin), pct.str() }));
+        }
+        std::ostringstream tpct;
+        if (trev != 0) tpct << std::fixed << std::setprecision(1) << ((trev - tcost) * 100.0 / trev) << "%";
+        else tpct << "—";
+        rows.push_back(R("total", { "TOTAL", "", fmtMicros_(trev), fmtMicros_(tcost),
+                                    fmtMicros_(trev - tcost), tpct.str() }));
+    }
+    else {
+        throw std::runtime_error("Unknown report: " + report);
+    }
+
+    out["rows"] = rows;
+    return out;
+}
+
+// Self-contained printable HTML for a financial report (browser → PDF).
+static std::string financialReportHtml_(const nlohmann::json& rep,
+                                         const std::string& company) {
+    std::ostringstream h;
+    const size_t ncol = rep["columns"].size();
+    h << "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>"
+      << rep.value("title","Report") << "</title><style>"
+      << "body{font-family:Arial,Helvetica,sans-serif;color:#222;margin:24px;font-size:12px;}"
+      << "h1{font-size:18px;margin:0 0 2px;} .sub{color:#666;margin:0 0 16px;font-size:12px;}"
+      << ".co{font-weight:bold;font-size:13px;margin-bottom:2px;}"
+      << "table{width:100%;border-collapse:collapse;} th,td{padding:5px 8px;}"
+      << "th{border-bottom:2px solid #333;text-align:right;font-size:11px;text-transform:uppercase;}"
+      << "th:first-child{text-align:left;} td{border-bottom:1px solid #eee;text-align:right;}"
+      << "td:first-child{text-align:left;} tr.section td{font-weight:bold;background:#f5f5f5;border-top:1px solid #ccc;}"
+      << "tr.subtotal td{font-weight:bold;border-top:1px solid #999;} "
+      << "tr.total td{font-weight:bold;border-top:2px solid #333;border-bottom:2px solid #333;font-size:13px;}"
+      << "@media print{body{margin:0;}}</style></head><body>";
+    if (!company.empty()) h << "<div class=\"co\">" << company << "</div>";
+    h << "<h1>" << rep.value("title","") << "</h1>";
+    h << "<p class=\"sub\">" << rep.value("subtitle","") << "</p>";
+    h << "<table><thead><tr>";
+    for (const auto& c : rep["columns"]) h << "<th>" << c.value("label","") << "</th>";
+    h << "</tr></thead><tbody>";
+    for (const auto& row : rep["rows"]) {
+        h << "<tr class=\"" << row.value("type","line") << "\">";
+        const auto& cells = row["cells"];
+        for (size_t i = 0; i < ncol; ++i)
+            h << "<td>" << (i < cells.size() ? cells[i].get<std::string>() : std::string()) << "</td>";
+        h << "</tr>";
+    }
+    h << "</tbody></table></body></html>";
+    return h.str();
+}
+
 // ---------------------------------------------------------------
 // registerRoutes — HTTP route registration
 // ---------------------------------------------------------------
@@ -1234,6 +1744,257 @@ void ReportModule::registerRoutes() {
         return r;
     };
 
+    // docs/094: which company's letterhead a document should carry — the one
+    // the caller is currently working in. 0 means "the default company", which
+    // is what CompanyIdentity::load falls back to.
+    auto sessionCompany = [sessions](const drogon::HttpRequestPtr& req) -> int {
+        if (!sessions) return 0;
+        const std::string sid = req->getCookie(SessionManager::cookieName());
+        if (sid.empty()) return 0;
+        auto s = sessions->get(sid);
+        return (s.has_value() && s->isAuthenticated()) ? s->companyId : 0;
+    };
+
+    // Accounting settings — read/write the config parameters behind the
+    // Settings screen. GET returns them all; GET with ?key=&value= saves one.
+    // Lock dates are enforced in AccountMoveViewModel::handleActionPost. (docs/088)
+    drogon::app().registerHandler(
+        "/web/account/settings",
+        [db, checkAuth, devMode](const drogon::HttpRequestPtr& req,
+             std::function<void(const drogon::HttpResponsePtr&)>&& cb)
+        {
+            if (!checkAuth(req)) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(drogon::k401Unauthorized); cb(r); return;
+            }
+            static const std::vector<std::string> kKeys = {
+                "account.fiscal_year_last_day", "account.fiscal_year_last_month",
+                "account.lock_date", "account.tax_lock_date",
+                "account.tax_periodicity", "account.tax_reminder_day",
+                "account.default_sale_tax_id", "account.default_purchase_tax_id",
+                "account.default_sale_journal_id", "account.default_purchase_journal_id",
+                "account.multi_currency", "account.tax_rounding",
+            };
+            try {
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+                const std::string key = req->getParameter("key");
+                if (!key.empty()) {
+                    if (std::find(kKeys.begin(), kKeys.end(), key) == kKeys.end())
+                        throw std::runtime_error("Unknown setting: " + key);   // allowlist (S-49 spirit)
+                    txn.exec("INSERT INTO ir_config_parameter (key, value) VALUES ($1,$2) "
+                             "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                             pqxx::params{key, req->getParameter("value")});
+                }
+                nlohmann::json vals = nlohmann::json::object();
+                for (const auto& k : kKeys) {
+                    auto r = txn.exec("SELECT value FROM ir_config_parameter WHERE key=$1", pqxx::params{k});
+                    vals[k] = (r.empty() || r[0][0].is_null()) ? "" : std::string(r[0][0].c_str());
+                }
+                // Reference lists the Settings screen offers as choices.
+                nlohmann::json taxes = nlohmann::json::array(), journals = nlohmann::json::array();
+                for (const auto& t : txn.exec("SELECT id, name, type_tax_use FROM account_tax WHERE active ORDER BY id"))
+                    taxes.push_back({{"id", t["id"].as<int>()}, {"name", safeStr(t["name"])},
+                                     {"scope", safeStr(t["type_tax_use"])}});
+                for (const auto& j : txn.exec("SELECT id, name, type FROM account_journal ORDER BY id"))
+                    journals.push_back({{"id", j["id"].as<int>()}, {"name", safeStr(j["name"])},
+                                        {"type", safeStr(j["type"])}});
+                txn.commit();
+                nlohmann::json out;
+                out["values"] = vals; out["taxes"] = taxes; out["journals"] = journals;
+                auto resp = drogon::HttpResponse::newHttpResponse();
+                resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                resp->setBody(out.dump());
+                cb(resp);
+            } catch (const PoolExhaustedException& ex) {
+                cb(htmlError(503, "The server is temporarily overloaded. Please retry."));
+            } catch (const std::exception& ex) {
+                LOG_ERROR << "[account/settings] " << ex.what();
+                cb(htmlError(500, devMode ? ex.what() : "An internal error occurred"));
+            }
+        },
+        {drogon::Get});
+
+    // Accounting dashboard — the journal cards, plus which ones are enabled.
+    // Card visibility is stored in ir_config_parameter ('account.dashboard.cards'),
+    // so the dashboard is adjustable and the choice is shared/persisted. (docs/087)
+    drogon::app().registerHandler(
+        "/web/account/dashboard",
+        [db, checkAuth, devMode, sessionCompany](const drogon::HttpRequestPtr& req,
+             std::function<void(const drogon::HttpResponsePtr&)>&& cb)
+        {
+            if (!checkAuth(req)) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(drogon::k401Unauthorized); cb(r); return;
+            }
+            try {
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+
+                // Persist a new card selection when one is posted via ?cards=a,b,c
+                const std::string setCards = req->getParameter("cards");
+                if (!setCards.empty()) {
+                    txn.exec("INSERT INTO ir_config_parameter (key, value) VALUES ('account.dashboard.cards', $1) "
+                             "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                             pqxx::params{setCards});
+                }
+                std::string enabled = "invoices,bills,bank,cash,assets,budgets";
+                {
+                    auto r = txn.exec("SELECT value FROM ir_config_parameter WHERE key='account.dashboard.cards'");
+                    if (!r.empty() && !r[0]["value"].is_null() && std::string(r[0]["value"].c_str()).size())
+                        enabled = r[0]["value"].c_str();
+                }
+
+                // docs/094 — these totals are hand-written SQL and bypass
+                // BaseModel, so without this every card summed every company.
+                // `C` is the predicate for a bare table, `CL` for one aliased l.
+                const int  cid = sessionCompany(req);
+                const std::string C  = cid > 0 ? " AND company_id="   + std::to_string(cid) : "";
+                const std::string CL = cid > 0 ? " AND l.company_id=" + std::to_string(cid) : "";
+
+                auto one = [&](const std::string& sql) -> long long {
+                    try { auto r = txn.exec(sql); return r.empty() || r[0][0].is_null() ? 0 : r[0][0].as<long long>(0); }
+                    catch (...) { return 0; }
+                };
+                nlohmann::json cards = nlohmann::json::array();
+                auto card = [&](const char* id, const char* title, const char* sub,
+                                long long amount, long long count) {
+                    cards.push_back({{"id", id}, {"title", title}, {"subtitle", sub},
+                                     {"amount", fmtMicros_(amount)}, {"count", count}});
+                };
+                card("invoices", "Customer Invoices", "Unpaid",
+                     one("SELECT COALESCE(SUM(amount_residual),0) FROM account_move "
+                         "WHERE move_type='out_invoice' AND state='posted' AND amount_residual>0" + C),
+                     one("SELECT COUNT(*) FROM account_move "
+                         "WHERE move_type='out_invoice' AND state='posted' AND amount_residual>0" + C));
+                card("bills", "Vendor Bills", "To pay",
+                     one("SELECT COALESCE(SUM(amount_residual),0) FROM account_move "
+                         "WHERE move_type='in_invoice' AND state='posted' AND amount_residual>0" + C),
+                     one("SELECT COUNT(*) FROM account_move "
+                         "WHERE move_type='in_invoice' AND state='posted' AND amount_residual>0" + C));
+                card("bank", "Bank", "Balance",
+                     one("SELECT COALESCE(SUM(l.debit-l.credit),0) FROM account_move_line l "
+                         "JOIN account_move m ON m.id=l.move_id AND m.state='posted' "
+                         "JOIN account_account a ON a.id=l.account_id "
+                         "WHERE a.account_type='asset_cash'" + CL),
+                     one("SELECT COUNT(*) FROM account_bank_account WHERE active" + C));
+                card("cash", "Cash", "Balance",
+                     one("SELECT COALESCE(SUM(l.debit-l.credit),0) FROM account_move_line l "
+                         "JOIN account_move m ON m.id=l.move_id AND m.state='posted' "
+                         "JOIN account_account a ON a.id=l.account_id "
+                         "JOIN account_journal j ON j.id=l.journal_id AND j.type='cash' "
+                         "WHERE TRUE" + CL),
+                     one("SELECT COUNT(*) FROM account_journal WHERE type='cash'" + C));
+                card("assets", "Assets", "Book value",
+                     one("SELECT COALESCE(SUM(value_residual),0) FROM account_asset WHERE state='open'" + C),
+                     one("SELECT COUNT(*) FROM account_asset WHERE state='open'" + C));
+                // account_budget_line has no company_id of its own — it inherits
+                // the company of the budget it belongs to, so it is scoped by
+                // joining rather than by a predicate that would not compile.
+                card("budgets", "Budgets", "Planned",
+                     one("SELECT COALESCE(SUM(bl.planned_amount),0) FROM account_budget_line bl "
+                         "JOIN account_budget b ON b.id=bl.budget_id "
+                         "WHERE TRUE" + (cid > 0 ? " AND b.company_id=" + std::to_string(cid)
+                                                 : std::string())),
+                     one("SELECT COUNT(*) FROM account_budget WHERE TRUE" + C));
+                txn.commit();
+
+                nlohmann::json out;
+                out["enabled"] = enabled;
+                out["cards"]   = cards;
+                auto resp = drogon::HttpResponse::newHttpResponse();
+                resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                resp->setBody(out.dump());
+                cb(resp);
+            } catch (const PoolExhaustedException& ex) {
+                cb(htmlError(503, "The server is temporarily overloaded. Please retry."));
+            } catch (const std::exception& ex) {
+                LOG_ERROR << "[account/dashboard] " << ex.what();
+                cb(htmlError(500, devMode ? ex.what() : "An internal error occurred"));
+            }
+        },
+        {drogon::Get});
+
+    // Financial statement reports — JSON for the on-screen UI. (docs/081)
+    // GET /web/account/report?report=<type>&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+    drogon::app().registerHandler(
+        "/web/account/report",
+        [db, checkAuth, devMode, sessionCompany](const drogon::HttpRequestPtr& req,
+             std::function<void(const drogon::HttpResponsePtr&)>&& cb)
+        {
+            if (!checkAuth(req)) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(drogon::k401Unauthorized);
+                cb(r); return;
+            }
+            const std::string report   = req->getParameter("report").empty()
+                                         ? "trial_balance" : req->getParameter("report");
+            const std::string dateTo   = req->getParameter("date_to").empty()
+                                         ? "2999-12-31" : req->getParameter("date_to");
+            const std::string dateFrom = req->getParameter("date_from").empty()
+                                         ? "1900-01-01" : req->getParameter("date_from");
+            try {
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+                nlohmann::json out = financialReport_(txn, report, dateFrom, dateTo,
+                                                      sessionCompany(req));
+                txn.commit();
+                auto resp = drogon::HttpResponse::newHttpResponse();
+                resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                resp->setBody(out.dump());
+                cb(resp);
+            } catch (const PoolExhaustedException& ex) {
+                cb(htmlError(503, "The server is temporarily overloaded. Please retry."));
+            } catch (const std::exception& ex) {
+                LOG_ERROR << "[account/report] " << ex.what();
+                cb(htmlError(500, devMode ? ex.what() : "An internal error occurred"));
+            }
+        },
+        {drogon::Get});
+
+    // Financial statement reports — printable HTML (browser → PDF). Same params.
+    drogon::app().registerHandler(
+        "/web/account/report/print",
+        [db, checkAuth, authRedirect, devMode, sessionCompany](const drogon::HttpRequestPtr& req,
+             std::function<void(const drogon::HttpResponsePtr&)>&& cb)
+        {
+            if (!checkAuth(req)) { cb(authRedirect()); return; }
+            const std::string report   = req->getParameter("report").empty()
+                                         ? "trial_balance" : req->getParameter("report");
+            const std::string dateTo   = req->getParameter("date_to").empty()
+                                         ? "2999-12-31" : req->getParameter("date_to");
+            const std::string dateFrom = req->getParameter("date_from").empty()
+                                         ? "1900-01-01" : req->getParameter("date_from");
+            try {
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+                nlohmann::json rep = financialReport_(txn, report, dateFrom, dateTo,
+                                                      sessionCompany(req));
+                std::string company;
+                try {
+                    auto c = txn.exec("SELECT value FROM ir_config_parameter WHERE key='report.company_name'");
+                    if (!c.empty()) company = safeStr(c[0]["value"]);
+                } catch (...) {}
+                if (company.empty()) {
+                    try {
+                        auto c = txn.exec("SELECT name FROM res_company ORDER BY id LIMIT 1");
+                        if (!c.empty()) company = safeStr(c[0]["name"]);
+                    } catch (...) {}
+                }
+                txn.commit();
+                auto resp = drogon::HttpResponse::newHttpResponse();
+                resp->setContentTypeCode(drogon::CT_TEXT_HTML);
+                resp->setBody(financialReportHtml_(rep, company));
+                cb(resp);
+            } catch (const PoolExhaustedException& ex) {
+                cb(htmlError(503, "The server is temporarily overloaded. Please retry."));
+            } catch (const std::exception& ex) {
+                LOG_ERROR << "[account/report/print] " << ex.what();
+                cb(htmlError(500, devMode ? ex.what() : "An internal error occurred"));
+            }
+        },
+        {drogon::Get});
+
     // HTML route
     drogon::app().registerHandler(
         "/report/html/{1}/{2}",
@@ -1248,7 +2009,8 @@ void ReportModule::registerRoutes() {
             try {
                 auto conn = db->acquire();
                 pqxx::work txn{conn.get()};
-                std::string html = renderDoc_(txn, model, recordId);
+                bool proforma = (req->getParameter("proforma") == "1");
+                std::string html = renderDoc_(txn, model, recordId, proforma);
                 txn.commit();
                 auto resp = drogon::HttpResponse::newHttpResponse();
                 resp->setStatusCode(drogon::k200OK);
@@ -1284,7 +2046,8 @@ void ReportModule::registerRoutes() {
             try {
                 auto conn = db->acquire();
                 pqxx::work txn{conn.get()};
-                std::string html = renderDoc_(txn, model, recordId);
+                bool proforma = (req->getParameter("proforma") == "1");
+                std::string html = renderDoc_(txn, model, recordId, proforma);
 
                 // Read template layout settings for PDF generation
                 double pdfMarginTop = 15, pdfMarginRight = 18, pdfMarginBottom = 18, pdfMarginLeft = 18;
@@ -1532,11 +2295,12 @@ void ReportModule::registerRoutes() {
     // NOTE: uses /report/preview/ (not /report/html/) to avoid collision with /report/html/{model}/{id}
     drogon::app().registerHandler(
         "/report/preview/{1}",
-        [db, devMode](const drogon::HttpRequestPtr& req,
+        [db, devMode, sessionCompany](const drogon::HttpRequestPtr& req,
              std::function<void(const drogon::HttpResponsePtr&)>&& cb,
              const std::string& model)
         {
             try {
+                const int previewCompanyId = sessionCompany(req);
                 auto conn = db->acquire();
                 pqxx::work txn{conn.get()};
 
@@ -1564,37 +2328,12 @@ void ReportModule::registerRoutes() {
                 vars["paper_format"] = paperFormat;
                 vars["orientation"]  = orientation;
 
-                // Helper: load a config param from ir_config_parameter
-                auto loadCfg = [&](const std::string& key, const std::string& def = "") -> std::string {
-                    try {
-                        auto r = txn.exec(
-                            "SELECT value FROM ir_config_parameter WHERE key=$1",
-                            pqxx::params{key});
-                        if (!r.empty() && !r[0]["value"].is_null()) {
-                            std::string v = r[0]["value"].c_str();
-                            if (!v.empty()) return v;
-                        }
-                    } catch (...) {}
-                    return def;
-                };
-
-                // ---- Company info from ir_config_parameter ----
-                vars["company_name"]         = loadCfg("company.name", "Demo Company Sdn. Bhd.");
-                vars["company_phone"]        = loadCfg("company.phone", "+603-2181 8000");
-                vars["company_email"]        = loadCfg("company.email", "info@democompany.com");
-                vars["company_website"]      = loadCfg("company.website", "www.democompany.com");
-                vars["company_reg"]          = loadCfg("report.reg_number", "123456-A");
-                vars["company_addr1"]        = loadCfg("report.addr1", "Level 10, Menara Demo");
-                vars["company_addr2"]        = loadCfg("report.addr2", "Jalan Ampang");
-                vars["company_addr3"]        = loadCfg("report.addr3", "");
-                vars["company_city_country"] = loadCfg("report.city_country", "50450 Kuala Lumpur, Malaysia");
-                vars["currency_code"]        = loadCfg("report.currency_code", "MYR");
-                vars["payment_term_days"]    = loadCfg("report.payment_term_days", "30");
-                vars["bank_account_name"]    = loadCfg("report.bank.account_name", "Demo Company Sdn. Bhd.");
-                vars["bank_account_no"]      = loadCfg("report.bank.account_no", "1234567890");
-                vars["bank_name"]            = loadCfg("report.bank.bank_name", "Maybank Berhad");
-                vars["bank_address"]         = loadCfg("report.bank.bank_address", "Jalan Tun Perak, Kuala Lumpur");
-                vars["bank_swift"]           = loadCfg("report.bank.swift_code", "MBBEMYKL");
+                // ---- Company info (docs/094) ----
+                // This block used to read ir_config_parameter and fall back to
+                // "Demo Company Sdn. Bhd." while the real PDF read res_company —
+                // so the preview showed different details from the document it
+                // claimed to be previewing. Same loader as renderDoc_ now.
+                core::CompanyIdentity::load(txn, previewCompanyId).fillVars(vars);
 
                 // ---- Dummy partner info ----
                 vars["partner_name"]   = "ABC Technology Sdn. Bhd.";
@@ -1722,6 +2461,11 @@ void ReportModule::ensureSchema_() {
     txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS footer_text_source   TEXT         NOT NULL DEFAULT 'custom'");
     txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS footer_line_color    TEXT         NOT NULL DEFAULT '#cccccc'");
     txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS footer_line_width    NUMERIC(4,2) NOT NULL DEFAULT 0.5");
+    // The template as it ships in the source tree. Kept alongside the (database-
+    // owned) template_html so a customised template can be compared against, and
+    // reset to, the shipped one — and so an *untouched* template can be upgraded
+    // automatically when the shipped version changes. See seedTemplates_().
+    txn.exec("ALTER TABLE ir_report_template ADD COLUMN IF NOT EXISTS default_html         TEXT         NOT NULL DEFAULT ''");
     txn.commit();
 }
 
@@ -1729,15 +2473,44 @@ void ReportModule::seedTemplates_() {
     auto conn = db_->acquire();
     pqxx::work txn{conn.get()};
 
-    // Use pqxx params to safely insert large HTML templates
+    // Use pqxx params to safely insert large HTML templates.
+    //
+    // template_html is owned by the database once the row exists — the Document
+    // Templates editor writes to it. default_html is owned by the source tree and
+    // is refreshed on every start. Keeping both lets us do three things that a
+    // plain "seed once" cannot:
+    //
+    //   1. backfill  — a row that predates default_html gets a baseline without
+    //                  its (possibly customised) template_html being touched;
+    //   2. upgrade   — a template nobody has edited (template_html = default_html)
+    //                  follows the source tree automatically, so improving a
+    //                  template in code reaches existing databases with no
+    //                  hand-written migration (docs/089);
+    //   3. reset     — a customised template can be diffed against, and restored
+    //                  to, the shipped one from the UI.
     auto seed = [&](int id, const std::string& name, const std::string& model,
                     const std::string& html, const std::string& paper, const std::string& orient)
     {
         txn.exec(
-            "INSERT INTO ir_report_template (id, name, model, template_html, paper_format, orientation) "
-            "VALUES ($1,$2,$3,$4,$5,$6) "
+            "INSERT INTO ir_report_template (id, name, model, template_html, default_html, paper_format, orientation) "
+            "VALUES ($1,$2,$3,$4,$4,$5,$6) "
             "ON CONFLICT (id) DO NOTHING",
             pqxx::params{id, name, model, html, paper, orient});
+        // (1) baseline for rows seeded before default_html existed. template_html
+        //     is deliberately left alone: we cannot know whether it was edited.
+        txn.exec(
+            "UPDATE ir_report_template SET default_html=$2 WHERE id=$1 AND default_html=''",
+            pqxx::params{id, html});
+        // (2) untouched template follows the source tree.
+        txn.exec(
+            "UPDATE ir_report_template SET template_html=$2, default_html=$2 "
+            "WHERE id=$1 AND template_html=default_html AND default_html<>$2",
+            pqxx::params{id, html});
+        // (3) customised template keeps a *current* baseline, so Reset and the
+        //     diff both compare against what the code ships today.
+        txn.exec(
+            "UPDATE ir_report_template SET default_html=$2 WHERE id=$1 AND default_html<>$2",
+            pqxx::params{id, html});
     };
 
     seed(1, "Sales Order",    "sale.order",     SALE_ORDER_TEMPLATE,    "A4", "portrait");
@@ -1745,31 +2518,42 @@ void ReportModule::seedTemplates_() {
     seed(3, "Purchase Order", "purchase.order", PURCHASE_ORDER_TEMPLATE,"A4", "portrait");
     seed(4, "Delivery Order", "stock.picking",  STOCK_PICKING_TEMPLATE, "A4", "portrait");
 
+    // Upgrade an already-seeded Sales Order template so its line rows carry
+    // their display_type class (row-line_section / row-line_note), enabling
+    // sections/notes to render. Idempotent — matches only the plain product
+    // line row and skips templates that already carry the class (or were
+    // customised to include it).
+    //
+    // This is the last migration of its kind. It survives because it also
+    // repairs *customised* templates, which no baseline can do; untouched ones
+    // are now upgraded by seed() above and never reach this statement.
+    txn.exec(R"(
+        UPDATE ir_report_template
+        SET template_html = regexp_replace(template_html,
+                '<tr>(\s*<td>\{\{product_name\}\})',
+                '<tr class="row-{{line_type}}">\1')
+        WHERE model = 'sale.order'
+          AND template_html LIKE '%{{product_name}}%'
+          AND template_html NOT LIKE '%row-{{line_type}}%'
+    )");
+
     txn.exec("SELECT setval('ir_report_template_id_seq', 4, true)");
     txn.commit();
 }
 
+// docs/094 — every key this used to seed (report.reg_number, report.addr*,
+// report.city_country, report.currency_code, report.payment_term_days,
+// report.bank.*) was company identity, and identity now lives on res_company.
+//
+// This is kept as an explicit no-op rather than deleted because the re-seeding
+// was the bug: AuthModule::migrateCompanyIdentity_ copies those values onto the
+// company and deletes the rows, and this function ran afterwards in the same
+// startup and put every one of them straight back — so the migration looked
+// like it had silently failed. Anyone tempted to re-add a company field here
+// should read that sentence first.
 void ReportModule::seedConfigParams_() {
-    auto conn = db_->acquire();
-    pqxx::work txn{conn.get()};
-
-    txn.exec(R"(
-        INSERT INTO ir_config_parameter (key, value) VALUES
-            ('report.reg_number',        ''),
-            ('report.addr1',             ''),
-            ('report.addr2',             ''),
-            ('report.addr3',             ''),
-            ('report.city_country',      ''),
-            ('report.currency_code',     'MYR'),
-            ('report.payment_term_days', '30'),
-            ('report.bank.account_name', ''),
-            ('report.bank.account_no',   ''),
-            ('report.bank.bank_name',    ''),
-            ('report.bank.bank_address', ''),
-            ('report.bank.swift_code',   '')
-        ON CONFLICT (key) DO NOTHING
-    )");
-    txn.commit();
+    // Intentionally empty. Installation-wide report settings (paper format,
+    // orientation, fonts, accent colour) are seeded in seedConfigParams_extra_.
 }
 
 void ReportModule::seedMenuEntries_() {
@@ -1799,30 +2583,87 @@ void ReportModule::seedMenuEntries_() {
         "(102, 'Document Templates', 101, 10, 30) "
         "ON CONFLICT (id) DO UPDATE SET parent_id=101");
 
-    // Action id=36: Groups (res.groups)
+    // Action id=95: Groups (res.groups).
+    // NOTE: id 36 was used here, but MrpModule owns 36 ('Work Centers') and this
+    // insert was ON CONFLICT DO NOTHING — so the Groups menu opened Work Centers
+    // and the groups screen was unreachable. Own ids + DO UPDATE so existing
+    // databases self-heal. (Same class of bug as docs/076.)
     txn.exec(
         "INSERT INTO ir_act_window (id, name, res_model, view_mode, path) VALUES "
-        "(36, 'Groups', 'res.groups', 'list', 'groups') "
-        "ON CONFLICT (id) DO NOTHING");
+        "(95, 'Groups', 'res.groups', 'list', 'groups') "
+        "ON CONFLICT (id) DO UPDATE SET name='Groups', res_model='res.groups', "
+        "view_mode='list', path='groups'");
 
     // Menu id=105: Groups under Technical (id=101), after Document Templates (seq=10)
     // (id=104 is owned by MrpModule for Bills of Materials under Inventory)
     txn.exec(
         "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
-        "(105, 'Groups', 101, 20, 36) "
-        "ON CONFLICT (id) DO UPDATE SET name='Groups', parent_id=101, sequence=20, action_id=36");
+        "(105, 'Groups', 101, 20, 95) "
+        "ON CONFLICT (id) DO UPDATE SET name='Groups', parent_id=101, sequence=20, action_id=95");
 
-    // Action id=31: ERP Settings
+    // Action id=96: ERP Settings.
+    // id 31 belonged to StockModule ('Putaway Rules'), which seeds it with
+    // ON CONFLICT DO UPDATE — so the ERP Settings menu opened Putaway Rules.
     txn.exec(
         "INSERT INTO ir_act_window (id, name, res_model, view_mode) VALUES "
-        "(31, 'ERP Settings', 'ir.erp.settings', 'list,form') "
-        "ON CONFLICT (id) DO NOTHING");
+        "(96, 'ERP Settings', 'ir.erp.settings', 'list,form') "
+        "ON CONFLICT (id) DO UPDATE SET name='ERP Settings', "
+        "res_model='ir.erp.settings', view_mode='list,form'");
 
     // Menu id=103: ERP Settings directly under unified Settings (id=30)
     txn.exec(
         "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
-        "(103, 'ERP Settings', 30, 25, 31) "
-        "ON CONFLICT (id) DO UPDATE SET parent_id=30, sequence=25");
+        "(103, 'ERP Settings', 30, 25, 96) "
+        "ON CONFLICT (id) DO UPDATE SET parent_id=30, sequence=25, action_id=96");
+
+    // Multi-company (docs/072): control-plane admin under Settings (id=30).
+    // Renders the CompanyAdmin custom view; admin-gated server-side.
+    txn.exec(
+        "INSERT INTO ir_act_window (id, name, res_model, view_mode, path) VALUES "
+        "(71, 'Companies & Access', 'company.admin', 'list', 'company-admin') "
+        "ON CONFLICT (id) DO UPDATE SET name='Companies & Access', "
+        "res_model='company.admin', view_mode='list', path='company-admin'");
+    txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
+    txn.exec(
+        "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
+        "(131, 'Companies & Access', 30, 40, 71) "
+        // name is restored too. Leaving it out meant that when another module
+        // briefly seeded this id (docs/101), its label stuck permanently and
+        // this menu read "Projects" while opening Companies & Access. A seed
+        // that owns the row should own its name.
+        "ON CONFLICT (id) DO UPDATE SET name='Companies & Access', parent_id=30, "
+        "  sequence=40, action_id=71");
+
+    // Database & backups (docs/075) under Settings (id=30). Renders the DbBackups
+    // custom view; every endpoint is admin-gated + per-tenant server-side.
+    txn.exec(
+        "INSERT INTO ir_act_window (id, name, res_model, view_mode, path) VALUES "
+        "(72, 'Database & Backups', 'db.backups', 'list', 'db-backups') "
+        "ON CONFLICT (id) DO UPDATE SET name='Database & Backups', "
+        "res_model='db.backups', view_mode='list', path='db-backups'");
+    txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
+    txn.exec(
+        "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
+        "(132, 'Database & Backups', 30, 45, 72) "
+        "ON CONFLICT (id) DO UPDATE SET name='Database & Backups', parent_id=30, "
+        "  sequence=45, action_id=72");
+
+    // Database Tools (docs/093) — the read-only browser / SQL console / schema
+    // map, next to Database & Backups because they answer adjacent questions
+    // ("what is in there" vs "keep a copy of it"). Renders the DbStudio custom
+    // view; every endpoint behind it is admin-gated and per-tenant server-side.
+    txn.exec(
+        "INSERT INTO ir_act_window (id, name, res_model, view_mode, path) VALUES "
+        "(101, 'Database Tools', 'db.studio', 'list', 'db-studio') "
+        "ON CONFLICT (id) DO UPDATE SET name='Database Tools', "
+        "res_model='db.studio', view_mode='list', path='db-studio'");
+    txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
+    txn.exec(
+        "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
+        "(74, 'Database Tools', 30, 46, 101) "
+        "ON CONFLICT (id) DO UPDATE SET name='Database Tools', parent_id=30, "
+        "sequence=46, action_id=101");
+    txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");
 
     txn.commit();
 }
@@ -1831,12 +2672,13 @@ void ReportModule::seedConfigParams_extra_() {
     auto conn = db_->acquire();
     pqxx::work txn{conn.get()};
 
+    // docs/094: company.* used to be seeded here. Company identity now lives on
+    // res_company — re-seeding these keys would resurrect them on every start,
+    // immediately after AuthModule::migrateCompanyIdentity_ removed them, and
+    // put the two-sources-of-truth bug straight back. What stays is genuinely
+    // installation-wide: how documents are *styled*, not who the company is.
     txn.exec(R"(
         INSERT INTO ir_config_parameter (key, value) VALUES
-            ('company.name',               ''),
-            ('company.phone',              ''),
-            ('company.email',              ''),
-            ('company.website',            ''),
             ('report.design.accent_color', '#4a4a4a'),
             ('report.design.font_family',  'Arial, sans-serif')
         ON CONFLICT (key) DO NOTHING
@@ -1844,4 +2686,4 @@ void ReportModule::seedConfigParams_extra_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::report
+} // namespace cerp::modules::report

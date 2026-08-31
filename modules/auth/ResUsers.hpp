@@ -2,7 +2,7 @@
 #include "BaseModel.hpp"
 #include "FieldRegistry.hpp"
 
-namespace odoo::modules::auth {
+namespace cerp::modules::auth {
 
 // ================================================================
 // ResUsers — res.users
@@ -10,7 +10,7 @@ namespace odoo::modules::auth {
 /**
  * User accounts. Each user has an associated res.partner record.
  *
- * Password storage (Odoo 19 / Django PBKDF2 format):
+ * Password storage (the reference ERP / Django PBKDF2 format):
  *   $pbkdf2-sha512$<rounds>$<base64-salt>$<base64-hash>
  *
  * The raw password is never stored — only the hash.
@@ -87,4 +87,4 @@ public:
     }
 };
 
-} // namespace odoo::modules::auth
+} // namespace cerp::modules::auth

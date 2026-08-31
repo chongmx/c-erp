@@ -40,7 +40,7 @@
 #include <string>
 #include <unordered_set>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 class ClientIpResolver {
 public:
@@ -108,4 +108,4 @@ private:
     std::unordered_set<std::string> trusted_;
 };
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

@@ -40,9 +40,9 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace odoo::infrastructure { class DbConnection; }
+namespace cerp::infrastructure { class DbConnection; }
 
-namespace odoo::core {
+namespace cerp::core {
 
 class IrCron {
 public:
@@ -82,7 +82,9 @@ private:
     explicit IrCron(std::shared_ptr<infrastructure::DbConnection> db);
 
     void tick_();
-    void executeJob_(int id, const std::string& code);
+    void tickTenant_(const std::string& tenant);
+    // Runs a job with the DB router pinned to `tenant` for its whole duration.
+    void executeJob_(const std::string& tenant, int id, const std::string& code);
     void markSuccess_(int id, int intervalMinutes);
     void markFailure_(int id, const std::string& error, int failures);
 
@@ -97,4 +99,4 @@ private:
     static std::unique_ptr<IrCron> s_instance_;
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // BaseView
@@ -99,4 +99,4 @@ public:
     }
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

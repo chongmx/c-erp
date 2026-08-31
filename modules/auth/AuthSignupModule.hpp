@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::auth {
+namespace cerp::modules::auth {
 
 // ================================================================
 // AuthSignupModule
@@ -65,4 +65,4 @@ private:
     static std::string generateToken_();
 };
 
-} // namespace odoo::modules::auth
+} // namespace cerp::modules::auth

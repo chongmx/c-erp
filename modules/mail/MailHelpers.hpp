@@ -13,7 +13,7 @@
 #include <pqxx/pqxx>
 #include <string>
 
-namespace odoo::modules::mail {
+namespace cerp::modules::mail {
 
 // Insert a single audit-log row into mail_message.
 // authorId == 0  → stored as NULL (displayed as "System").
@@ -33,4 +33,4 @@ inline void postLog(
         pqxx::params{resModel, resId, authorId, body, subtype});
 }
 
-} // namespace odoo::modules::mail
+} // namespace cerp::modules::mail

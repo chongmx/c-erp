@@ -5,7 +5,7 @@
 
 #include <pqxx/pqxx>
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
 void RentalEvents::emit(pqxx::transaction_base& txn,
                         const std::string&      type,
@@ -36,4 +36,4 @@ void RentalEvents::emit(pqxx::transaction_base& txn,
         "VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11)", p);
 }
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

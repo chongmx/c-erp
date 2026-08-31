@@ -26,9 +26,9 @@
 #include <string>
 #include <vector>
 
-namespace odoo::infrastructure { class MigrationRunner; }
+namespace cerp::infrastructure { class MigrationRunner; }
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
 class RentalModule : public core::IModule {
 public:
@@ -48,7 +48,7 @@ public:
     void registerViewModels() override;
     void registerViews()      override;
     void registerRoutes()     override;
-    void registerMigrations(odoo::infrastructure::MigrationRunner& runner) override;
+    void registerMigrations(cerp::infrastructure::MigrationRunner& runner) override;
     void initialize()         override;
 
 private:
@@ -61,4 +61,4 @@ private:
     void seedMenus_();
 };
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

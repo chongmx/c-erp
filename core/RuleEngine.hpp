@@ -2,11 +2,11 @@
 // ============================================================
 // core/RuleEngine.hpp  —  S-30: Record-Level Authorization
 //
-// Singleton service that implements Odoo-style ir.rule record
+// Singleton service that implements the reference ERP-style ir.rule record
 // filtering.  Loaded once at startup from IrModule::initialize();
 // called automatically by BaseModel before every CRUD operation.
 //
-// Odoo rule semantics:
+// the reference ERP rule semantics:
 //   Global rules  (global=true)  — subtractive: ALL must match
 //   Group rules   (global=false) — additive:    user needs ≥1 group match
 //   Final filter  = AND(global_rules) AND OR(matching_group_rules)
@@ -28,7 +28,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 enum class RuleOp { Read, Write, Create, Unlink };
 
@@ -93,4 +93,4 @@ private:
     static std::unique_ptr<RuleEngine> s_instance_;
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

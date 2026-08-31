@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::product {
+namespace cerp::modules::product {
 
 // ================================================================
 // MODULE
@@ -50,7 +50,10 @@ private:
 
     void ensureSchema_();
     void seedCategories_();
+    void migrateTemplates_();   ///< docs/096 — one template per existing product
+    void seedPartUnits_();      ///< docs/097 — the electronics unit vocabulary
+    void seedFootprints_();     ///< docs/098 — the standard package vocabulary
     void seedMenus_();
 };
 
-} // namespace odoo::modules::product
+} // namespace cerp::modules::product

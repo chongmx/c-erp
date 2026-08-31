@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::account {
+namespace cerp::modules::account {
 
 // ================================================================
 // 3. MODULE
@@ -60,4 +60,4 @@ private:
     void seedMenus_();
 };
 
-} // namespace odoo::modules::account
+} // namespace cerp::modules::account

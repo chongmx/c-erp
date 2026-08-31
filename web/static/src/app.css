@@ -1,4 +1,4 @@
-/* app.css — global styles for the odoo-cpp OWL frontend */
+/* app.css — global styles for the c-erp OWL frontend */
 
 *, *::before, *::after { box-sizing: border-box; }
 
@@ -381,6 +381,28 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
     margin-bottom: 16px;
 }
 
+.login-ok {
+    background: rgba(34,168,102,.12);
+    border: 1px solid rgba(34,168,102,.3);
+    color: var(--ok, #1a8a54);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: .85rem;
+    margin-bottom: 16px;
+}
+
+.login-link {
+    width: 100%;
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: .82rem;
+    margin-top: 10px;
+    cursor: pointer;
+    text-decoration: underline;
+}
+.login-link:hover { color: var(--text, #1a1a1a); }
+
 .form-group { margin-bottom: 16px; }
 
 .form-group label {
@@ -468,6 +490,40 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 .btn-primary    { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn-primary:hover { opacity: .85; }
 .btn-danger     { background: var(--err); border-color: var(--err); color: #fff; }
+
+/* ----------------------------------------------------------------
+   list-view-wrap / list-toolbar / list-title
+
+   These class names were in the template but had no rule at all, so the
+   toolbar fell back to display:block and the title and its button jammed
+   together against the left edge. Laying it out as a flex row with the
+   actions pushed right is what the markup always intended.
+
+   Padding matches .list-table's cells (10px) so the title lines up with the
+   column headings underneath it rather than floating out of alignment.
+   ---------------------------------------------------------------- */
+.list-view-wrap { display: flex; flex-direction: column; min-height: 0; }
+
+.list-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 10px;
+    border-bottom: 1px solid var(--border);
+    flex: 0 0 auto;
+}
+.list-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text);
+}
+/* Actions sit at the right-hand end; margin-left:auto rather than
+   justify-content:space-between so a second button lands beside the first
+   instead of splitting the row in half. */
+.list-toolbar > .btn,
+.list-toolbar > button { margin-left: auto; }
+.list-toolbar > .btn ~ .btn,
+.list-toolbar > button ~ button { margin-left: 0; }
 
 .list-table {
     width: 100%;
@@ -594,6 +650,73 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 .btn-sm { padding: 2px 8px; font-size: .8rem; line-height: 1.4; }
 
 /* ================================================================
+   Generic form view — polished card layout (matches SO/Invoice)
+   Used by every model without a bespoke form: UoM, taxes, journals,
+   rental configuration, HR, part catalogue, etc.
+   ================================================================ */
+.gf-shell { display: flex; flex-direction: column; }
+.gf-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.gf-breadcrumb { font-size: .8rem; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.gf-bc-link { cursor: pointer; color: var(--accent); }
+.gf-bc-link:hover { text-decoration: underline; }
+.gf-bc-sep { color: var(--muted); }
+.gf-bc-cur { color: var(--text); }
+.gf-actions { display: flex; gap: 6px; }
+
+.gf-card {
+    margin: 16px 24px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; max-width: 1000px;
+}
+.gf-title { font-size: 1.4rem; font-weight: 700; margin: 0 0 20px; color: var(--text); }
+
+.gf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 32px; }
+.gf-field { display: grid; grid-template-columns: 150px 1fr; align-items: center; gap: 8px; min-width: 0; }
+.gf-field-wide { grid-column: 1 / -1; align-items: start; }
+.gf-field-bool { grid-template-columns: 150px auto; }
+.gf-label { font-size: .85rem; color: var(--muted); text-align: right; }
+.gf-control { min-width: 0; }
+.gf-control > .form-input { width: 100%; box-sizing: border-box; }
+
+.gf-m2o { display: flex; gap: 6px; align-items: center; }
+.gf-m2o > .form-input, .gf-m2o > .o2m-input { flex: 1 1 auto; min-width: 0; }
+.gf-addnew {
+    flex: 0 0 auto; width: 28px; height: 28px; padding: 0;
+    border: 1px solid var(--border); border-radius: 6px; background: transparent;
+    color: var(--accent); cursor: pointer; font-size: 1rem; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center; transition: border-color .12s, background .12s;
+}
+.gf-addnew:hover { border-color: var(--accent); background: rgba(255,255,255,.05); }
+.gf-check { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+.gf-textarea { min-height: 70px; resize: vertical; font-family: inherit; }
+
+/* Add-new modal (combobox "Add new…") */
+.gf-modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,.5);
+    display: flex; align-items: center; justify-content: center; z-index: 2000;
+}
+.gf-modal-card {
+    background: var(--surface); border: 1px solid var(--border); border-top: 3px solid var(--accent);
+    border-radius: 12px; padding: 22px; width: min(420px, 92vw); box-shadow: 0 18px 50px rgba(0,0,0,.55);
+}
+.gf-modal-title { margin: 0 0 14px; font-size: 1.05rem; color: var(--text); }
+.gf-modal-lbl { display: block; font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 5px; }
+.gf-modal-input {
+    width: 100%; box-sizing: border-box; padding: 9px 10px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 7px; color: var(--text);
+}
+.gf-modal-input:focus { outline: none; border-color: var(--accent); }
+.gf-modal-err { color: var(--err); font-size: .8rem; margin-top: 8px; }
+.gf-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+
+@media (max-width: 720px) {
+    .gf-grid { grid-template-columns: 1fr; }
+    .gf-field { grid-template-columns: 130px 1fr; }
+}
+
+/* ================================================================
    Sales Order form view
    ================================================================ */
 
@@ -686,6 +809,8 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 .so-lines-table td {
     padding: 3px 4px; border-bottom: 1px solid rgba(255,255,255,.04); min-width: 80px;
 }
+.so-lines-table tbody tr { transition: background .12s; }
+.so-lines-table tbody tr:hover { background: rgba(255,255,255,.025); }
 .so-lines-table tr:last-child td { border-bottom: none; }
 .so-col-product  { min-width: 160px; }
 .so-col-desc     { min-width: 180px; }
@@ -694,6 +819,8 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 .so-col-del      { width: 36px; }
 .so-add-line { margin-top: 6px; background: transparent; border: 1px dashed var(--border); color: var(--muted); font-size: .8rem; }
 .so-add-line:hover { border-color: var(--accent); color: var(--accent); opacity: 1; }
+.so-line-adds { display: flex; gap: 8px; flex-wrap: wrap; }
+.so-line-adds .so-add-line { margin-top: 6px; }
 
 /* Footer: notes + totals */
 .so-footer { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 20px; gap: 24px; }
@@ -763,6 +890,52 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
     text-transform: uppercase; letter-spacing: .06em; margin-bottom: 12px;
 }
 .chatter-feed { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
+
+/* ================================================================
+   AttachmentPanel — files on a record
+   ================================================================ */
+.att-panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    margin-top: 20px; padding: 16px;
+}
+.att-panel .chatter-head { display: flex; align-items: center; gap: 8px; }
+.att-count {
+    font-size: .68rem; padding: 1px 7px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted);
+    font-variant-numeric: tabular-nums; letter-spacing: 0;
+}
+.att-list { display: flex; flex-direction: column; margin-bottom: 12px; }
+.att-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 4px; border-bottom: 1px solid rgba(255,255,255,.04);
+    font-size: .85rem;
+}
+.att-row:last-child { border-bottom: none; }
+.att-row:hover { background: rgba(255,255,255,.025); }
+.att-icon { flex-shrink: 0; font-size: .95rem; line-height: 1; }
+.att-name {
+    flex: 1; min-width: 0; color: var(--text); text-decoration: none;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.att-name:hover { color: var(--accent); text-decoration: underline; }
+.att-meta { color: var(--muted); font-size: .75rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.att-when { min-width: 108px; text-align: right; }
+.att-dl  { color: var(--muted); text-decoration: none; font-size: 1rem; padding: 0 2px; }
+.att-dl:hover  { color: var(--accent); }
+.att-del { color: var(--muted); cursor: pointer; font-size: .8rem; padding: 0 2px; user-select: none; }
+.att-del:hover { color: var(--err); }
+
+.att-drop {
+    border: 1px dashed var(--border); border-radius: 7px;
+    padding: 14px; text-align: center; color: var(--muted);
+    font-size: .8rem; cursor: pointer; transition: border-color .15s, color .15s, background .15s;
+}
+.att-drop:hover, .att-drop.over {
+    border-color: var(--accent); color: var(--accent); background: rgba(255,255,255,.03);
+}
+.att-file-input { display: none; }
+.att-error { color: var(--err); font-size: .8rem; margin-top: 8px; }
+.att-hint  { color: var(--muted); font-size: .72rem; margin-top: 8px; }
 .chatter-loading { color: var(--muted); font-style: italic; margin-bottom: 12px; }
 .chatter-empty { color: var(--muted); font-style: italic; margin-bottom: 12px; }
 .chatter-entry { display: flex; gap: 10px; align-items: flex-start; }
@@ -789,7 +962,17 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
    ================================================================ */
 .trn-muted { color: var(--muted); font-style: italic; }
 .trn-empty-row { color: var(--muted); text-align: center; padding: 20px 0; font-style: italic; }
-.trn-put-in-pack-row { padding: 8px 0; }
+.trn-put-in-pack-row { padding: 8px 0; display: flex; align-items: center; gap: 12px; }
+.trn-pack-msg { font-size: .8rem; color: var(--ok); }
+.trn-pack-tag {
+    display: inline-block; font-size: .72rem; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--text); white-space: nowrap;
+}
+.trn-lot-add {
+    margin-left: 6px; cursor: pointer; color: var(--muted); font-size: .9rem;
+    user-select: none;
+}
+.trn-lot-add:hover { color: var(--accent); }
 
 /* ================================================================
    Product form (prd-*)
@@ -815,6 +998,47 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 .prd-stat-icon { font-size: 1.1rem; line-height: 1; }
 .prd-stat-num { font-size: 1rem; font-weight: 700; color: var(--text); }
 .prd-stat-lbl { font-size: .7rem; color: var(--muted); white-space: nowrap; }
+.prd-stat-num { font-variant-numeric: tabular-nums; }
+
+/* Inventory adjustment dialog (Update Quantity) */
+.prd-adjust-card {
+    background: var(--surface); border: 1px solid var(--border); border-top: 3px solid var(--accent);
+    border-radius: 12px; padding: 22px; width: min(620px, 94vw);
+    max-height: 84vh; overflow: auto; box-shadow: 0 18px 50px rgba(0,0,0,.55);
+}
+.prd-adjust-hint { margin: 0 0 14px; font-size: .8rem; line-height: 1.5; color: var(--muted); }
+.prd-adjust-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.prd-adjust-table th {
+    text-align: left; font-size: .68rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--border);
+}
+.prd-adjust-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); color: var(--text); }
+.prd-adjust-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.prd-adjust-input {
+    width: 110px; box-sizing: border-box; padding: 5px 8px; text-align: right;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+.prd-adjust-input:focus { outline: none; border-color: var(--accent); }
+.prd-adjust-empty { text-align: center; color: var(--muted); padding: 20px; }
+
+/* Combobox with an inline-create ＋, matching the generic form (docs/078) */
+.prd-combo { display: flex; align-items: center; gap: 6px; }
+.prd-combo .form-input { flex: 1; min-width: 0; }
+.prd-combo-add {
+    flex-shrink: 0; width: 28px; height: 28px; line-height: 1;
+    background: transparent; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--muted); cursor: pointer; font-size: .85rem;
+    transition: color .15s, border-color .15s;
+}
+.prd-combo-add:hover { color: var(--accent); border-color: var(--accent); }
+
+/* Expense reports — the one note the form needs to explain its tax treatment */
+.exp-note {
+    margin: 0; font-size: .78rem; line-height: 1.5; color: var(--muted);
+    max-width: 52ch;
+}
+.so-sb-left .exp-note { max-width: none; }
 
 /* Identity: name + checkboxes + image */
 .prd-identity {
@@ -983,39 +1207,54 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 /* ================================================================
    Down Payment inline form
    ================================================================ */
+/* Centred modal wizard (shared by Sales down-payment & Purchase advance bill).
+   The full-screen backdrop is a large spread box-shadow, so this stays a
+   pure-CSS upgrade of the existing .dp-form-bar markup — no wrapper needed. */
 .dp-form-bar {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 2000;
+    width: min(440px, 92vw);
     display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 12px 24px;
-    background: linear-gradient(90deg, #1a2e1a 0%, #162816 100%);
-    border-top: 2px solid #4ec94e;
-    border-bottom: 1px solid #2a4a2a;
     flex-wrap: wrap;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    align-items: center;
+    gap: 10px 10px;
+    padding: 20px 22px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: 3px solid #4ec94e;
+    border-radius: 12px;
+    box-shadow: 0 18px 50px rgba(0,0,0,.55), 0 0 0 100vmax rgba(0,0,0,.55);
 }
 .dp-form-title {
+    flex-basis: 100%;
     font-weight: 700;
-    font-size: 13px;
+    font-size: 14px;
     color: #4ec94e;
-    white-space: nowrap;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.4px;
     text-transform: uppercase;
+    margin-bottom: 2px;
 }
-.dp-amount-input { width: 140px; }
-.dp-note-input   { width: 240px; }
-.dp-error        { color: var(--err); font-size: 12px; }
+.dp-amount-input { width: 118px; }
+.dp-note-input   { flex-basis: 100%; width: 100%; }
+.dp-error        { flex-basis: 100%; color: var(--err); font-size: 12px; }
+/* Preset chips sit on the same row as the amount */
 .dp-pct-btn {
-    padding: 4px 10px;
+    padding: 5px 12px;
     font-size: 12px;
     background: #1e3a1e;
     color: #4ec94e;
     border: 1px solid #2e5a2e;
-    border-radius: 4px;
+    border-radius: 999px;
     cursor: pointer;
     white-space: nowrap;
+    transition: background .12s, border-color .12s;
 }
-.dp-pct-btn:hover { background: #2a4e2a; }
+.dp-pct-btn:hover { background: #2a4e2a; border-color: #4ec94e; }
+/* Create / Cancel (the .btn children that aren't preset chips) form the footer row */
+.dp-form-bar > .btn:not(.dp-pct-btn) { margin-top: 6px; }
+.dp-form-bar > .btn.btn-primary { margin-left: auto; }
 
 /* ================================================================
    Report Settings View
@@ -1499,6 +1738,45 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
     font-size: 0.85rem;
     font-weight: 600;
 }
+
+/* Shipped-template baseline: badge, reset dialog, diff panel */
+.dle-badge-custom, .dle-badge-stock {
+    font-size: .68rem;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+}
+.dle-badge-custom { color: var(--warn, #d9a441); border-color: var(--warn, #d9a441); }
+.dle-badge-stock  { color: var(--muted); }
+
+.dle-reset-text { margin: 0 0 10px; font-size: .85rem; line-height: 1.5; color: var(--muted); }
+.dle-reset-warn { color: var(--warn, #d9a441); }
+
+.dle-diff-card {
+    background: var(--surface); border: 1px solid var(--border); border-top: 3px solid var(--accent);
+    border-radius: 12px; width: min(1000px, 94vw); max-height: 86vh;
+    display: flex; flex-direction: column; box-shadow: 0 18px 50px rgba(0,0,0,.55);
+}
+.dle-diff-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+}
+.dle-diff-stat { flex: 1; font-size: .78rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.dle-diff-body { overflow: auto; padding: 10px 0 14px; }
+.dle-diff-same { padding: 30px; text-align: center; color: var(--muted); font-size: .9rem; }
+.dle-diff-row {
+    display: flex; gap: 10px; padding: 0 16px;
+    font-family: 'Consolas','Cascadia Code','Courier New',monospace;
+    font-size: .76rem; line-height: 1.6; white-space: pre;
+}
+.dle-diff-gutter { width: 12px; flex-shrink: 0; color: var(--muted); text-align: center; }
+.dle-diff-text   { flex: 1; overflow-x: auto; }
+.dle-diff-add  { background: rgba(70,170,110,.14); color: var(--ok, #4caf7d); }
+.dle-diff-del  { background: rgba(200,80,80,.14);  color: var(--err, #e06c6c); }
+.dle-diff-skip { color: var(--muted); opacity: .6; }
 
 .dle-main {
     display: flex;
@@ -2254,3 +2532,288 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
     background: rgba(99,102,241,0.15);
     color: #818cf8;
 }
+
+
+/* ---- attachment grouping (docs/106) ------------------------------------
+   A fabrication package is a dozen files named top.gtl / bot.gbl. Grouping
+   them by what they ARE is the difference between a UI and a directory. */
+.att-group { margin-bottom: 10px; }
+.att-group-h {
+    display: flex; align-items: center; gap: 7px;
+    font-size: .68rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); padding: 4px 2px 5px; border-bottom: 1px solid var(--border);
+    margin-bottom: 3px;
+}
+.att-kind {
+    font-family: ui-monospace, Consolas, monospace; font-size: .64rem;
+    color: var(--muted); background: var(--bg); border: 1px solid var(--border);
+    border-radius: 3px; padding: 0 5px; white-space: nowrap; flex: 0 0 auto;
+}
+
+/* Completeness of a PCB fab package — shown only when there is fab data. */
+.att-fab {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin: 10px 0 4px; padding: 8px 10px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+}
+.att-fab-l {
+    font-size: .68rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--muted);
+}
+.att-fab-i { font-size: .74rem; white-space: nowrap; }
+.att-fab-i.yes { color: var(--ok, #4ec9b0); }
+.att-fab-i.no  { color: var(--accent); }
+
+/* ================================================================
+   Product -> Configuration -> Categories (CategoryTree.js)
+
+   A resizable tree on the left, the detail of the selection on the right.
+
+   Built on the app's OWN tokens -- --bg, --surface, --border, --accent,
+   --text, --muted. The first version invented --bg-soft and --accent-soft,
+   which do not exist, so every fallback painted a LIGHT surface while the
+   text kept inheriting the dark theme's near-white --text: a white sidebar
+   under white labels. Nothing failed; the tree was simply invisible, and
+   only a screenshot showed it.
+   ================================================================ */
+.ct-shell { display:flex; height:100%; min-height:0; overflow:hidden;
+            background:var(--bg); color:var(--text); }
+
+.ct-side { display:flex; flex-direction:column; min-width:180px; max-width:720px;
+           border-right:1px solid var(--border); background:var(--surface); }
+.ct-side-head { display:flex; gap:6px; padding:10px; border-bottom:1px solid var(--border); }
+.ct-search { flex:1 1 auto; min-width:0; padding:6px 8px; border:1px solid var(--border);
+             border-radius:4px; font-size:13px; background:var(--bg); color:var(--text); }
+.ct-search::placeholder { color:var(--muted); }
+.ct-icon { flex:0 0 auto; width:28px; height:28px; border:1px solid var(--border);
+           background:var(--bg); color:var(--text); border-radius:4px; cursor:pointer;
+           font-size:14px; line-height:1; }
+.ct-icon:hover { border-color:var(--accent); color:var(--accent); }
+.ct-side-tools { display:flex; align-items:center; justify-content:space-between;
+                 padding:6px 10px; font-size:12px; color:var(--muted);
+                 border-bottom:1px solid var(--border); }
+.ct-chk { display:flex; align-items:center; gap:5px; cursor:pointer; }
+.ct-tree { flex:1 1 auto; overflow:auto; padding:4px 0; }
+.ct-side-foot { padding:8px 10px; border-top:1px solid var(--border); }
+.ct-empty { padding:16px; color:var(--muted); font-size:13px; }
+
+.ct-row { display:flex; align-items:center; gap:6px; padding-top:5px; padding-bottom:5px;
+          padding-right:8px; cursor:pointer; font-size:13px; white-space:nowrap;
+          color:var(--text); }
+.ct-row:hover { background:rgba(255,255,255,.06); }
+/* Selection is carried by a left rail plus a lift in background, not by a pale
+   fill: on a dark ground a light fill would need the text to invert with it. */
+.ct-row.sel { background:rgba(233,69,96,.16); box-shadow:inset 3px 0 0 var(--accent);
+              font-weight:600; }
+.ct-row.arch { opacity:.55; font-style:italic; }
+.ct-twist { flex:0 0 12px; width:12px; text-align:center; font-size:10px; color:var(--muted); }
+.ct-twist.blank { visibility:hidden; }
+.ct-name { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; }
+/* Two counts, deliberately different weights: what is filed here reads first,
+   what is rolled up from below is present but recessive. */
+.ct-n { flex:0 0 auto; font-size:11px; padding:1px 6px; border-radius:9px;
+        font-variant-numeric:tabular-nums; }
+.ct-n.direct { background:rgba(233,69,96,.18); color:var(--accent); }
+.ct-n.roll { background:transparent; color:var(--muted); }
+
+.ct-grip { flex:0 0 6px; cursor:col-resize; background:transparent; }
+.ct-grip:hover { background:var(--accent); opacity:.4; }
+body.ct-resizing { cursor:col-resize; user-select:none; }
+
+.ct-main { flex:1 1 auto; min-width:0; overflow:auto; background:var(--bg); }
+.ct-panel { padding:18px 22px; max-width:1000px; }
+.ct-blank { display:flex; flex-direction:column; align-items:center; justify-content:center;
+            height:100%; color:var(--muted); gap:8px; }
+.ct-blank-i { font-size:40px; opacity:.5; }
+
+.ct-crumbs { font-size:12px; color:var(--muted); margin-bottom:6px; }
+.ct-crumb { cursor:pointer; }
+.ct-crumb:hover { text-decoration:underline; color:var(--accent); }
+.ct-sep { margin:0 5px; opacity:.5; }
+.ct-title-row { display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+.ct-h2 { margin:0; font-size:20px; color:var(--text); }
+.ct-h3 { margin:22px 0 8px; font-size:12px; text-transform:uppercase;
+         letter-spacing:.06em; color:var(--muted); }
+.ct-note { text-transform:none; letter-spacing:0; font-weight:400; margin-left:8px; }
+.ct-spacer { flex:1 1 auto; }
+.ct-sub { margin:0 0 10px; color:var(--muted); font-size:13px; }
+.ct-badge.archived { font-size:11px; padding:2px 8px; border-radius:9px;
+                     background:var(--border); color:var(--muted); }
+.ct-err { margin:8px 0; padding:8px 10px; border-radius:4px;
+          background:rgba(244,71,71,.15); color:var(--err); font-size:13px; }
+.ct-form { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.ct-input { padding:6px 8px; border:1px solid var(--border); border-radius:4px;
+            font-size:14px; min-width:240px; background:var(--bg); color:var(--text); }
+
+.ct-stats { display:flex; flex-wrap:wrap; gap:10px; }
+.ct-stat { flex:1 1 140px; border:1px solid var(--border); border-radius:6px;
+           padding:12px 14px; background:var(--surface); }
+.ct-stat-n { font-size:24px; font-weight:600; font-variant-numeric:tabular-nums;
+             color:var(--text); }
+.ct-stat-l { font-size:12px; color:var(--muted); margin-top:2px; }
+
+.ct-chips { display:flex; flex-wrap:wrap; gap:6px; }
+.ct-chip { display:inline-flex; align-items:center; gap:6px; padding:4px 10px;
+           border:1px solid var(--border); border-radius:14px; font-size:13px;
+           cursor:pointer; background:var(--surface); color:var(--text); }
+.ct-chip:hover { border-color:var(--accent); color:var(--accent); }
+.ct-chip b { font-variant-numeric:tabular-nums; color:var(--muted); font-weight:600; }
+
+.ct-table-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:6px; }
+.ct-table { width:100%; border-collapse:collapse; font-size:13px; color:var(--text); }
+.ct-table th, .ct-table td { padding:7px 10px; text-align:left;
+                             border-bottom:1px solid var(--border); }
+.ct-table th { background:var(--surface); font-weight:600; color:var(--muted); }
+.ct-table tr:last-child td { border-bottom:none; }
+.ct-table td.num, .ct-table th.num { text-align:right; font-variant-numeric:tabular-nums; }
+.ct-table td.mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+.ct-table tr.muted { opacity:.55; }
+.ct-none { color:var(--muted); font-size:13px; }
+
+.ct-props { display:flex; flex-wrap:wrap; gap:10px; }
+.ct-prop { flex:1 1 200px; border:1px solid var(--border); border-radius:6px;
+           padding:10px 12px; background:var(--surface); }
+.ct-prop-l { display:block; font-size:11px; text-transform:uppercase;
+             letter-spacing:.05em; color:var(--muted); }
+.ct-prop-v { display:block; margin-top:3px; font-size:13px; color:var(--text); }
+.ct-meta { margin-top:22px; padding-top:12px; border-top:1px solid var(--border);
+           display:flex; flex-wrap:wrap; gap:16px; font-size:12px; color:var(--muted); }
+
+/* ----------------------------------------------------------------
+   Custom screens declare  and mean fill
+
+
+/* ----------------------------------------------------------------
+   Custom screens declare `height: 100%` and mean "fill the window".
+
+   .content already fills the shell (848px of a 900px viewport), but
+   .action-view sat between them as display:block with AUTO height -- and a
+   percentage height resolves against the parent's height PROPERTY, not its
+   rendered box. So every full-height screen collapsed to its own content and
+   left dead space underneath: Part Lookup's editor stayed short with an empty
+   half-screen below it, and the Categories tree stopped mid-page.
+
+   Measured, not guessed. Walking the chain from the screen upwards gave:
+       .content 848px  ->  .action-view 234px  ->  .pl-shell 234px
+   ---------------------------------------------------------------- */
+.action-view { height: 100%; min-height: 0; }
+
+
+/* ----------------------------------------------------------------
+   Settings -> AI Agent (AiSettings.js, docs/110)
+   ---------------------------------------------------------------- */
+.ai-shell { height: 100%; overflow: auto; padding: 20px 24px; color: var(--text); background: var(--bg); }
+.ai-head { margin-bottom: 18px; }
+.ai-title { margin: 0 0 4px; font-size: 20px; }
+.ai-sub { color: var(--muted); font-size: 13px; }
+.ai-body { display: flex; flex-direction: column; gap: 14px; max-width: 860px; }
+.ai-card { border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; background: var(--surface); }
+.ai-h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.ai-help { margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+.ai-row { display: flex; align-items: center; gap: 12px; padding: 5px 0; }
+/* Scoped to the status ROWS.  inside .ai-field, which is a
+   flex COLUMN, makes the basis a 160px HEIGHT -- the labels sat at the top of
+   200px-tall cells with their controls stranded at the bottom. */
+.ai-row .ai-label { flex: 0 0 160px; }
+.ai-label { font-size: 13px; color: var(--muted); }
+.ai-field .ai-label { flex: none; }
+.ai-val { flex: 1 1 auto; font-size: 13px; display: flex; align-items: center; gap: 10px; }
+.ai-muted { color: var(--muted); }
+.ai-err { color: var(--err); }
+.ai-key { font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+          background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; }
+.ai-pill { font-size: 11px; padding: 2px 10px; border-radius: 10px; }
+.ai-pill.ok   { background: rgba(78,201,176,.18); color: var(--ok); }
+.ai-pill.off  { background: rgba(136,153,170,.18); color: var(--muted); }
+.ai-pill.none { background: rgba(244,71,71,.15); color: var(--err); }
+.ai-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ai-input { flex: 1 1 320px; min-width: 220px; padding: 7px 10px; border: 1px solid var(--border);
+            border-radius: 5px; background: var(--bg); color: var(--text);
+            font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.ai-num { width: 110px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px;
+          background: var(--bg); color: var(--text); font-size: 13px; }
+.ai-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.ai-field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+.ai-field select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px;
+                   background: var(--bg); color: var(--text); font-size: 13px; }
+.ai-btn { padding: 7px 14px; border: 1px solid var(--border); border-radius: 5px;
+          background: var(--bg); color: var(--text); cursor: pointer; font-size: 13px; }
+.ai-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.ai-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.ai-btn.ghost { background: transparent; }
+.ai-btn:disabled { opacity: .5; cursor: not-allowed; }
+.ai-result { font-size: 13px; }
+.ai-result.ok  { color: var(--ok); }
+.ai-result.bad { color: var(--err); }
+.ai-pre { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px;
+          background: var(--bg); font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+          white-space: pre-wrap; word-break: break-all; }
+.ai-warn { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px;
+           padding: 10px 14px; font-size: 13px; color: var(--muted); background: var(--surface); }
+.ai-error { margin-top: 12px; padding: 9px 12px; border-radius: 5px;
+            background: rgba(244,71,71,.15); color: var(--err); font-size: 13px; }
+.ai-note { color: var(--muted); font-size: 13px; }
+
+/* ---- prompt management ----
+   The prompts ship as git-tracked files; this screen edits an override. The
+   badge on each task says which of the two is actually being sent, because
+   that is the first question when an answer looks wrong. */
+.ai-tasks { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 12px; }
+.ai-task {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 7px 11px; cursor: pointer; font: inherit; font-size: 13px;
+}
+.ai-task:hover  { border-color: var(--accent); }
+.ai-task.active { border-color: var(--accent); background: var(--surface); }
+.ai-task-n { font-weight: 600; }
+.ai-src {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+    padding: 2px 6px; border-radius: 9px; font-weight: 600;
+}
+.ai-src.file     { background: rgba(78,201,176,.14); color: var(--ok, #4ec9b0); }
+.ai-src.override { background: rgba(215,153,33,.17); color: var(--warn, #d79921); }
+.ai-src.compiled { background: rgba(251,73,52,.15);  color: var(--danger, #fb4934); }
+
+.ai-note.warn { color: var(--warn, #d79921); }
+.ai-note.bad  { color: var(--danger, #fb4934); }
+
+.ai-ph { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0 6px; }
+.ai-ph .ai-muted { font-size: 12px; }
+.ai-chip {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 2px 7px; font-size: 12px; color: var(--muted);
+}
+/* A required placeholder is the difference between a prompt and a prompt that
+   asks about nothing, so it does not look like the optional ones. */
+.ai-chip.req { color: var(--accent); border-color: var(--accent); }
+
+.ai-prompt {
+    width: 100%; box-sizing: border-box; min-height: 320px; resize: vertical;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 12px; margin-top: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px; line-height: 1.5; white-space: pre;
+}
+.ai-prompt:focus { outline: none; border-color: var(--accent); }
+
+/* The workspace id is a long opaque identifier, so it gets a full row and a
+   width that actually fits one. `.ai-input` is flex-sized for the key form and
+   was being squeezed into a grid cell where the value ran past the edge. */
+.ai-ws { flex: 1 1 420px; min-width: 260px; max-width: 560px; box-sizing: border-box;
+         padding: 7px 10px; border: 1px solid var(--border); border-radius: 5px;
+         background: var(--bg); color: var(--text);
+         font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.ai-ws::placeholder { color: var(--muted); }
+.ai-ws:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.ai-help code { font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+                background: var(--bg); padding: 1px 5px; border-radius: 3px; }
+
+/* The model id is free text now (provider-specific), so it needs room. */
+.ai-num.wide { width: 100%; box-sizing: border-box;
+               font-family: ui-monospace, Consolas, monospace; }
+/* Line the checkbox up with the other controls in the grid instead of letting
+   it float against the top of a taller cell. */
+.ai-field input[type="checkbox"] { width: 16px; height: 16px; margin: 6px 0 0; }

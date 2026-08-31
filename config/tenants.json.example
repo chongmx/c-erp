@@ -1,0 +1,16 @@
+{
+  "_comment": [
+    "Multi-company data planes (docs/072). Copy to config/tenants.json to enable.",
+    "Each tenant is a separate database; connection details inherit from the",
+    "primary [options] db_* in system.cfg unless a tenant overrides host/port/",
+    "user/password/pool_size. 'name' is the database (the tenant key).",
+    "'subdomain' routes Host acme.* -> this tenant; 'email_domains' route a login",
+    "like x@acme.com -> this tenant. Provision each with tools/provision_tenant.sh.",
+    "To enable the cross-tenant company switcher, also set 'control_db = <db>' in",
+    "system.cfg and provision that control database."
+  ],
+  "tenants": [
+    { "name": "acme",   "subdomain": "acme",   "email_domains": ["acme.com"],   "active": true },
+    { "name": "globex", "subdomain": "globex", "email_domains": ["globex.com"], "active": true }
+  ]
+}

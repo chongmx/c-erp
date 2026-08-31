@@ -12,10 +12,10 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::uom {
+namespace cerp::modules::uom {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 // ================================================================
 // 1. MODEL
@@ -274,4 +274,4 @@ void UomModule::seedMenus_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::uom
+} // namespace cerp::modules::uom

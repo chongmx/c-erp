@@ -27,7 +27,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 template<typename K, typename V>
 class TtlCache {
@@ -89,4 +89,4 @@ private:
     mutable std::unordered_map<K, Entry> map_;
 };
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

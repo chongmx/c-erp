@@ -36,7 +36,7 @@
 
 namespace pqxx { class transaction_base; }
 
-namespace odoo::core {
+namespace cerp::core {
 
 /// One application of a payment to an invoice.
 struct Allocation {
@@ -95,4 +95,4 @@ public:
     static void refreshResidual(pqxx::transaction_base& txn, int moveId);
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

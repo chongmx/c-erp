@@ -10,20 +10,20 @@
 #include <vector>
 
 // Forward declarations — avoids pulling in heavy headers everywhere.
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
     class DbConnection;
     class SessionManager;
 }
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // ModelFactory
 // ============================================================
 /**
- * @brief Creates ORM model instances keyed by Odoo model name.
+ * @brief Creates ORM model instances keyed by the reference ERP model name.
  *
- * Keys follow Odoo dot-notation: "res.partner", "account.move", etc.
+ * Keys follow the reference ERP dot-notation: "res.partner", "account.move", etc.
  * Models are Transient by default — each call returns a fresh blank record.
  * Singleton lifetime is available for read-only prototype/meta uses.
  *
@@ -52,7 +52,7 @@ public:
      * @brief Convenience: register a model type that takes a DbConnection.
      *
      * @tparam TModel  Concrete model type. Must be constructible as TModel(db).
-     * @param  key     Odoo model name, e.g. "res.partner".
+     * @param  key     the reference ERP model name, e.g. "res.partner".
      */
     template<typename TModel>
     void registerModel(const std::string& key) {
@@ -149,7 +149,7 @@ private:
 // ViewModelFactory
 // ============================================================
 /**
- * @brief Creates ViewModel instances keyed by Odoo model name.
+ * @brief Creates ViewModel instances keyed by the reference ERP model name.
  *
  * The JSON-RPC dispatcher resolves: model="res.partner" → PartnerViewModel.
  * ViewModels are Transient by default (one per request, no cross-request state).
@@ -181,7 +181,7 @@ public:
      *
      * @tparam TViewModel  Concrete type. Must be default-constructible or
      *                     constructed inside the supplied creator lambda.
-     * @param  modelName   Odoo model name, e.g. "res.partner".
+     * @param  modelName   the reference ERP model name, e.g. "res.partner".
      * @param  creator     Lambda returning std::shared_ptr<TViewModel>.
      */
     template<typename TViewModel>
@@ -256,7 +256,7 @@ public:
     /**
      * @brief Resolve a view by model name + view type, with "form" fallback.
      *
-     * @param modelName  Odoo model name, e.g. "res.partner".
+     * @param modelName  the reference ERP model name, e.g. "res.partner".
      * @param viewType   "form" | "list" | "kanban" | "tree" | ... (default "form").
      * @returns          Shared singleton view instance.
      * @throws std::runtime_error if neither key nor form fallback is registered.
@@ -348,4 +348,4 @@ public:
     }
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

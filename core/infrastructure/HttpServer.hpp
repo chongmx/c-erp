@@ -6,7 +6,7 @@
 #include <functional>
 #include <string>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 // ============================================================
 // HttpConfig
@@ -74,7 +74,7 @@ struct HttpConfig {
      * When non-empty, Drogon serves files from this directory for any
      * request that doesn't match a registered API route.
      *
-     * For the Odoo OWL frontend, point this at the Odoo web addon's
+     * For the reference ERP OWL frontend, point this at the reference ERP web addon's
      * static directory, e.g.:
      *   /usr/lib/python3/dist-packages/odoo/addons/web/static
      *
@@ -87,10 +87,21 @@ struct HttpConfig {
     std::string docRoot     = "";
 
     /**
-     * @brief File served when the root path "/" is requested.
+     * @brief File served for the application shell.
      * Only used when docRoot is non-empty.
      */
     std::string indexFile   = "index.html";
+
+    /**
+     * @brief Path the ERP application (and its login page) is served at.
+     *
+     * "/" belongs to the public website: a visitor arriving at the domain
+     * should see the site, not a login form for a system they have no account
+     * on. The application answers at /login instead (docs/126).
+     *
+     * config.json:  "app_path": "/login"
+     */
+    std::string appPath = "/login";
 
     /**
      * @brief Path to the log file, e.g. "log/system.log".
@@ -112,6 +123,25 @@ struct HttpConfig {
      * config/system.cfg:  log_level = info
      */
     std::string logLevel = "warn";
+
+    /**
+     * @brief How many rotated log files to keep. 0 = keep every one.
+     *
+     * trantor rolls the log by size and, on its own, keeps every roll forever:
+     * a long-lived checkout had accumulated 1,807 files (29 MB) with nothing
+     * pruning them. setMaxFiles() existed and was simply never called
+     * (docs/092).
+     *
+     * config/system.cfg:  log_max_files = 30
+     */
+    size_t logMaxFiles = 30;
+
+    /**
+     * @brief Roll the log once it reaches this many bytes. 0 = trantor default.
+     *
+     * config/system.cfg:  log_size_limit_mb = 20
+     */
+    uint64_t logSizeLimitBytes = 20ULL * 1024 * 1024;
 };
 
 
@@ -134,7 +164,7 @@ using HttpCallback    = std::function<void(const HttpResponsePtr&)>;
  *   API routes (/web/dataset/*, /healthz, /websocket) always take
  *   priority over static files regardless of registration order.
  *
- *   // Serve the Odoo OWL frontend:
+ *   // Serve the reference ERP OWL frontend:
  *   cfg.http.docRoot = "/usr/lib/python3/dist-packages/odoo/addons/web/static";
  *
  *   // Serve a local test page:
@@ -165,14 +195,23 @@ public:
             if (logPath.has_parent_path())
                 std::filesystem::create_directories(logPath.parent_path());
 
-            // trantor uses the path as a base name and appends ".log" if
-            // no extension is present; strip ".log" to avoid "system.log.log"
-            std::string baseName = cfg_.logFile;
-            if (baseName.size() > 4 &&
-                baseName.substr(baseName.size() - 4) == ".log")
-                baseName = baseName.substr(0, baseName.size() - 4);
+            // setFileName takes the directory and the base name SEPARATELY.
+            // Passing "log/system" as the base name writes to the right place
+            // — fileFullName_ is just path + base + ext — but the rotation
+            // bookkeeping scans `path` for files beginning with `base`, so it
+            // looked in "./" for names starting with "log/system" and found
+            // none. Retention could never have worked, whatever the limit was
+            // set to (docs/092).
+            const std::string dir  = logPath.has_parent_path()
+                                   ? logPath.parent_path().string() : std::string(".");
+            std::string       base = logPath.stem().string();      // "system.log" → "system"
+            if (base.empty()) base = "system";
 
-            asyncLogger_.setFileName(baseName);
+            asyncLogger_.setFileName(base, ".log", dir);
+            // Retention. Without these two the logger rolls forever and nothing
+            // ever deletes a roll — 1,807 files had accumulated (docs/092).
+            if (cfg_.logSizeLimitBytes > 0) asyncLogger_.setFileSizeLimit(cfg_.logSizeLimitBytes);
+            if (cfg_.logMaxFiles > 0)       asyncLogger_.setMaxFiles(cfg_.logMaxFiles);
             asyncLogger_.startLogging();
             trantor::Logger::setOutputFunction(
                 [this](const char* msg, const uint64_t len) {
@@ -180,11 +219,20 @@ public:
                 },
                 [this]() { asyncLogger_.flush(); }
             );
-            std::cout << "[odoo-cpp] Logging to file: " << cfg_.logFile << "\n";
+            std::cout << "[c-erp] Logging to file: " << cfg_.logFile << "\n";
         }
 
         app.addListener(cfg_.host, cfg_.port)
-           .setThreadNum(cfg_.threads);
+           .setThreadNum(cfg_.threads)
+           // Drogon's own default is about 1 MB, which is below the size of an
+           // ordinary phone photo: the website media upload (docs/124) caps
+           // itself at 8 MB for images and 24 MB for video, and without this every
+           // image over ~1 MB died with
+           // a bare 413 before the handler ever ran — so the handler's own cap
+           // was unreachable and its explanation never shown. The headroom is
+           // deliberate: the route that cares enforces its own limit and says
+           // why, and this only stops something absurd reaching the process.
+           .setClientMaxBodySize(28 * 1024 * 1024);
 
         // Static file serving — must be configured before run()
         if (!cfg_.docRoot.empty()) {
@@ -193,7 +241,13 @@ public:
                               "gif","svg","ico","woff","woff2","ttf",
                               "eot","map","json","xml","txt"});
             // "/" → index.html
-            app.registerHandler("/",
+            // Where the application shell lives. Not hardcoded to "/" any
+            // more: the public website is the front door of the product, so
+            // "/" belongs to the website module and the ERP answers at
+            // /login (docs/126). index.html references its assets with
+            // absolute paths (/lib, /src), so it loads correctly from any
+            // path this is set to.
+            app.registerHandler(cfg_.appPath,
                 [this](const HttpRequestPtr&, HttpCallback&& cb) {
                     auto res = drogon::HttpResponse::newFileResponse(
                         cfg_.docRoot + "/" + cfg_.indexFile);
@@ -382,4 +436,4 @@ private:
     }
 };
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

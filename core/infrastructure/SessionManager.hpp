@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 // ============================================================
 // Session
@@ -20,7 +20,7 @@ namespace odoo::infrastructure {
 /**
  * @brief Represents one authenticated browser session.
  *
- * Mirrors Odoo's ir.http session structure closely enough that
+ * Mirrors the reference ERP's ir.http session structure closely enough that
  * the OWL frontend doesn't need changes:
  * @code
  * {
@@ -35,8 +35,9 @@ namespace odoo::infrastructure {
 struct Session {
     std::string    sessionId;
     int            uid         = 0;    ///< res.users id; 0 = anonymous
-    std::string    login;              ///< e.g. "admin"
-    std::string    db;                 ///< database name
+    std::string    login;              ///< e.g. "admin" (local login in this tenant)
+    std::string    db;                 ///< database name (the active tenant)
+    std::string    identity;           ///< global cross-tenant identity (docs/072 control plane); "" = single-tenant
     nlohmann::json context = nlohmann::json::object(); ///< user context
 
     // Enriched fields populated after authentication
@@ -46,6 +47,12 @@ struct Session {
     std::string       companyName;        ///< res_company.name
     bool              isAdmin    = false; ///< member of Administrator group (id=3)
     std::vector<int>  groupIds;           ///< all res_groups ids this user belongs to
+    /// docs/094 — companies this user may switch between (res_company_users_rel).
+    /// `companyId` above is whichever one is active right now; it is always a
+    /// member of this list.
+    std::vector<int>  allowedCompanyIds;
+    /// Parallel to allowedCompanyIds — names, so the switcher needs no extra call.
+    std::vector<std::string> allowedCompanyNames;
 
     using Clock     = std::chrono::steady_clock;
     using TimePoint = Clock::time_point;
@@ -67,10 +74,25 @@ struct Session {
         return false;
     }
 
+    /// docs/094 — may this session switch to / act for company `cid`?
+    /// Note isAdmin is NOT a shortcut here: an administrator of company A is
+    /// not thereby a member of company B.
+    bool mayUseCompanyId(int cid) const {
+        return cid > 0 &&
+               std::find(allowedCompanyIds.begin(), allowedCompanyIds.end(), cid)
+                   != allowedCompanyIds.end();
+    }
+
     nlohmann::json toJson() const {
         nlohmann::json gArr = nlohmann::json::array();
         for (int g : groupIds) gArr.push_back(g);
+        nlohmann::json cArr = nlohmann::json::array();
+        for (std::size_t i = 0; i < allowedCompanyIds.size(); ++i)
+            cArr.push_back({{"id",   allowedCompanyIds[i]},
+                            {"name", i < allowedCompanyNames.size()
+                                         ? allowedCompanyNames[i] : std::string{}}});
         return {
+            {"allowed_companies", cArr},
             {"session_id",   sessionId},
             {"uid",          uid},
             {"login",        login},
@@ -98,7 +120,7 @@ struct Session {
  * Expired sessions are evicted lazily on get() and explicitly via
  * evictExpired().
  *
- * The session cookie name matches Odoo's default: "session_id".
+ * The session cookie name matches the reference ERP's default: "session_id".
  *
  * Usage (inside JsonRpcDispatcher):
  * @code
@@ -263,7 +285,7 @@ public:
     // Cookie helpers (static)
     // ----------------------------------------------------------
 
-    /** @brief Cookie name Odoo's frontend expects. */
+    /** @brief Cookie name the reference ERP's frontend expects. */
     static constexpr const char* cookieName() { return "session_id"; }
 
     /**
@@ -342,4 +364,4 @@ private:
     std::size_t                              maxSessions_ = 50000;
 };
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

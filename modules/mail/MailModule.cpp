@@ -13,10 +13,10 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::mail {
+namespace cerp::modules::mail {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 // ================================================================
 // MailMessage — mail.message
@@ -251,4 +251,4 @@ void MailModule::ensureSchema_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::mail
+} // namespace cerp::modules::mail

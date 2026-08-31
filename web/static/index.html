@@ -9,6 +9,13 @@
     <link rel="stylesheet" href="/src/app.css">
     <link rel="stylesheet" href="/src/components/rental/rental.css">
     <link rel="stylesheet" href="/src/components/partkeepr.css">
+    <link rel="stylesheet" href="/src/components/dbstudio.css">
+    <link rel="stylesheet" href="/src/components/recordviews.css">
+    <link rel="stylesheet" href="/src/components/partlookup.css">
+    <link rel="stylesheet" href="/src/components/partcatalog.css">
+    <link rel="stylesheet" href="/src/components/project.css">
+    <link rel="stylesheet" href="/src/components/help.css">
+    <link rel="stylesheet" href="/src/components/bomeditor.css">
 </head>
 <body>
 <div id="app"></div>
@@ -24,8 +31,22 @@
 <!-- Custom screens for the new modules — load before app.js so its
      CUSTOM_VIEWS map can reference them at definition time. -->
 <script src="/src/components/BarcodeScan.js"></script>
-<script src="/src/components/PartSearch.js"></script>
 <script src="/src/components/BankReconcile.js"></script>
+<script src="/src/components/CompanyAdmin.js"></script>
+<script src="/src/components/DbBackups.js"></script>
+<script src="/src/components/DbStudio.js"></script>
+<!-- docs/095 — generic views. Must load BEFORE app.js: ActionView names these
+     classes in its `static components` map, which is evaluated at definition time. -->
+<script src="/src/components/RecordViews.js"></script>
+<script src="/src/components/PartLookup.js"></script>
+<script src="/src/components/PartCatalog.js"></script>
+<script src="/src/components/CategoryTree.js"></script>
+<script src="/src/components/AiSettings.js"></script>
+<script src="/src/components/TaskBoard.js"></script>
+<script src="/src/components/TimesheetGrid.js"></script>
+<script src="/src/components/HelpCenter.js"></script>
+<script src="/src/components/BomEditor.js"></script>
+<script src="/src/components/AccountReports.js"></script>
 <script src="/src/app.js"></script>
 </body>
 </html>

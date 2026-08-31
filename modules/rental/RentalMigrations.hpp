@@ -29,11 +29,11 @@
 // ============================================================
 #include <string>
 
-namespace odoo::infrastructure { class MigrationRunner; }
+namespace cerp::infrastructure { class MigrationRunner; }
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
 /// Register every rental migration on the runner.
-void registerRentalMigrations(odoo::infrastructure::MigrationRunner& runner);
+void registerRentalMigrations(cerp::infrastructure::MigrationRunner& runner);
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

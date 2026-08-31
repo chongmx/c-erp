@@ -99,7 +99,7 @@ design and is not a disclosure risk.
     return errorResponse_(id, 403, "Access Denied", e.what());  // always shown — OK
 } catch (const std::exception& e) {
     LOG_ERROR << "[rpc] " << e.what();
-    return errorResponse_(id, 200, "Odoo Server Error",
+    return errorResponse_(id, 200, "the reference ERP Server Error",
                           devMode_ ? e.what() : "An internal error occurred");  // gated
 }
 ```
@@ -125,7 +125,7 @@ Before merging any new HTTP route:
 **Status:** Documented gap — not yet implemented.
 
 The current access control is model-level only: a user either can or cannot access
-`sale.order` as a whole. There is no row-level filtering (Odoo's `ir.rule` equivalent).
+`sale.order` as a whole. There is no row-level filtering (the reference ERP's `ir.rule` equivalent).
 
 **Impact:** In a single-company, small-team deployment this is acceptable. In a
 multi-company or multi-team deployment, a user who can access `sale.order` can read

@@ -1,5 +1,5 @@
 /**
- * app.js — IR-driven OWL application with Odoo 14-style navigation.
+ * app.js — IR-driven OWL application with the reference ERP-style navigation.
  *
  * Navigation flow:
  *   Home screen → click app tile → app context (horizontal nav)
@@ -167,13 +167,21 @@ class ListView extends Component {
 // ----------------------------------------------------------------
 class FormView extends Component {
     static template = xml`
-        <div class="view-form">
-            <div class="view-toolbar">
-                <button class="btn" t-on-click="onBack">← Back</button>
-                <button t-if="!state.isNew" class="btn btn-primary" t-on-click="onSave">Save</button>
-                <button t-if="!state.isNew" class="btn btn-danger" t-on-click="onDelete">Delete</button>
-                <button t-if="state.isNew"  class="btn btn-primary" t-on-click="onCreate">Create</button>
+        <div class="gf-shell">
+            <div class="gf-header">
+                <div class="gf-breadcrumb">
+                    <span class="gf-bc-link" t-on-click="onBack" t-esc="listTitle"/>
+                    <span class="gf-bc-sep">›</span>
+                    <span class="gf-bc-cur" t-esc="recordTitle"/>
+                </div>
+                <div class="gf-actions">
+                    <button t-if="state.isNew"  class="btn btn-primary" t-on-click="onCreate">Create</button>
+                    <button t-if="!state.isNew" class="btn btn-primary" t-on-click="onSave">Save</button>
+                    <button t-if="!state.isNew" class="btn btn-danger" t-on-click="onDelete">Delete</button>
+                    <button class="btn" t-on-click="onBack">Discard</button>
+                </div>
             </div>
+
             <t t-if="state.loading">
                 <div class="loading">Loading…</div>
             </t>
@@ -187,31 +195,50 @@ class FormView extends Component {
                 <div class="error" t-esc="state.error"/>
             </t>
             <t t-else="">
-                <div class="form-body" t-on-change="onFormChange" t-on-input="onFormInput" t-on-click="onFormClick">
-                    <t t-foreach="scalarFields" t-as="f" t-key="f.name">
-                        <div class="form-row">
-                            <label class="form-label" t-esc="f.label"/>
-                            <t t-if="f.type === 'many2one'">
-                                <select class="form-input" t-att-data-field="f.name">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.relOptions[f.name] || []" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="this.getM2oId(state.record[f.name]) === opt.id ? true : undefined">
-                                            <t t-esc="opt.display"/>
-                                        </option>
+                <div class="gf-card" t-on-change="onFormChange" t-on-input="onFormInput" t-on-click="onFormClick">
+                    <h1 class="gf-title" t-esc="recordTitle"/>
+                    <div class="gf-grid">
+                        <t t-foreach="scalarFields" t-as="f" t-key="f.name">
+                            <div t-attf-class="gf-field{{ f.type === 'text' ? ' gf-field-wide' : '' }}{{ f.type === 'boolean' ? ' gf-field-bool' : '' }}">
+                                <label class="gf-label" t-esc="f.label"/>
+                                <div class="gf-control">
+                                    <t t-if="f.type === 'many2one'">
+                                        <div class="gf-m2o">
+                                            <select class="form-input" t-att-data-field="f.name">
+                                                <option value="0">—</option>
+                                                <t t-foreach="state.relOptions[f.name] || []" t-as="opt" t-key="opt.id">
+                                                    <option t-att-value="opt.id"
+                                                            t-att-selected="this.getM2oId(state.record[f.name]) === opt.id ? true : undefined">
+                                                        <t t-esc="opt.display"/>
+                                                    </option>
+                                                </t>
+                                            </select>
+                                            <button class="gf-addnew" t-att-data-addnew="f.name" title="Add new…">＋</button>
+                                        </div>
                                     </t>
-                                </select>
-                            </t>
-                            <t t-else="">
-                                <input class="form-input"
-                                       t-att-type="f.type === 'boolean' ? 'checkbox' : f.type === 'date' || f.type === 'datetime' ? 'date' : 'text'"
-                                       t-att-checked="f.type === 'boolean' ? !!state.record[f.name] : undefined"
-                                       t-att-value="f.type !== 'boolean' ? formatValue(state.record[f.name]) : undefined"
-                                       t-att-data-field="f.name"
-                                       t-att-data-type="f.type"/>
-                            </t>
-                        </div>
-                    </t>
+                                    <t t-elif="f.type === 'boolean'">
+                                        <input type="checkbox" class="gf-check"
+                                               t-att-checked="!!state.record[f.name]"
+                                               t-att-data-field="f.name" t-att-data-type="'boolean'"/>
+                                    </t>
+                                    <t t-elif="f.type === 'text'">
+                                        <textarea class="form-input gf-textarea"
+                                                  t-att-data-field="f.name" t-att-data-type="'text'"><t t-esc="formatValue(state.record[f.name])"/></textarea>
+                                    </t>
+                                    <t t-else="">
+                                        <input class="form-input"
+                                               t-att-type="f.type === 'date' || f.type === 'datetime' ? 'date' : (f.type === 'integer' || f.type === 'float' || f.type === 'monetary' ? 'number' : 'text')"
+                                               t-att-step="f.type === 'float' || f.type === 'monetary' ? '0.01' : undefined"
+                                               t-att-value="formatValue(state.record[f.name])"
+                                               t-att-readonly="f.readonly ? true : undefined"
+                                               t-att-data-field="f.name"
+                                               t-att-data-type="f.type"/>
+                                    </t>
+                                </div>
+                            </div>
+                        </t>
+                    </div>
+
                     <t t-foreach="o2mFields" t-as="f" t-key="f.name">
                         <div class="o2m-section">
                             <div class="o2m-title" t-esc="f.label"/>
@@ -230,18 +257,24 @@ class FormView extends Component {
                                             <t t-foreach="this.o2mColumns(f.name)" t-as="col" t-key="col.name">
                                                 <td>
                                                     <t t-if="col.type === 'many2one'">
-                                                        <select class="o2m-input"
-                                                                t-att-data-o2m="f.name"
-                                                                t-att-data-key="line._key"
-                                                                t-att-data-field="col.name">
-                                                            <option value="0">—</option>
-                                                            <t t-foreach="state.relOptions[col.name] || []" t-as="opt" t-key="opt.id">
-                                                                <option t-att-value="opt.id"
-                                                                        t-att-selected="this.getM2oId(line[col.name]) === opt.id ? true : undefined">
-                                                                    <t t-esc="opt.display"/>
-                                                                </option>
-                                                            </t>
-                                                        </select>
+                                                        <div class="gf-m2o">
+                                                            <select class="o2m-input"
+                                                                    t-att-data-o2m="f.name"
+                                                                    t-att-data-key="line._key"
+                                                                    t-att-data-field="col.name">
+                                                                <option value="0">—</option>
+                                                                <t t-foreach="state.relOptions[col.name] || []" t-as="opt" t-key="opt.id">
+                                                                    <option t-att-value="opt.id"
+                                                                            t-att-selected="this.getM2oId(line[col.name]) === opt.id ? true : undefined">
+                                                                        <t t-esc="opt.display"/>
+                                                                    </option>
+                                                                </t>
+                                                            </select>
+                                                            <button class="gf-addnew"
+                                                                    t-att-data-addnew-o2m="f.name"
+                                                                    t-att-data-addnew-field="col.name"
+                                                                    t-att-data-key="line._key" title="Add new…">＋</button>
+                                                        </div>
                                                     </t>
                                                     <t t-elif="col.readonly">
                                                         <span t-esc="line[col.name] !== undefined ? String(line[col.name]) : ''"/>
@@ -266,9 +299,26 @@ class FormView extends Component {
                                     </t>
                                 </tbody>
                             </table>
-                            <button class="btn btn-sm" t-att-data-add-o2m="f.name">+ Add a line</button>
+                            <button class="btn so-add-line" t-att-data-add-o2m="f.name">+ Add a line</button>
                         </div>
                     </t>
+                </div>
+            </t>
+
+            <!-- Add-new related record modal (combobox "Add new…") -->
+            <t t-if="state.addNew">
+                <div class="gf-modal" t-on-click="onModalBackdrop">
+                    <div class="gf-modal-card">
+                        <h3 class="gf-modal-title">New <t t-esc="state.addNew.label"/></h3>
+                        <label class="gf-modal-lbl">Name</label>
+                        <input class="gf-modal-input" t-att-value="state.addNew.name"
+                               t-on-input="onAddNewNameInput" t-on-keydown="onAddNewKey"/>
+                        <div t-if="state.addNew.error" class="gf-modal-err" t-esc="state.addNew.error"/>
+                        <div class="gf-modal-actions">
+                            <button class="btn" t-on-click="closeAddNew">Cancel</button>
+                            <button class="btn btn-primary" t-on-click="submitAddNew">Create</button>
+                        </div>
+                    </div>
                 </div>
             </t>
         </div>
@@ -282,9 +332,55 @@ class FormView extends Component {
             o2mLines:   {},
             o2mMeta:    {},
             deletedIds: {},
+            addNew:     null,   // { field, relation, label, name, error, o2mField?, targetKey? }
         });
         this._nextKey = 1;
         onMounted(() => this.load());
+    }
+
+    // Title for the header breadcrumb (list name) and the current record.
+    get listTitle() {
+        const a = this.props.action || {};
+        return a.name || a.res_model || 'Records';
+    }
+    get recordTitle() {
+        if (this.state.isNew) return 'New';
+        const r = this.state.record || {};
+        return this.formatValue(r.name) || this.formatValue(r.display_name) ||
+               this.formatValue(r.code) || this.formatValue(r.reference) ||
+               ('#' + (r.id || ''));
+    }
+
+    // ---- combobox "Add new…" — create a related record inline ----
+    openAddNew(ctx) { this.state.addNew = { name: '', error: '', ...ctx }; }
+    onAddNewNameInput(e) { if (this.state.addNew) this.state.addNew.name = e.target.value; }
+    onAddNewKey(e) { if (e.key === 'Enter') { e.preventDefault(); this.submitAddNew(); } }
+    closeAddNew() { this.state.addNew = null; }
+    onModalBackdrop(e) { if (e.target === e.currentTarget) this.state.addNew = null; }
+
+    async submitAddNew() {
+        const ctx = this.state.addNew;
+        if (!ctx) return;
+        const name = (ctx.name || '').trim();
+        if (!name) { ctx.error = 'Please enter a name.'; return; }
+        ctx.error = '';
+        try {
+            const id = await RpcService.call(ctx.relation, 'create', [{ name }], {});
+            // Make the new record selectable and select it immediately.
+            const opts = this.state.relOptions[ctx.field] ? [...this.state.relOptions[ctx.field]] : [];
+            opts.push({ id, display: name });
+            this.state.relOptions[ctx.field] = opts;
+            if (ctx.o2mField) {
+                const line = (this.state.o2mLines[ctx.o2mField] || []).find(l => l._key === ctx.targetKey);
+                if (line) line[ctx.field] = id;
+            } else {
+                this.state.record[ctx.field] = id;
+            }
+            this.state.addNew = null;
+        } catch (e) {
+            // Some models need more than a name; say so rather than failing silently.
+            ctx.error = (e && e.message) || 'Could not create this record here — open its own menu to add all details.';
+        }
     }
 
     get formFields() {
@@ -300,7 +396,11 @@ class FormView extends Component {
     }
 
     get scalarFields() {
-        return this.formFields.filter(f => f.type !== 'one2many' && f.type !== 'many2many');
+        // Hide the plumbing columns — they are never user-editable and only
+        // clutter the form (the id is still kept on the record for write()).
+        const HIDE = new Set(['id', 'create_date', 'write_date', '__last_update', 'display_name']);
+        return this.formFields.filter(f =>
+            f.type !== 'one2many' && f.type !== 'many2many' && !HIDE.has(f.name));
     }
 
     get o2mFields() {
@@ -469,7 +569,26 @@ class FormView extends Component {
         const addField = e.target.dataset.addO2m;
         if (addField) { e.preventDefault(); this.addO2mLine(addField); return; }
         const delField = e.target.dataset.delO2m;
-        if (delField) { e.preventDefault(); this.removeO2mLine(delField, e.target.dataset.key); }
+        if (delField) { e.preventDefault(); this.removeO2mLine(delField, e.target.dataset.key); return; }
+        // "Add new…" beside a scalar many2one combobox
+        const newField = e.target.dataset.addnew;
+        if (newField) {
+            e.preventDefault();
+            const f = this.formFields.find(x => x.name === newField);
+            if (f && f.relation) this.openAddNew({ field: f.name, relation: f.relation, label: f.label });
+            return;
+        }
+        // "Add new…" beside a many2one inside an o2m line
+        const newO2m = e.target.dataset.addnewO2m;
+        if (newO2m) {
+            e.preventDefault();
+            const colName = e.target.dataset.addnewField;
+            const meta = (this.state.o2mMeta[newO2m] || {})[colName];
+            if (meta && meta.relation)
+                this.openAddNew({ field: colName, relation: meta.relation,
+                                  label: meta.string || colName,
+                                  o2mField: newO2m, targetKey: e.target.dataset.key });
+        }
     }
 
     addO2mLine(fieldName) {
@@ -549,7 +668,7 @@ class FormView extends Component {
             await this.syncO2mLines(this.state.record.id);
             this.props.onBack();
         } catch (e) {
-            if (e.type === 'odoo.exceptions.ConcurrencyConflict')
+            if (e.type === 'cerp.exceptions.ConcurrencyConflict')
                 this.state.conflictError = e.message;
             else
                 this.state.error = e.message;
@@ -675,6 +794,232 @@ class ChatterPanel extends Component {
 }
 
 // ----------------------------------------------------------------
+// AttachmentPanel — files on a record (docs/091)
+//
+//   Props:
+//     model     {string} — e.g. 'hr.expense.sheet'
+//     recordId  {number} — 0 / null → the panel says to save first
+//     title     {string?} — panel heading, default 'Attachments'
+//     readonly  {boolean?} — hide upload and delete
+//
+// ir.attachment, its content-addressed filestore and both HTTP routes were
+// already built and tested; what was missing was any way for a user to reach
+// them. Deliberately generic: adding files to another form is one tag.
+//
+// The bytes go over the dedicated multipart route, never through JSON-RPC —
+// a base64 blob in a search_read would defeat storing the file out of the row.
+// ----------------------------------------------------------------
+class AttachmentPanel extends Component {
+    static props = ['model', 'recordId', 'title?', 'readonly?', 'refreshKey?'];
+    static template = xml`
+        <div class="att-panel">
+            <div class="chatter-head">
+                <span t-esc="props.title || 'Attachments'"/>
+                <span t-if="state.files.length" class="att-count" t-esc="state.files.length"/>
+            </div>
+
+            <t t-if="!props.recordId">
+                <div class="chatter-empty">Save this record first, then attach files to it.</div>
+            </t>
+            <t t-else="">
+                <t t-if="state.loading">
+                    <div class="chatter-loading">Loading…</div>
+                </t>
+                <t t-else="">
+                    <!-- Grouped, not flat. A PCB fabrication package is a dozen
+                         files called top.gtl / bot.gbl / outline.gm1, and a flat
+                         list of those is a directory listing, not a UI. -->
+                    <div class="att-list">
+                        <t t-foreach="groups" t-as="g" t-key="g.key">
+                            <div class="att-group">
+                                <div class="att-group-h">
+                                    <span t-esc="g.label"/>
+                                    <span class="att-count" t-esc="g.files.length"/>
+                                </div>
+                                <t t-foreach="g.files" t-as="f" t-key="f.id">
+                                    <div class="att-row">
+                                        <span class="att-icon" t-esc="iconFor(f.mimetype)"/>
+                                        <a class="att-name" t-att-href="f.url" target="_blank"
+                                           t-att-title="f.name" t-esc="f.name"/>
+                                        <span class="att-kind" t-if="f.document_type"
+                                              t-esc="f.document_type"/>
+                                        <span class="att-meta" t-esc="f.size_human"/>
+                                        <span class="att-meta att-when" t-esc="f.created"/>
+                                        <a class="att-dl" t-att-href="f.url + '?download=1'"
+                                           title="Download">&#8615;</a>
+                                        <span t-if="!props.readonly" class="att-del" title="Remove"
+                                              t-on-click.stop="() => this.onDelete(f)">&#x2715;</span>
+                                    </div>
+                                </t>
+                            </div>
+                        </t>
+                        <t t-if="!state.files.length">
+                            <div class="chatter-empty">No files attached yet.</div>
+                        </t>
+                    </div>
+
+                    <!-- Answers the question a fab package actually raises: is it
+                         complete? Only shown once there is fabrication data, so it
+                         never nags a record that has none. -->
+                    <div class="att-fab" t-if="fabStatus">
+                        <span class="att-fab-l">Fabrication package</span>
+                        <t t-foreach="fabStatus" t-as="s" t-key="s.key">
+                            <span t-attf-class="att-fab-i {{ s.present ? 'yes' : 'no' }}">
+                                <t t-esc="s.present ? '✓' : '✕'"/> <t t-esc="s.label"/>
+                            </span>
+                        </t>
+                    </div>
+
+                    <t t-if="!props.readonly">
+                        <div t-attf-class="att-drop{{ state.dragging ? ' over' : '' }}"
+                             t-on-dragover.prevent="onDragOver"
+                             t-on-dragleave="onDragLeave"
+                             t-on-drop.prevent="onDrop"
+                             t-on-click="onPick">
+                            <t t-if="state.uploading">Uploading <t t-esc="state.uploadName"/>…</t>
+                            <t t-else="">Drop a file here, or click to choose one</t>
+                        </div>
+                        <input type="file" class="att-file-input" t-ref="fileInput"
+                               t-on-change="onFileChosen"/>
+                        <div t-if="state.error" class="att-error" t-esc="state.error"/>
+                        <div class="att-hint">
+                            Documents (PDF, images, CSV, TXT, XLSX, DOCX, ZIP) and manufacturing
+                            data — Gerber, drill, pick-and-place, STEP/STL/DXF, KiCad. Up to 25 MB.
+                            The kind is detected from the file name.
+                        </div>
+                    </t>
+                </t>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({ files: [], loading: false, uploading: false,
+                                uploadName: '', error: '', dragging: false });
+        this.fileInputRef = useRef('fileInput');
+        const { onMounted, onWillUpdateProps } = owl;
+        onMounted(() => { if (this.props.recordId) this.load(this.props.recordId); });
+        onWillUpdateProps(np => {
+            if (np.recordId !== this.props.recordId ||
+                np.refreshKey !== this.props.refreshKey) {
+                if (np.recordId) this.load(np.recordId); else this.state.files = [];
+            }
+        });
+    }
+
+    async load(recordId) {
+        this.state.loading = true;
+        try {
+            const files = await RpcService.call('ir.attachment', 'search_read',
+                [[['res_model', '=', this.props.model], ['res_id', '=', recordId]]],
+                { limit: 100 });
+            this.state.files = Array.isArray(files) ? files : [];
+        } catch (e) {
+            this.state.error = e.message || 'Could not load the attachments';
+        }
+        this.state.loading = false;
+    }
+
+    // Sections, in the order someone actually works through a build: make the
+    // board, then the enclosure, then the paperwork. Types not listed fall into
+    // Documents rather than being dropped.
+    static SECTIONS = [
+        { key: 'fabrication', label: 'Fabrication', types: ['gerber', 'drill', 'placement'] },
+        { key: 'design',      label: 'Design source', types: ['pcb-design', 'schematic', 'netlist'] },
+        { key: 'mechanical',  label: 'Mechanical', types: ['3d-model', 'drawing'] },
+        { key: 'documents',   label: 'Documents', types: null },   // null = everything else
+    ];
+
+    get groups() {
+        const out = [];
+        const claimed = new Set();
+        for (const s of AttachmentPanel.SECTIONS) {
+            if (!s.types) continue;
+            const files = this.state.files.filter(f => s.types.includes(f.document_type));
+            files.forEach(f => claimed.add(f.id));
+            if (files.length) out.push({ key: s.key, label: s.label, files });
+        }
+        const rest = this.state.files.filter(f => !claimed.has(f.id));
+        if (rest.length) out.push({ key: 'documents', label: 'Documents', files: rest });
+        return out;
+    }
+
+    // Null unless there is fabrication data, so a product with a datasheet and
+    // nothing else is not told it has an incomplete PCB package.
+    get fabStatus() {
+        const have = new Set(this.state.files.map(f => f.document_type));
+        if (!have.has('gerber') && !have.has('drill') && !have.has('placement')) return null;
+        return [
+            { key: 'gerber',    label: 'Gerber',    present: have.has('gerber') },
+            { key: 'drill',     label: 'Drill',     present: have.has('drill') },
+            { key: 'placement', label: 'Placement', present: have.has('placement') },
+        ];
+    }
+
+    iconFor(mime) {
+        const m = mime || '';
+        if (m.startsWith('image/'))            return '\u{1F5BC}';
+        if (m === 'application/pdf')           return '\u{1F4C4}';
+        if (m === 'application/zip')           return '\u{1F5DC}';
+        if (m.startsWith('text/'))             return '\u{1F4DD}';
+        return '\u{1F4CE}';
+    }
+
+    onPick()     { if (this.fileInputRef.el) this.fileInputRef.el.click(); }
+    onDragOver() { this.state.dragging = true; }
+    onDragLeave(){ this.state.dragging = false; }
+
+    onDrop(ev) {
+        this.state.dragging = false;
+        const f = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+        if (f) this.upload(f);
+    }
+    onFileChosen(ev) {
+        const f = ev.target.files && ev.target.files[0];
+        if (f) this.upload(f);
+        // Reset, or choosing the same file twice fires no change event.
+        ev.target.value = '';
+    }
+
+    async upload(file) {
+        if (!this.props.recordId) return;
+        this.state.uploading = true;
+        this.state.uploadName = file.name;
+        this.state.error = '';
+        try {
+            const form = new FormData();
+            form.append('file', file);
+            form.append('res_model', this.props.model);
+            form.append('res_id', String(this.props.recordId));
+            form.append('name', file.name);
+            // The upload route is multipart and session-cookie authenticated,
+            // so it does not go through RpcService.
+            const resp = await fetch('/web/attachment/upload', {
+                method: 'POST', body: form, credentials: 'same-origin',
+            });
+            const out = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(out.error || `Upload failed (${resp.status})`);
+            await this.load(this.props.recordId);
+        } catch (e) {
+            this.state.error = e.message || 'Upload failed';
+        } finally {
+            this.state.uploading = false;
+            this.state.uploadName = '';
+        }
+    }
+
+    async onDelete(f) {
+        if (!confirm(`Remove "${f.name}"?`)) return;
+        try {
+            await RpcService.call('ir.attachment', 'unlink', [[f.id]], {});
+            await this.load(this.props.recordId);
+        } catch (e) {
+            this.state.error = e.message || 'Could not remove the file';
+        }
+    }
+}
+
+// ----------------------------------------------------------------
 // AuditLogPanel — shows audit trail for the current record
 //   Props:
 //     model    {string} — e.g. 'sale.order'
@@ -742,10 +1087,10 @@ class AuditLogPanel extends Component {
 }
 
 // ----------------------------------------------------------------
-// InvoiceFormView — Odoo 14-style Invoice (account.move) form
+// InvoiceFormView — the reference ERP-style Invoice (account.move) form
 // ----------------------------------------------------------------
 class InvoiceFormView extends Component {
-    static components = { DatePicker, ChatterPanel };
+    static components = { DatePicker, ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -831,7 +1176,7 @@ class InvoiceFormView extends Component {
                             <span class="so-bc-link" t-on-click.stop="onBack">Invoices</span>
                             <span class="so-bc-sep">›</span>
                         </t>
-                        <span class="so-bc-cur" t-esc="state.record.name || 'Draft Invoice'"/>
+                        <span class="so-bc-cur" t-esc="state.record.name || ('New ' + docLabel)"/>
                     </div>
                     <div class="so-action-btns">
                         <t t-if="props.navTotal and props.navTotal > 1">
@@ -852,6 +1197,7 @@ class InvoiceFormView extends Component {
                         </t>
                         <t t-if="isPosted">
                             <button class="btn"           t-on-click.stop="onSave">Save</button>
+                            <button t-if="canReverse" class="btn" t-on-click.stop="onReverse" t-esc="reverseLabel"/>
                             <button class="btn btn-danger" t-on-click.stop="onCancel">Cancel</button>
                         </t>
                         <t t-if="isCancelled">
@@ -1074,6 +1420,13 @@ class InvoiceFormView extends Component {
                     </div>
                 </div>
 
+                <!-- Supporting documents -->
+                <t t-if="!isNew">
+                    <AttachmentPanel model="'account.move'"
+                                     recordId="props.recordId"
+                                     title="'Supporting Documents'"/>
+                </t>
+
                 <!-- Chatter -->
                 <t t-if="!isNew">
                     <ChatterPanel model="'account.move'"
@@ -1090,6 +1443,17 @@ class InvoiceFormView extends Component {
     get isCancelled()  { return this.state.record.state === 'cancel'; }
     get isPaid()       { return this.state.record.payment_state === 'paid'; }
     get canRegisterPayment() { return this.isPosted && !this.isPaid; }
+
+    // Credit note / refund support (docs/082)
+    get moveType()  { return this.state.record.move_type || 'out_invoice'; }
+    get docLabel()  {
+        return { out_invoice: 'Invoice', out_refund: 'Credit Note',
+                 in_invoice: 'Vendor Bill', in_refund: 'Vendor Refund' }[this.moveType] || 'Invoice';
+    }
+    get isRefund()  { return this.moveType === 'out_refund' || this.moveType === 'in_refund'; }
+    // A posted invoice/bill can be reversed into a credit note / refund.
+    get canReverse()   { return this.isPosted && (this.moveType === 'out_invoice' || this.moveType === 'in_invoice'); }
+    get reverseLabel() { return this.moveType === 'in_invoice' ? 'Add Refund' : 'Add Credit Note'; }
 
     stepClass(step) {
         const order = { draft: 0, posted: 1, cancel: 2 };
@@ -1447,6 +1811,20 @@ class InvoiceFormView extends Component {
         } catch (e) { this.state.error = e.message; }
     }
 
+    // Create a credit note / vendor refund by reversing this posted document.
+    async onReverse() {
+        try {
+            await RpcService.call('account.move', 'action_reverse', [[this.state.record.id]], {});
+            const where = this.moveType === 'in_invoice' ? 'Vendors ▸ Refunds' : 'Customers ▸ Credit Notes';
+            const what  = this.moveType === 'in_invoice' ? 'Refund' : 'Credit note';
+            alert(what + ' created as a draft (reversal of ' + (this.state.record.name || 'this document') +
+                  ').\nReview and Confirm it under ' + where + '.');
+            this.props.onBack();
+        } catch (e) {
+            alert('Could not create the credit note: ' + (e.message || e));
+        }
+    }
+
     async onDelete() {
         if (!confirm('Delete this draft invoice? This cannot be undone.')) return;
         try {
@@ -1568,10 +1946,10 @@ class InvoiceFormView extends Component {
 }
 
 // ----------------------------------------------------------------
-// SaleOrderFormView — Odoo 14-style Sales Order form
+// SaleOrderFormView — the reference ERP-style Sales Order form
 // ----------------------------------------------------------------
 class SaleOrderFormView extends Component {
-    static components = { DatePicker, InvoiceFormView, ChatterPanel };
+    static components = { DatePicker, InvoiceFormView, ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -1650,6 +2028,7 @@ class SaleOrderFormView extends Component {
                             <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
                             <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
                             <button class="btn" t-on-click.stop="onPrint">Print</button>
+                            <button class="btn" t-on-click.stop="onProforma" title="Open a Pro-Forma Invoice PDF the customer can pay against">Pro-Forma Invoice</button>
                         </t>
                         <button class="btn" t-on-click.stop="onBack">Discard</button>
                     </div>
@@ -1718,7 +2097,9 @@ class SaleOrderFormView extends Component {
                     <div class="so-card-head">
                         <h1 class="so-doc-id" t-esc="state.record.name || 'New Quotation'"/>
                         <div class="so-stat-btns">
-                            <div class="so-stat-btn so-stat-btn-disabled" title="PDF preview — coming soon">
+                            <div t-attf-class="so-stat-btn{{ props.recordId ? '' : ' so-stat-btn-disabled' }}"
+                                 t-on-click.stop="onPreviewPdf"
+                                 title="Open this order as a printable document">
                                 <span class="so-stat-num">&#128196;</span>
                                 <span class="so-stat-lbl">Preview</span>
                             </div>
@@ -1836,6 +2217,39 @@ class SaleOrderFormView extends Component {
                             </thead>
                             <tbody>
                                 <t t-foreach="state.lines" t-as="line" t-key="line._key">
+                                    <t t-if="line.display_type === 'line_section'">
+                                        <tr class="inv-row-section">
+                                            <td colspan="7">
+                                                <input class="inv-sect-input"
+                                                       data-line-field="name"
+                                                       t-att-data-key="line._key"
+                                                       t-att-value="line.name || ''"
+                                                       placeholder="Section name…"/>
+                                            </td>
+                                            <td class="so-col-del">
+                                                <button class="btn btn-sm btn-danger"
+                                                        data-del-line="1"
+                                                        t-att-data-key="line._key">✕</button>
+                                            </td>
+                                        </tr>
+                                    </t>
+                                    <t t-elif="line.display_type === 'line_note'">
+                                        <tr class="inv-row-note">
+                                            <td colspan="7">
+                                                <input class="inv-note-input"
+                                                       data-line-field="name"
+                                                       t-att-data-key="line._key"
+                                                       t-att-value="line.name || ''"
+                                                       placeholder="Note…"/>
+                                            </td>
+                                            <td class="so-col-del">
+                                                <button class="btn btn-sm btn-danger"
+                                                        data-del-line="1"
+                                                        t-att-data-key="line._key">✕</button>
+                                            </td>
+                                        </tr>
+                                    </t>
+                                    <t t-else="">
                                     <tr>
                                         <td class="so-col-product">
                                             <select class="o2m-input"
@@ -1894,10 +2308,15 @@ class SaleOrderFormView extends Component {
                                                     t-att-data-key="line._key">✕</button>
                                         </td>
                                     </tr>
+                                    </t>
                                 </t>
                             </tbody>
                         </table>
-                        <button class="btn so-add-line" data-add-line="1">+ Add a line</button>
+                        <div class="so-line-adds">
+                            <button class="btn so-add-line" data-add-line="normal">+ Add a line</button>
+                            <button class="btn so-add-line" data-add-line="section">+ Add a section</button>
+                            <button class="btn so-add-line" data-add-line="note">+ Add a note</button>
+                        </div>
 
                         <div class="so-footer">
                             <div class="so-notes-wrap">
@@ -1948,6 +2367,13 @@ class SaleOrderFormView extends Component {
                         </div>
                     </t>
                 </div>
+
+                <!-- Signed quotations, customer purchase orders -->
+                <t t-if="!state.isNew">
+                    <AttachmentPanel model="'sale.order'"
+                                     recordId="props.recordId"
+                                     title="'Documents'"/>
+                </t>
 
                 <!-- Chatter -->
                 <t t-if="!state.isNew">
@@ -2096,7 +2522,7 @@ class SaleOrderFormView extends Component {
         try {
             const lineFields = [
                 'id', 'product_id', 'name', 'product_uom_qty', 'product_uom_id',
-                'price_unit', 'discount', 'price_subtotal',
+                'price_unit', 'discount', 'price_subtotal', 'display_type',
             ];
             const rows = await RpcService.call('sale.order.line', 'search_read',
                 [[['order_id', '=', this.props.recordId]]],
@@ -2193,8 +2619,11 @@ class SaleOrderFormView extends Component {
 
     onAnyClick(e) {
         if (this.state.invoiceMode || this.state.invoiceListMode) return;
-        if (e.target.dataset.addLine) {
+        const addType = e.target.dataset.addLine;
+        if (addType) {
             e.preventDefault();
+            const dt = addType === 'section' ? 'line_section'
+                     : addType === 'note'    ? 'line_note' : '';
             this.state.lines.push({
                 _key:            String(this._nextKey++),
                 id:              null,
@@ -2205,6 +2634,7 @@ class SaleOrderFormView extends Component {
                 price_unit:      0,
                 discount:        0,
                 price_subtotal:  0,
+                display_type:    dt,
             });
             return;
         }
@@ -2275,14 +2705,16 @@ class SaleOrderFormView extends Component {
             this.state.deletedLineIds = [];
         }
         for (const line of this.state.lines) {
+            const isSN = line.display_type === 'line_section' || line.display_type === 'line_note';
             const vals = {
                 order_id:        parentId,
-                product_id:      this.getM2oId(line.product_id),
-                name:            line.name            || '',
-                product_uom_qty: parseFloat(line.product_uom_qty) || 1,
-                product_uom_id:  this.getM2oId(line.product_uom_id) || false,
-                price_unit:      parseFloat(line.price_unit)      || 0,
-                discount:        parseFloat(line.discount)         || 0,
+                product_id:      isSN ? false : this.getM2oId(line.product_id),
+                name:            line.name || '',
+                product_uom_qty: isSN ? 0 : (parseFloat(line.product_uom_qty) || 1),
+                product_uom_id:  isSN ? false : (this.getM2oId(line.product_uom_id) || false),
+                price_unit:      isSN ? 0 : (parseFloat(line.price_unit) || 0),
+                discount:        isSN ? 0 : (parseFloat(line.discount) || 0),
+                display_type:    line.display_type || '',
             };
             if (!line.id) {
                 await RpcService.call('sale.order.line', 'create', [vals], {});
@@ -2415,6 +2847,13 @@ class SaleOrderFormView extends Component {
         this.props.onBack();
     }
 
+    // The report route renders the sale.order document template with a
+    // Print / Save as PDF button, so this is the PDF preview.
+    onPreviewPdf() {
+        if (!this.props.recordId) return;
+        window.open(`/report/html/sale.order/${this.props.recordId}`, '_blank');
+    }
+
     onViewInvoices() {
         if (this.state.invoiceIds.length === 0) return;
         if (this.state.invoiceIds.length === 1) {
@@ -2478,13 +2917,14 @@ class SaleOrderFormView extends Component {
     }
 
     onPrint() { window.open('/report/pdf/sale.order/' + this.state.record.id, '_blank'); }
+    onProforma() { window.open('/report/pdf/sale.order/' + this.state.record.id + '?proforma=1', '_blank'); }
 }
 
 // ----------------------------------------------------------------
-// PurchaseOrderFormView — Odoo 14-style Purchase Order form
+// PurchaseOrderFormView — the reference ERP-style Purchase Order form
 // ----------------------------------------------------------------
 class PurchaseOrderFormView extends Component {
-    static components = { DatePicker, ChatterPanel };
+    static components = { DatePicker, ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -2764,6 +3204,13 @@ class PurchaseOrderFormView extends Component {
                         </div>
                     </t>
                 </div>
+
+                <!-- Supplier quotes, order confirmations -->
+                <t t-if="!state.isNew">
+                    <AttachmentPanel model="'purchase.order'"
+                                     recordId="props.recordId"
+                                     title="'Documents'"/>
+                </t>
 
                 <!-- Chatter -->
                 <t t-if="!state.isNew">
@@ -3144,10 +3591,10 @@ class PurchaseOrderFormView extends Component {
 }
 
 // ----------------------------------------------------------------
-// TransferFormView — stock.picking detail (Odoo 14-style)
+// TransferFormView — stock.picking detail (the reference ERP-style)
 // ----------------------------------------------------------------
 class TransferFormView extends Component {
-    static components = { DatePicker, ChatterPanel };
+    static components = { DatePicker, ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -3162,7 +3609,10 @@ class TransferFormView extends Component {
                         <span class="so-bc-cur" t-esc="state.record.name || 'New Transfer'"/>
                     </div>
                     <div class="so-action-btns">
-                        <t t-if="canEdit">
+                        <t t-if="isNew">
+                            <button class="btn btn-primary" t-on-click.stop="onCreate">Create</button>
+                        </t>
+                        <t t-elif="canEdit">
                             <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
                         </t>
                         <t t-if="!isNew">
@@ -3275,7 +3725,19 @@ class TransferFormView extends Component {
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Operation Type</label>
-                                <span class="so-field-val" t-esc="pickingTypeName"/>
+                                <t t-if="isNew">
+                                    <select class="form-input" data-field="picking_type_id">
+                                        <option value="0">—</option>
+                                        <t t-foreach="state.pickingTypes" t-as="pt" t-key="pt.id">
+                                            <option t-att-value="pt.id"
+                                                    t-att-selected="getM2oId(state.record.picking_type_id) === pt.id ? true : undefined"
+                                                    t-esc="pt.display"/>
+                                        </t>
+                                    </select>
+                                </t>
+                                <t t-else="">
+                                    <span class="so-field-val" t-esc="pickingTypeName"/>
+                                </t>
                             </div>
                         </div>
                     </div>
@@ -3299,11 +3761,13 @@ class TransferFormView extends Component {
                                     <th class="text-right">Demand</th>
                                     <th class="text-right">Done</th>
                                     <th>UoM</th>
+                                    <th t-if="anyTracked">Lot/Serial</th>
+                                    <th t-if="anyPacked">Package</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <t t-if="state.moves.length === 0">
-                                    <tr><td colspan="6" class="trn-empty-row">No operations.</td></tr>
+                                    <tr><td colspan="8" class="trn-empty-row">No operations.</td></tr>
                                 </t>
                                 <t t-foreach="state.moves" t-as="mv" t-key="mv._key">
                                     <tr>
@@ -3324,13 +3788,42 @@ class TransferFormView extends Component {
                                             </t>
                                         </td>
                                         <td t-esc="uomName(mv.product_uom_id)"/>
+                                        <td t-if="anyTracked">
+                                            <t t-if="isTracked(mv)">
+                                                <select class="inv-line-input"
+                                                        t-att-data-move-key="mv._key" data-move-field="lot_id"
+                                                        t-att-disabled="isDone ? true : undefined">
+                                                    <option value="0">— select —</option>
+                                                    <t t-foreach="lotsFor(mv)" t-as="lot" t-key="lot.id">
+                                                        <option t-att-value="lot.id"
+                                                                t-att-selected="getM2oId(mv.lot_id) === lot.id ? true : undefined"
+                                                                t-esc="lot.name"/>
+                                                    </t>
+                                                </select>
+                                                <span t-if="!isDone" class="trn-lot-add" title="Create a new lot/serial"
+                                                      t-on-click.stop="() => this.onNewLot(mv._key)">＋</span>
+                                            </t>
+                                            <span t-else="" class="trn-muted">—</span>
+                                        </td>
+                                        <td t-if="anyPacked">
+                                            <span t-if="mv.result_package_id" class="trn-pack-tag"
+                                                  t-esc="m2oName(mv.result_package_id)"/>
+                                            <span t-else="" class="trn-muted">—</span>
+                                        </td>
                                     </tr>
                                 </t>
                             </tbody>
                         </table>
-                        <!-- Put in Pack — not yet implemented -->
+                        <!-- Put in Pack: group the unpacked operations into a parcel -->
                         <div class="trn-put-in-pack-row">
-                            <button class="btn so-wf-btn so-stat-btn-disabled" title="Put in Pack — coming soon">Put in Pack</button>
+                            <button t-if="canPack" class="btn so-wf-btn" t-on-click.stop="onPutInPack"
+                                    t-att-disabled="state.packing"
+                                    title="Group the remaining operations into a numbered package">
+                                <t t-if="state.packing">Packing…</t><t t-else="">Put in Pack</t>
+                            </button>
+                            <button t-else="" class="btn so-wf-btn so-stat-btn-disabled"
+                                    t-att-title="packDisabledReason">Put in Pack</button>
+                            <span t-if="state.packMsg" class="trn-pack-msg" t-esc="state.packMsg"/>
                         </div>
                     </t>
 
@@ -3357,16 +3850,23 @@ class TransferFormView extends Component {
                             <div class="so-info-col">
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Lot/Serial tracking</label>
-                                    <span class="so-field-val trn-muted">— (not implemented)</span>
+                                    <span class="so-field-val" t-esc="trackingSummary"/>
                                 </div>
                                 <div class="so-field-row">
-                                    <label class="so-field-lbl">Package tracking</label>
-                                    <span class="so-field-val trn-muted">— (not implemented)</span>
+                                    <label class="so-field-lbl">Packages</label>
+                                    <span class="so-field-val" t-esc="packageSummary"/>
                                 </div>
                             </div>
                         </div>
                     </t>
                 </div>
+
+                <!-- Delivery notes, signed PODs, packing lists -->
+                <t t-if="!isNew">
+                    <AttachmentPanel model="'stock.picking'"
+                                     recordId="props.recordId"
+                                     title="'Documents'"/>
+                </t>
 
                 <!-- Chatter / audit log -->
                 <t t-if="!isNew">
@@ -3387,9 +3887,14 @@ class TransferFormView extends Component {
             partners:    [],
             users:          [],
             locations:      [],
+            pickingTypes:   [],
             companyName:    '',
             activeTab:      'operations',
             chatRefreshKey: 0,
+            // Lots for the tracked products on this transfer, keyed by product id
+            lotsByProduct:  {},
+            packing:        false,
+            packMsg:        '',
         });
         this._locMap  = {};
         this._prodMap = {};
@@ -3403,22 +3908,40 @@ class TransferFormView extends Component {
         this.state.loading = true;
         this.state.error   = null;
         try {
-            const recs = await RpcService.call('stock.picking', 'read',
-                [[this.props.recordId]],
-                { fields: ['name','state','partner_id','location_id','location_dest_id',
-                           'scheduled_date','origin','picking_type_id','sale_id','purchase_id',
-                           'company_id','user_id'] });
-            if (!recs || recs.length === 0) throw new Error('Transfer not found');
-            this.state.record = recs[0];
+            if (this.props.recordId) {
+                const recs = await RpcService.call('stock.picking', 'read',
+                    [[this.props.recordId]],
+                    { fields: ['name','state','partner_id','location_id','location_dest_id',
+                               'scheduled_date','origin','picking_type_id','sale_id','purchase_id',
+                               'company_id','user_id'] });
+                if (!recs || recs.length === 0) throw new Error('Transfer not found');
+                this.state.record = recs[0];
+            } else {
+                // New transfer: no record to read (reading a null id 500'd — the
+                // "Internal Error" on Operations → New). Start a draft and let the
+                // user pick an Operation Type, which supplies the locations.
+                this.state.record = { state: 'draft' };
+                const types = await RpcService.call('stock.picking.type', 'search_read',
+                    [[]], { fields: ['id','name','default_location_src_id','default_location_dest_id'], limit: 100 });
+                this.state.pickingTypes = (Array.isArray(types) ? types : []).map(t => ({
+                    id: t.id, display: t.name,
+                    src:  this.getM2oId(t.default_location_src_id),
+                    dest: this.getM2oId(t.default_location_dest_id),
+                }));
+            }
 
-            // Partners, users, and locations in parallel
+            // Partners, users, and locations in parallel. Each is wrapped so a
+            // single failing lookup (e.g. an 'active' column that isn't
+            // registered as filterable on that model) yields an empty dropdown
+            // instead of breaking the whole form with an "internal error".
+            const safe = pr => pr.catch(() => []);
             const [parts, users, locs] = await Promise.all([
-                RpcService.call('res.partner', 'search_read',
-                    [[['active','=',true]]], { fields: ['id','name'], limit: 200 }),
-                RpcService.call('res.users', 'search_read',
-                    [[['active','=',true]]], { fields: ['id','name'], limit: 200 }),
-                RpcService.call('stock.location', 'search_read',
-                    [[['active','=',true]]], { fields: ['id','name','complete_name'], limit: 500 }),
+                safe(RpcService.call('res.partner', 'search_read',
+                    [[]], { fields: ['id','name'], limit: 200 })),
+                safe(RpcService.call('res.users', 'search_read',
+                    [[]], { fields: ['id','name'], limit: 200 })),
+                safe(RpcService.call('stock.location', 'search_read',
+                    [[]], { fields: ['id','name','complete_name'], limit: 500 })),
             ]);
             this.state.partners  = (Array.isArray(parts) ? parts : []).map(p => ({ id: p.id, display: p.name }));
             this.state.users     = (Array.isArray(users) ? users : []).map(u => ({ id: u.id, display: u.name }));
@@ -3442,13 +3965,14 @@ class TransferFormView extends Component {
                 } catch (_) {}
             }
 
-            await this.loadMoves();
-
-            // Load location names for display in non-draft mode
-            await this.loadLocNames([
-                this.getM2oId(this.state.record.location_id),
-                this.getM2oId(this.state.record.location_dest_id),
-            ]);
+            if (this.props.recordId) {
+                await this.loadMoves();
+                // Load location names for display in non-draft mode
+                await this.loadLocNames([
+                    this.getM2oId(this.state.record.location_id),
+                    this.getM2oId(this.state.record.location_dest_id),
+                ]);
+            }
         } catch (e) {
             this.state.error = e.message || 'Failed to load transfer';
         } finally {
@@ -3461,7 +3985,8 @@ class TransferFormView extends Component {
             const moves = await RpcService.call('stock.move', 'search_read',
                 [[['picking_id','=',this.props.recordId]]],
                 { fields: ['id','product_id','location_id','location_dest_id','product_uom_id',
-                           'name','product_uom_qty','quantity','state'], limit: 200 });
+                           'name','product_uom_qty','quantity','state',
+                           'lot_id','tracking','result_package_id'], limit: 200 });
             const arr = Array.isArray(moves) ? moves : [];
 
             const prodIds = [...new Set(arr.map(m => this.getM2oId(m.product_id)).filter(Boolean))];
@@ -3487,9 +4012,29 @@ class TransferFormView extends Component {
             this.state.moves = arr.map(m => ({
                 _key: String(this._nextMoveKey++), ...m,
             }));
+            await this.loadLots();
         } catch (_) {
             this.state.moves = [];
         }
+    }
+
+    // Lots are only fetched for the products that are actually tracked — an
+    // untracked transfer makes no extra call.
+    async loadLots() {
+        const tracked = [...new Set(this.state.moves
+            .filter(m => m.tracking === 'lot' || m.tracking === 'serial')
+            .map(m => this.getM2oId(m.product_id))
+            .filter(Boolean))];
+        if (!tracked.length) { this.state.lotsByProduct = {}; return; }
+        try {
+            const byProd = {};
+            for (const pid of tracked) {
+                const lots = await RpcService.call('stock.production.lot', 'search_read',
+                    [[['product_id','=',pid]]], { fields: ['id','name'], limit: 300 });
+                byProd[pid] = (Array.isArray(lots) ? lots : []).map(l => ({ id: l.id, name: l.name }));
+            }
+            this.state.lotsByProduct = byProd;
+        } catch (_) { this.state.lotsByProduct = {}; }
     }
 
     async loadLocNames(ids) {
@@ -3513,6 +4058,45 @@ class TransferFormView extends Component {
     get canEdit()     { return !this.isDone && !this.state.loading; }
 
     get pickingTypeName() { return this._pickingTypeName || '—'; }
+
+    // ---- Lots & packages -------------------------------------------
+    // The backend already enforces lots on tracked products at validation
+    // (a tracked move without a lot is refused); these getters are what let
+    // the operator set one before they hit Validate rather than after.
+    isTracked(mv)  { return mv.tracking === 'lot' || mv.tracking === 'serial'; }
+    get anyTracked() { return this.state.moves.some(m => this.isTracked(m)); }
+    get anyPacked()  { return this.state.moves.some(m => !!m.result_package_id); }
+    lotsFor(mv)    { return this.state.lotsByProduct[this.getM2oId(mv.product_id)] || []; }
+    m2oName(v)     { return Array.isArray(v) && v.length > 1 ? v[1] : ''; }
+
+    get trackingSummary() {
+        const tracked = this.state.moves.filter(m => this.isTracked(m));
+        if (!tracked.length) return 'No tracked products on this transfer';
+        const missing = tracked.filter(m => !this.getM2oId(m.lot_id)).length;
+        return missing
+            ? `${tracked.length} tracked line(s) — ${missing} still needs a lot/serial`
+            : `${tracked.length} tracked line(s), all assigned`;
+    }
+    get packageSummary() {
+        const names = [...new Set(this.state.moves
+            .filter(m => m.result_package_id)
+            .map(m => this.m2oName(m.result_package_id)))];
+        if (!names.length) return 'Not packed';
+        const loose = this.state.moves.filter(m => !m.result_package_id).length;
+        return names.join(', ') + (loose ? ` (${loose} line(s) still loose)` : '');
+    }
+
+    get canPack() {
+        return !this.isNew && !this.isDone && !this.isCancelled
+               && this.state.moves.some(m => !m.result_package_id);
+    }
+    get packDisabledReason() {
+        if (this.isNew)       return 'Save the transfer first';
+        if (this.isDone)      return 'This transfer is already done';
+        if (this.isCancelled) return 'This transfer is cancelled';
+        if (!this.state.moves.length) return 'Add an operation first';
+        return 'Everything on this transfer is already packed';
+    }
 
     stepClass(step) {
         const order = { draft: 0, confirmed: 1, assigned: 2, done: 3 };
@@ -3539,9 +4123,69 @@ class TransferFormView extends Component {
 
     // ---- Event handlers ----
     onAnyChange(e) {
+        // A per-line <select> (the lot picker) is a change event, not an input
+        // one, so it has to be routed here as well as in onAnyInput.
+        const moveKey   = e.target.dataset.moveKey;
+        const moveField = e.target.dataset.moveField;
+        if (moveKey && moveField && e.target.tagName === 'SELECT') {
+            const mv = this.state.moves.find(m => m._key === moveKey);
+            if (mv) {
+                mv[moveField] = parseInt(e.target.value) || 0;
+                if (moveField === 'lot_id') this.saveLot(mv);
+            }
+            return;
+        }
         const field = e.target.dataset.field;
         if (field && e.target.tagName === 'SELECT') {
             this.state.record[field] = parseInt(e.target.value) || 0;
+        }
+    }
+
+    // Written straight through: the lot is what Validate will check, and a
+    // half-saved transfer that looks assigned but is not is worse than a
+    // round trip per pick.
+    async saveLot(mv) {
+        if (!mv.id) return;
+        try {
+            await RpcService.call('stock.move', 'write',
+                [[mv.id], { lot_id: this.getM2oId(mv.lot_id) || false }], {});
+        } catch (e) {
+            alert('Could not set the lot/serial: ' + (e.message || e));
+            await this.loadMoves();
+        }
+    }
+
+    async onNewLot(moveKey) {
+        const mv = this.state.moves.find(m => m._key === moveKey);
+        if (!mv) return;
+        const pid = this.getM2oId(mv.product_id);
+        const name = prompt(`New lot/serial number for ${this.prodName(mv.product_id)}:`);
+        if (!name) return;
+        try {
+            const id = await RpcService.call('stock.production.lot', 'create',
+                [{ name, product_id: pid }], {});
+            mv.lot_id = [id, name];
+            await this.saveLot(mv);
+            await this.loadLots();
+        } catch (e) {
+            alert('Could not create the lot: ' + (e.message || e));
+        }
+    }
+
+    async onPutInPack() {
+        this.state.packing = true;
+        this.state.packMsg = '';
+        try {
+            const res = await RpcService.call('stock.quant.package', 'put_in_pack',
+                [{ picking_id: this.props.recordId }], {});
+            this.state.packMsg = res && res.name
+                ? `Packed ${res.moves} operation(s) into ${res.name}` : 'Packed';
+            await this.loadMoves();
+        } catch (e) {
+            this.state.packMsg = '';
+            alert(e.message || e);
+        } finally {
+            this.state.packing = false;
         }
     }
 
@@ -3576,6 +4220,27 @@ class TransferFormView extends Component {
             }
             await RpcService.call('stock.picking', 'write', [[this.props.recordId], vals]);
         } catch (e) { alert('Save failed: ' + (e.message || e)); }
+    }
+
+    // Create a new draft transfer. The Operation Type supplies the source and
+    // destination locations (both required), so it is the one mandatory choice.
+    async onCreate() {
+        const ptId = this.getM2oId(this.state.record.picking_type_id);
+        const pt   = this.state.pickingTypes.find(t => t.id === ptId);
+        if (!pt) { alert('Please choose an Operation Type first.'); return; }
+        try {
+            const vals = {
+                picking_type_id: ptId,
+                location_id:      this.getM2oId(this.state.record.location_id)      || pt.src  || false,
+                location_dest_id: this.getM2oId(this.state.record.location_dest_id) || pt.dest || false,
+                partner_id:       this.getM2oId(this.state.record.partner_id) || false,
+                scheduled_date:   this.state.record.scheduled_date || false,
+                user_id:          this.getM2oId(this.state.record.user_id)    || false,
+                state:            'draft',
+            };
+            await RpcService.call('stock.picking', 'create', [vals]);
+            this.props.onBack();   // back to the list, where the new draft appears
+        } catch (e) { alert('Create failed: ' + (e.message || e)); }
     }
 
     async onConfirm() {
@@ -3637,10 +4302,10 @@ class TransferFormView extends Component {
 }
 
 // ----------------------------------------------------------------
-// ProductFormView — product.product detail (Odoo 17-style)
+// ProductFormView — product.product detail (the reference ERP 17-style)
 // ----------------------------------------------------------------
 class ProductFormView extends Component {
-    static components = { ChatterPanel };
+    static components = { ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onFormChange"
@@ -3661,16 +4326,67 @@ class ProductFormView extends Component {
                 </div>
                 <!-- Secondary action buttons (inventory operations) -->
                 <div class="prd-secondary-btns">
-                    <button class="btn so-stat-btn-disabled"
-                            title="Update stock quantity — requires stock.quant (coming soon)">
-                        Update Quantity
-                    </button>
-                    <button class="btn so-stat-btn-disabled"
-                            title="Replenish stock — requires reordering rules (coming soon)">
-                        Replenish
-                    </button>
+                    <t t-if="stockTracked">
+                        <button class="btn" t-on-click.stop="onUpdateQuantity"
+                                title="Count the stock on hand at a location">
+                            Update Quantity
+                        </button>
+                        <button class="btn" t-on-click.stop="onReplenish" t-att-disabled="state.replenishing"
+                                title="Run this product's reordering rules now">
+                            <t t-if="state.replenishing">Replenishing…</t><t t-else="">Replenish</t>
+                        </button>
+                    </t>
+                    <t t-else="">
+                        <button class="btn so-stat-btn-disabled"
+                                title="Only storable products carry stock">Update Quantity</button>
+                        <button class="btn so-stat-btn-disabled"
+                                title="Only storable products carry stock">Replenish</button>
+                    </t>
                 </div>
             </div>
+
+            <!-- Inventory adjustment: count the on-hand per location -->
+            <t t-if="state.adjust.open">
+                <div class="gf-modal" t-on-click="onAdjustBackdrop">
+                    <div class="prd-adjust-card" t-on-click.stop="">
+                        <h3 class="gf-modal-title">Update Quantity &#8212; <t t-esc="state.record.name"/></h3>
+                        <p class="prd-adjust-hint">
+                            Set the counted quantity. The difference is booked as a move to or from
+                            Inventory Adjustments, so the correction stays in the stock ledger.
+                        </p>
+                        <table class="prd-adjust-table">
+                            <thead>
+                                <tr><th>Location</th><th class="num">On Hand</th><th class="num">Counted</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr t-foreach="state.adjust.rows" t-as="ar" t-key="ar.location_id">
+                                    <td t-esc="ar.location_name"/>
+                                    <td class="num" t-esc="fmtQty(ar.on_hand)"/>
+                                    <td class="num">
+                                        <input type="number" step="0.01" class="prd-adjust-input"
+                                               t-att-value="ar.counted"
+                                               t-att-data-loc="ar.location_id"
+                                               t-on-input="onAdjustInput"/>
+                                    </td>
+                                </tr>
+                                <tr t-if="!state.adjust.rows.length">
+                                    <td colspan="3" class="prd-adjust-empty">
+                                        No internal locations available.
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div t-if="state.adjust.error" class="gf-modal-err" t-esc="state.adjust.error"/>
+                        <div class="gf-modal-actions">
+                            <button class="btn" t-on-click="() => this.state.adjust.open = false">Cancel</button>
+                            <button class="btn btn-primary" t-on-click="onApplyAdjust"
+                                    t-att-disabled="state.adjust.saving">
+                                <t t-if="state.adjust.saving">Applying…</t><t t-else="">Apply</t>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </t>
 
             <t t-if="state.loading"><div class="loading">Loading…</div></t>
             <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
@@ -3685,16 +4401,18 @@ class ProductFormView extends Component {
                             <span class="prd-stat-icon">🌐</span>
                             <span class="prd-stat-lbl">Go to Website</span>
                         </div>
-                        <div class="prd-stat-widget prd-stat-disabled"
-                             title="Units On Hand — requires stock.quant (coming soon)">
+                        <div t-attf-class="prd-stat-widget{{ stockTracked ? '' : ' prd-stat-disabled' }}"
+                             t-on-click.stop="onViewOnHand"
+                             title="Units on hand across internal locations">
                             <span class="prd-stat-icon">📦</span>
-                            <span class="prd-stat-num">0.00</span>
+                            <span class="prd-stat-num" t-esc="fmtQty(state.stock.qty_available)"/>
                             <span class="prd-stat-lbl">On Hand</span>
                         </div>
-                        <div class="prd-stat-widget prd-stat-disabled"
-                             title="Forecasted Quantity — requires virtual stock computation (coming soon)">
+                        <div t-attf-class="prd-stat-widget{{ stockTracked ? '' : ' prd-stat-disabled' }}"
+                             t-on-click.stop="onViewForecast"
+                             t-att-title="forecastTitle">
                             <span class="prd-stat-icon">📊</span>
-                            <span class="prd-stat-num">0.00</span>
+                            <span class="prd-stat-num" t-esc="fmtQty(state.stock.virtual_available)"/>
                             <span class="prd-stat-lbl">Forecasted</span>
                         </div>
                         <div class="prd-stat-widget" t-on-click.stop="onViewMoves"
@@ -3703,9 +4421,10 @@ class ProductFormView extends Component {
                             <span class="prd-stat-num" t-esc="state.moveCount"/>
                             <span class="prd-stat-lbl">Product Moves</span>
                         </div>
-                        <div class="prd-stat-widget prd-stat-disabled"
-                             title="Reordering Rules — requires stock.warehouse.orderpoint (coming soon)">
+                        <div class="prd-stat-widget" t-on-click.stop="onViewOrderpoints"
+                             title="Reordering rules for this product">
                             <span class="prd-stat-icon">🔄</span>
+                            <span class="prd-stat-num" t-esc="state.stock.orderpoint_count"/>
                             <span class="prd-stat-lbl">Reordering Rules</span>
                         </div>
                         <div class="prd-stat-widget" t-on-click.stop="onViewBom"
@@ -3714,9 +4433,10 @@ class ProductFormView extends Component {
                             <span class="prd-stat-num" t-esc="state.bomCount"/>
                             <span class="prd-stat-lbl">Bill of Materials</span>
                         </div>
-                        <div class="prd-stat-widget prd-stat-disabled"
-                             title="Putaway Rules — requires stock.putaway.rule (coming soon)">
+                        <div class="prd-stat-widget" t-on-click.stop="onViewPutaway"
+                             title="Putaway rules for this product">
                             <span class="prd-stat-icon">📋</span>
+                            <span class="prd-stat-num" t-esc="state.stock.putaway_count"/>
                             <span class="prd-stat-lbl">Putaway Rules</span>
                         </div>
                     </div>
@@ -3793,14 +4513,21 @@ class ProductFormView extends Component {
                                 </div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Product Category</label>
-                                    <select class="form-input" data-field="categ_id">
-                                        <option value="0">—</option>
-                                        <t t-foreach="categoriesByPath" t-as="cat" t-key="cat.id">
-                                            <option t-att-value="cat.id"
-                                                    t-att-selected="m2oId(state.record.categ_id)===cat.id?true:undefined"
-                                                    t-esc="cat.fullPath"/>
-                                        </t>
-                                    </select>
+                                    <!-- The generic form has had this ＋ since docs/078; the
+                                         bespoke Product form did not, so adding a category
+                                         meant leaving the product half-filled. -->
+                                    <div class="prd-combo">
+                                        <select class="form-input" data-field="categ_id">
+                                            <option value="0">—</option>
+                                            <t t-foreach="categoriesByPath" t-as="cat" t-key="cat.id">
+                                                <option t-att-value="cat.id"
+                                                        t-att-selected="m2oId(state.record.categ_id)===cat.id?true:undefined"
+                                                        t-esc="cat.fullPath"/>
+                                            </t>
+                                        </select>
+                                        <button class="prd-combo-add" title="New category"
+                                                t-on-click.stop.prevent="() => this.openAddNew('product.category', 'Category', 'categ_id')">＋</button>
+                                    </div>
                                 </div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Internal Reference</label>
@@ -3839,13 +4566,17 @@ class ProductFormView extends Component {
                                 </div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Unit of Measure</label>
-                                    <select class="form-input" data-field="uom_id">
-                                        <t t-foreach="state.uoms" t-as="uom" t-key="uom.id">
-                                            <option t-att-value="uom.id"
-                                                    t-att-selected="m2oId(state.record.uom_id)===uom.id?true:undefined"
-                                                    t-esc="uom.name"/>
-                                        </t>
-                                    </select>
+                                    <div class="prd-combo">
+                                        <select class="form-input" data-field="uom_id">
+                                            <t t-foreach="state.uoms" t-as="uom" t-key="uom.id">
+                                                <option t-att-value="uom.id"
+                                                        t-att-selected="m2oId(state.record.uom_id)===uom.id?true:undefined"
+                                                        t-esc="uom.name"/>
+                                            </t>
+                                        </select>
+                                        <button class="prd-combo-add" title="New unit of measure"
+                                                t-on-click.stop.prevent="() => this.openAddNew('uom.uom', 'Unit of Measure', 'uom_id')">＋</button>
+                                    </div>
                                 </div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Purchase UoM</label>
@@ -4074,6 +4805,31 @@ class ProductFormView extends Component {
 
                 </div><!-- /.so-card -->
 
+                <!-- Inline create for the Category / UoM pickers (docs/092) -->
+                <t t-if="state.addNew">
+                    <div class="gf-modal" t-on-click="onAddNewBackdrop">
+                        <div class="gf-modal-card" t-on-click.stop="">
+                            <h3 class="gf-modal-title">New <t t-esc="state.addNew.label"/></h3>
+                            <label class="gf-modal-lbl">Name</label>
+                            <input class="gf-modal-input" t-att-value="state.addNew.name"
+                                   t-on-input="onAddNewNameInput" t-on-keydown="onAddNewKey"/>
+                            <div t-if="state.addNew.error" class="gf-modal-err" t-esc="state.addNew.error"/>
+                            <div class="gf-modal-actions">
+                                <button class="btn" t-on-click="closeAddNew">Cancel</button>
+                                <button class="btn btn-primary" t-on-click="submitAddNew"
+                                        t-att-disabled="state.addNew.saving">Create</button>
+                            </div>
+                        </div>
+                    </div>
+                </t>
+
+                <!-- ── Datasheets & documents ──────────────────── -->
+                <t t-if="!isNew">
+                    <AttachmentPanel model="'product.product'"
+                                     recordId="props.recordId"
+                                     title="'Datasheets &amp; Documents'"/>
+                </t>
+
                 <!-- ── Chatter ───────────────────────────────────── -->
                 <t t-if="!isNew">
                     <ChatterPanel model="'product.product'"
@@ -4098,10 +4854,78 @@ class ProductFormView extends Component {
             bomCount:       0,
             activeTab:      'general',
             chatRefreshKey: 0,
+            // Live inventory figures (stock.quant product_summary)
+            stock: { qty_available: 0, reserved: 0, incoming_qty: 0, outgoing_qty: 0,
+                     virtual_available: 0, orderpoint_count: 0, putaway_count: 0 },
+            replenishing: false,
+            adjust: { open: false, rows: [], saving: false, error: '' },
+            // Inline create for the Category / UoM comboboxes
+            addNew: null,   // { model, label, field, name, error, saving }
         });
         this._orig = {};
         onMounted(() => this.load());
     }
+
+    // ---- Inline create (＋ beside a picker) --------------------------
+    // The generic FormView has had this since docs/078. Without it here, adding
+    // a missing category meant abandoning a half-filled product form.
+    openAddNew(model, label, field) {
+        this.state.addNew = { model, label, field, name: '', error: '', saving: false };
+    }
+    closeAddNew() { this.state.addNew = null; }
+    onAddNewBackdrop(ev) { if (ev.target === ev.currentTarget) this.state.addNew = null; }
+    onAddNewNameInput(ev) { if (this.state.addNew) this.state.addNew.name = ev.target.value; }
+    onAddNewKey(ev) {
+        if (ev.key === 'Enter')  { ev.preventDefault(); this.submitAddNew(); }
+        if (ev.key === 'Escape') { this.closeAddNew(); }
+    }
+
+    async submitAddNew() {
+        const ctx = this.state.addNew;
+        if (!ctx || ctx.saving) return;
+        const name = (ctx.name || '').trim();
+        if (!name) { ctx.error = 'A name is required.'; return; }
+        ctx.saving = true;
+        ctx.error  = '';
+        try {
+            const id = await RpcService.call(ctx.model, 'create', [{ name }], {});
+            // Refresh the list the picker reads from, then select the new row —
+            // the point of the ＋ is not having to go and find it.
+            if (ctx.model === 'product.category') {
+                const cats = await RpcService.call('product.category', 'search_read',
+                    [[]], { fields: ['id','name','parent_id'], limit: 500 });
+                this.state.categories = Array.isArray(cats) ? cats : [];
+            } else {
+                const uoms = await RpcService.call('uom.uom', 'search_read',
+                    [[]], { fields: ['id','name'], limit: 100 });
+                this.state.uoms = Array.isArray(uoms) ? uoms : [];
+            }
+            this.state.record[ctx.field] = id;
+            this.state.addNew = null;
+        } catch (e) {
+            // Surface the server's message — "Category name is required." is
+            // more use than a silent failure.
+            ctx.error  = e.message || String(e);
+            ctx.saving = false;
+        }
+    }
+
+    // Storable products carry stock. A consumable that already has quants or a
+    // reordering rule still needs its counters usable, so it counts too.
+    get stockTracked() {
+        if ((this.state.record.type || 'consu') === 'storable') return true;
+        const s = this.state.stock;
+        return !!(s.qty_available || s.incoming_qty || s.outgoing_qty || s.orderpoint_count);
+    }
+
+    get forecastTitle() {
+        const s = this.state.stock;
+        return `Forecasted = on hand ${this.fmtQty(s.qty_available)}`
+             + ` + incoming ${this.fmtQty(s.incoming_qty)}`
+             + ` − outgoing ${this.fmtQty(s.outgoing_qty)}`;
+    }
+
+    fmtQty(v) { return (Number(v) || 0).toFixed(2); }
 
     get isNew() { return !this.props.recordId; }
 
@@ -4153,6 +4977,7 @@ class ProductFormView extends Component {
                 ]);
                 this.state.moveCount = typeof mc === 'number' ? mc : 0;
                 this.state.bomCount  = typeof bc === 'number' ? bc : 0;
+                await this.loadStock();
             } else {
                 this.state.record = {
                     name: '', default_code: '', barcode: false,
@@ -4276,6 +5101,117 @@ class ProductFormView extends Component {
             this.state.record.image_1920 = b64;
         };
         reader.readAsDataURL(file);
+    }
+
+    // ---- Inventory: live figures, adjustment, replenishment ----------
+    // The stat row used to be inert placeholders. stock.quant, the reordering
+    // rules and the putaway rules all exist, so these read and write the real
+    // ledger (docs/090).
+
+    async loadStock() {
+        if (!this.props.recordId) return;
+        try {
+            const s = await RpcService.call('stock.quant', 'product_summary',
+                                            [this.props.recordId], {});
+            if (s && typeof s === 'object') this.state.stock = { ...this.state.stock, ...s };
+        } catch (e) { console.error(e); }
+    }
+
+    async onUpdateQuantity() {
+        this.state.adjust = { open: true, rows: [], saving: false, error: '' };
+        try {
+            // Every internal location, with the product's current quant on it —
+            // stock can be counted into a location that has no quant row yet.
+            const [locs, quants] = await Promise.all([
+                RpcService.call('stock.location', 'search_read',
+                    [[['usage','=','internal']]], { fields: ['id','complete_name','name'], limit: 200 }),
+                RpcService.call('stock.quant', 'search_read',
+                    [[['product_id','=',this.props.recordId]]], { fields: ['id','location_id','quantity'], limit: 200 }),
+            ]);
+            const onHand = new Map();
+            for (const q of (Array.isArray(quants) ? quants : [])) {
+                const lid = Array.isArray(q.location_id) ? q.location_id[0] : q.location_id;
+                onHand.set(lid, (onHand.get(lid) || 0) + (Number(q.quantity) || 0));
+            }
+            this.state.adjust.rows = (Array.isArray(locs) ? locs : []).map(l => ({
+                location_id:   l.id,
+                location_name: l.complete_name || l.name,
+                on_hand:       onHand.get(l.id) || 0,
+                counted:       onHand.get(l.id) || 0,
+            }));
+        } catch (e) {
+            this.state.adjust.error = e.message || 'Failed to load locations';
+        }
+    }
+
+    onAdjustInput(ev) {
+        const lid = parseInt(ev.target.dataset.loc);
+        const row = this.state.adjust.rows.find(r => r.location_id === lid);
+        if (row) row.counted = parseFloat(ev.target.value);
+    }
+
+    onAdjustBackdrop(ev) { if (ev.target === ev.currentTarget) this.state.adjust.open = false; }
+
+    async onApplyAdjust() {
+        this.state.adjust.saving = true;
+        this.state.adjust.error  = '';
+        try {
+            // Only the rows whose count actually moved — set_on_hand books a
+            // stock move per call, and an unchanged line would book a zero move.
+            const changed = this.state.adjust.rows.filter(
+                r => Number.isFinite(r.counted) && Math.abs(r.counted - r.on_hand) > 1e-6);
+            for (const r of changed) {
+                await RpcService.call('stock.quant', 'set_on_hand',
+                    [{ product_id: this.props.recordId, location_id: r.location_id, quantity: r.counted }], {});
+            }
+            this.state.adjust.open = false;
+            await this.loadStock();
+            const mc = await RpcService.call('stock.move', 'search_count',
+                                             [[['product_id','=',this.props.recordId]]]);
+            this.state.moveCount = typeof mc === 'number' ? mc : this.state.moveCount;
+        } catch (e) {
+            this.state.adjust.error = e.message || 'Failed to apply the adjustment';
+        } finally {
+            this.state.adjust.saving = false;
+        }
+    }
+
+    async onReplenish() {
+        if (this.state.stock.orderpoint_count === 0) {
+            alert('This product has no reordering rule yet. Add one first — the Reordering Rules button opens the list.');
+            return;
+        }
+        this.state.replenishing = true;
+        try {
+            const res = await RpcService.call('stock.warehouse.orderpoint', 'run_scheduler',
+                                              [{ product_id: this.props.recordId }], {});
+            const made    = (res && res.replenishments_created) || 0;
+            const noVend  = (res && res.skipped_no_vendor) || 0;
+            if (made)        alert(`Replenishment drafted: ${made} order(s) created.`);
+            else if (noVend) alert('Stock is below the minimum, but this product has no vendor — '
+                                 + 'set one on the reordering rule or in the vendor pricelist.');
+            else             alert('Nothing to replenish — forecasted stock is at or above the minimum.');
+            await this.loadStock();
+        } catch (e) {
+            alert('Replenish failed: ' + (e.message || e));
+        } finally {
+            this.state.replenishing = false;
+        }
+    }
+
+    onViewOnHand() {
+        if (this.props.onNavigate) this.props.onNavigate('stock.quant', [['product_id','=',this.props.recordId]]);
+    }
+    onViewForecast() {
+        // The forecast is on-hand plus pending moves — the moves are what a
+        // user drills into to see why the number is what it is.
+        if (this.props.onNavigate) this.props.onNavigate('stock.move', [['product_id','=',this.props.recordId]]);
+    }
+    onViewOrderpoints() {
+        if (this.props.onNavigate) this.props.onNavigate('stock.warehouse.orderpoint', [['product_id','=',this.props.recordId]]);
+    }
+    onViewPutaway() {
+        if (this.props.onNavigate) this.props.onNavigate('stock.putaway.rule', [['product_id','=',this.props.recordId]]);
     }
 
     onViewMoves() {
@@ -5915,11 +6851,34 @@ const DLE_BLOCK_DEFS = [
 ];
 
 const DLE_DEFAULT_BLOCKS = {
-    'account.move':   ['doc_header','from_address','to_address','doc_details','items_table','totals','payment_terms','bank_details','footer_bar'],
-    'sale.order':     ['doc_header','from_address','to_address','doc_details','items_table','totals','payment_terms','notes','footer_bar'],
-    'purchase.order': ['doc_header','from_address','to_address','doc_details','items_table','totals','notes','footer_bar'],
-    'stock.picking':  ['doc_header','from_address','to_address','doc_details','items_table','footer_bar'],
+    'account.move':   ['logo','doc_header','from_address','to_address','doc_details','items_table','totals','payment_terms','bank_details','footer_bar'],
+    'sale.order':     ['logo','doc_header','from_address','to_address','doc_details','items_table','totals','payment_terms','notes','footer_bar'],
+    'purchase.order': ['logo','doc_header','from_address','to_address','doc_details','items_table','totals','notes','footer_bar'],
+    'stock.picking':  ['logo','doc_header','from_address','to_address','doc_details','items_table','footer_bar'],
 };
+
+// Default column placement for a fresh layout — same for every document type.
+// Row 1: logo on the left, company name + address on the right.
+// Row 2: recipient on the left, document details on the right.
+const DLE_DEFAULT_PROPS = {
+    logo:         { col:'left',  col_width:28, width:45, height:22 },
+    doc_header:   { col:'right' },
+    from_address: { col:'right' },
+    to_address:   { col:'left',  col_width:55 },
+    doc_details:  { col:'right' },
+};
+
+// Blocks that start switched off in a fresh layout (the logo needs a URL first,
+// and an empty logo box in every PDF would be worse than no logo at all).
+const DLE_DEFAULT_HIDDEN = new Set(['logo']);
+
+function dleDefaultBlocks(model) {
+    return (DLE_DEFAULT_BLOCKS[model] || []).map(t => ({
+        type:    t,
+        visible: !DLE_DEFAULT_HIDDEN.has(t),
+        props:   { ...(DLE_DEFAULT_PROPS[t] || {}) },
+    }));
+}
 
 const DLE_DOC_TYPES = [
     { model:'account.move',   label:'Invoice' },
@@ -5940,8 +6899,17 @@ body { font-family: Arial, Helvetica, sans-serif; font-size: 10pt; color: #33333
 .company-name { font-weight: bold; font-size: 11pt; }
 .company-detail { font-size: 10pt; }
 .info-row { overflow: hidden; margin-top: 10mm; margin-bottom: 6mm; }
-.buyer-col { float: left; width: 55%; }
-.meta-col { float: right; width: 42%; }
+/* buyer-col / meta-col no longer float: body is a flex column, so floats between
+   sibling blocks never pair up. Side-by-side is done with .dle-row / .dle-col. */
+.buyer-col { width: 100%; margin-top: 8mm; margin-bottom: 4mm; }
+.meta-col { width: 100%; margin-top: 8mm; margin-bottom: 4mm; }
+/* Columns use display:table, NOT flexbox. wkhtmltopdf's QtWebKit ignores
+   display:flex outright (the columns silently collapse into a stack), and it
+   has no support for the flexbox gap property either. CSS tables render
+   identically in Chrome and QtWebKit, so the preview matches the PDF. */
+.dle-row { display: table; width: 100%; table-layout: fixed; margin-bottom: 4mm; }
+.dle-col { display: table-cell; vertical-align: top; }
+.dle-col > .buyer-col, .dle-col > .meta-col, .dle-col > .hdr-left, .dle-col > .hdr-right { float: none; width: 100%; }
 .buyer-name { font-weight: bold; font-size: 11pt; }
 .doc-title { font-weight: bold; font-size: 14pt; margin-bottom: 2mm; }
 .meta-line { font-size: 10pt; }
@@ -6009,9 +6977,23 @@ function _bgbd()   { return [_D('Background & Border'),
     { key:'border_color', label:'Border Color', type:'color' },
     { key:'border_style', label:'Border Style', type:'select', options:_BSTYLE_OPTS },
 ]; }
-function _layout() { return [_D('Layout'),
-    { key:'same_line', label:'Same Line', type:'boolean' },
-    { key:'width',     label:'Width',     type:'number',  unit:'%', min:10, max:100 },
+const _COL_OPTS = [
+    { v:'full',  l:'Full width'   },
+    { v:'left',  l:'Left column'  },
+    { v:'right', l:'Right column' },
+];
+const _VALIGN_OPTS = [{ v:'',l:'Top'},{v:'center',l:'Middle'},{v:'end',l:'Bottom'}];
+
+// Column Layout — lets any block share a horizontal band with its neighbours.
+// A band opens at the first Left/Right block and closes when the next Left block
+// begins a new one, so several blocks can stack inside one column.
+function _cols() { return [_D('Column Layout'),
+    { key:'col',        label:'Placement',      type:'select', options:_COL_OPTS },
+    { key:'col_width',  label:'Column Size',    type:'number', unit:'%',  min:10, max:90 },
+    { key:'col_gap',    label:'Column Gap',     type:'number', unit:'mm', min:0,  max:30 },
+    { key:'col_valign', label:'Vertical Align', type:'select', options:_VALIGN_OPTS },
+    { key:'_colinfo',   type:'label',
+      label:'Blocks paired side by side must sit next to each other in the block list. Column Size sets the LEFT column — the right column takes the rest. Gap and Vertical Align are read from the first block of the pair. A column with nothing opposite it falls back to full width.' },
 ]; }
 
 const DLE_PROP_DEFS = {
@@ -6020,18 +7002,23 @@ const DLE_PROP_DEFS = {
         _D('Accent Line'),
         { key:'show_line',  label:'Show Line',  type:'boolean' },
         { key:'line_color', label:'Line Color', type:'color'   },
-        ..._layout(),
+        ..._cols(),
     ],
     logo: [
         _D('Image'),
-        { key:'src',    label:'Logo URL', type:'text' },
-        { key:'width',  label:'Width',    type:'number', unit:'mm', min:10, max:150 },
-        { key:'height', label:'Height',   type:'number', unit:'mm', min:5,  max:80  },
-        ..._spac(),
+        { key:'src',    label:'Logo URL', type:'text', placeholder:'https://… or data:image/png;base64,…' },
+        { key:'width',  label:'Max Width',  type:'number', unit:'mm', min:10, max:150 },
+        { key:'height', label:'Max Height', type:'number', unit:'mm', min:5,  max:80  },
+        { key:'logo_align', label:'Align', type:'select', options:[
+            { v:'',       l:'Left'   },
+            { v:'center', l:'Center' },
+            { v:'right',  l:'Right'  },
+        ]},
+        ..._spac(), ..._cols(),
     ],
-    from_address:  [..._typo(), ..._spac(), ..._bgbd(), ..._layout()],
-    to_address:    [..._typo(), ..._spac(), ..._bgbd()],
-    doc_details:   [..._typo(), ..._spac(), ..._bgbd()],
+    from_address:  [..._typo(), ..._spac(), ..._bgbd(), ..._cols()],
+    to_address:    [..._typo(), ..._spac(), ..._bgbd(), ..._cols()],
+    doc_details:   [..._typo(), ..._spac(), ..._bgbd(), ..._cols()],
     items_table: [
         ..._typo(), ..._spac(),
         _D('Table Header'),
@@ -6040,22 +7027,22 @@ const DLE_PROP_DEFS = {
         _D('Table Body'),
         { key:'alt_row_bg',   label:'Alternate Row Bg',   type:'color' },
         { key:'cell_border',  label:'Cell Border Color',  type:'color' },
-        ..._bgbd(), ..._layout(),
+        ..._bgbd(), ..._cols(),
     ],
     totals: [
         ..._typo(), ..._spac(), ..._bgbd(),
         _D('Total Row'),
         { key:'total_bg',    label:'Total Background', type:'color' },
         { key:'total_color', label:'Total Text Color', type:'color' },
-        ..._layout(),
+        ..._cols(),
     ],
-    payment_terms: [..._typo(), ..._spac(), ..._bgbd(), ..._layout()],
-    bank_details:  [..._typo(), ..._spac(), ..._bgbd(), ..._layout()],
-    notes:         [..._typo(), ..._spac(), ..._bgbd(), ..._layout()],
+    payment_terms: [..._typo(), ..._spac(), ..._bgbd(), ..._cols()],
+    bank_details:  [..._typo(), ..._spac(), ..._bgbd(), ..._cols()],
+    notes:         [..._typo(), ..._spac(), ..._bgbd(), ..._cols()],
     text_block: [
         _D('Content'),
         { key:'content', label:'Text Content', type:'textarea' },
-        ..._typo(), ..._spac(), ..._bgbd(), ..._layout(),
+        ..._typo(), ..._spac(), ..._bgbd(), ..._cols(),
     ],
     footer_bar: [
         _D('Content'),
@@ -6133,16 +7120,13 @@ function dleBlockHtml(type, model, props) {
         case 'doc_header': {
             const lineHtml = props.show_line
                 ? `<div style="border-top:2pt solid ${props.line_color || '#4a4a4a'};margin:2mm 0;"></div>` : '';
-            return `<div class="clearfix"${sa}>
-  <div class="hdr-left">
-    <div class="company-name">{{company_name}} ({{company_reg}})</div>
-  </div>
-  <div class="hdr-right"></div>
+            return `<div${sa}>
+  <div class="company-name">{{company_name}} ({{company_reg}})</div>
 </div>${lineHtml}`;
         }
 
         case 'logo':
-            return ''; // handled structurally in dleBuildHtml
+            return dleLogoHtml(props);
 
         case 'from_address':
             return `<div style="margin-bottom:4mm;${st}">
@@ -6154,7 +7138,7 @@ function dleBlockHtml(type, model, props) {
 </div>`;
 
         case 'to_address':
-            return `<div class="buyer-col" style="margin-top:8mm;margin-bottom:4mm;${st}">
+            return `<div class="buyer-col"${sa}>
   <div class="buyer-name">{{partner_name}}</div>
   <div>{{partner_street}}</div>
   <div>{{partner_city}}</div>
@@ -6169,7 +7153,7 @@ function dleBlockHtml(type, model, props) {
                 'purchase.order': `  <div class="meta-line"><span class="meta-lbl">PO No. :</span> {{doc_number}}</div>\n  <div class="meta-line"><span class="meta-lbl">Order Date :</span> {{doc_date}}</div>\n  <div class="meta-line"><span class="meta-lbl">Expected :</span> {{date_planned}}</div>`,
                 'stock.picking':  `  <div class="meta-line"><span class="meta-lbl">DO No. :</span> {{doc_number}}</div>\n  <div class="meta-line"><span class="meta-lbl">Date :</span> {{doc_date}}</div>\n  <div class="meta-line"><span class="meta-lbl">Origin :</span> {{origin}}</div>`,
             }[model] || '';
-            return `<div class="meta-col" style="margin-top:8mm;margin-bottom:4mm;${st}">
+            return `<div class="meta-col"${sa}>
   <div class="doc-title">{{document_title}}</div>
 ${lines}
 </div>`;
@@ -6336,89 +7320,157 @@ ${lines}
     }
 }
 
-// Blocks that float (need clearfix after their run)
-const DLE_FLOAT_BLOCKS = new Set(['to_address', 'doc_details']);
-// Layout-control block types
-const DLE_LAYOUT_BLOCKS = new Set(['row_start', 'col_break', 'row_end']);
+// Blocks that may take part in the automatic two-column bands
+const DLE_COL_BLOCKS = new Set([
+    'doc_header', 'logo', 'from_address', 'to_address', 'doc_details',
+    'items_table', 'totals', 'payment_terms', 'bank_details', 'notes', 'text_block',
+]);
+
+// 'left' | 'right' for a block that opted into a column band, otherwise null
+function dleColSide(blk) {
+    if (!blk || blk.visible === false)          return null;
+    if (!DLE_COL_BLOCKS.has(blk.type))          return null;
+    const c = (blk.props || {}).col;
+    return (c === 'left' || c === 'right') ? c : null;
+}
+
+// Maps the Vertical Align prop onto table-cell vertical-align ('' => top, via CSS)
+const _VALIGN_CSS = { center: 'middle', end: 'bottom' };
+
+// ---- Logo block ----
+function dleLogoHtml(props) {
+    props = props || {};
+    const h     = props.height || 20;
+    const w     = props.width  || 50;
+    const src   = props.src    || '';
+    const align = props.logo_align ? `text-align:${props.logo_align};` : '';
+    const pad   = (props.padding != null && props.padding !== '') ? `${props.padding}mm` : '2mm 0';
+    const mb    = (props.margin_bottom != null && props.margin_bottom !== '') ? `margin-bottom:${props.margin_bottom}mm;` : '';
+    const inner = src
+        ? `<img src="${src}" style="max-height:${h}mm; max-width:${w}mm;" alt="Logo"/>`
+        // Placeholder uses inline-block + line-height (not flex) so it honours text-align
+        : `<div style="display:inline-block; width:${w}mm; height:${h}mm; line-height:${h}mm; text-align:center; background:#f5f5f5; border:1pt dashed #bbb; color:#aaa; font-size:9pt; font-style:italic;">Company Logo</div>`;
+    return `<div style="padding:${pad};${mb}${align}">${inner}</div>`;
+}
+
+// ---- Render one content block (no column wrapping) ----
+function dleRenderBlock(blk, model) {
+    const props = blk.props || {};
+    if (blk.type === 'spacer') return `<div style="height:${props.height || 8}mm;"></div>`;
+    return dleBlockHtml(blk.type, model, props);
+}
+
+// Emit one CSS-table row. `cols` = [{ html, width, padLeft, padRight }].
+function dleRowHtml(cols, valign) {
+    const va = valign ? `vertical-align:${valign};` : '';
+    const cells = cols.map(c => {
+        const st = [va, c.width != null ? `width:${c.width}%;` : '',
+                    c.padLeft  ? `padding-left:${c.padLeft}mm;`   : '',
+                    c.padRight ? `padding-right:${c.padRight}mm;` : ''].join('');
+        return `<div class="dle-col"${st ? ` style="${st}"` : ''}>\n${c.html}\n</div>`;
+    });
+    return `<div class="dle-row">\n${cells.join('\n')}\n</div>`;
+}
 
 // ---- Assemble full HTML document from block list ----
 function dleBuildHtml(blocks, model) {
     const label = { 'account.move':'Invoice', 'sale.order':'Sales Order', 'purchase.order':'Purchase Order', 'stock.picking':'Delivery Order' }[model] || 'Document';
+    const list  = Array.isArray(blocks) ? blocks : [];
     const parts = [];
-    let pendingClearfix = false;
-    let inRow = false;
-    let firstColInRow = true;
+    // Explicit Row Start … Row End is buffered rather than streamed: column
+    // widths are a share of the row's total flex weight, so no cell can be
+    // emitted until every weight in the row is known.
+    let row = null;   // { gap, cols: [{ flex, parts: [] }] }
 
-    for (const blk of blocks) {
+    const flushRow = () => {
+        if (!row) return;
+        const cols  = row.cols.filter(c => c.parts.length);
+        if (cols.length) {
+            const total = cols.reduce((s, c) => s + c.flex, 0) || cols.length;
+            parts.push(dleRowHtml(cols.map((c, n) => ({
+                html:    c.parts.join('\n'),
+                width:   +(c.flex / total * 100).toFixed(4),
+                padLeft: n > 0 ? row.gap : 0,
+            }))));
+        }
+        row = null;
+    };
+
+    for (let i = 0; i < list.length; i++) {
+        const blk = list[i];
         if (blk.visible === false) continue;
         const props = blk.props || {};
 
-        // ---- Layout control blocks ----
+        // ---- Explicit row blocks (N columns, manual) ----
         if (blk.type === 'row_start') {
-            if (pendingClearfix) { parts.push('<div style="clear:both;"></div>'); pendingClearfix = false; }
-            const gap = props.gap || 6;
-            parts.push(`<div style="display:flex; gap:${gap}mm; align-items:flex-start; margin-bottom:4mm;">`);
-            const flex = props.flex || 1;
-            parts.push(`<div style="flex:${flex};">`);
-            inRow = true; firstColInRow = true;
+            flushRow();                                   // auto-close a dangling row
+            row = { gap: (props.gap != null && props.gap !== '') ? props.gap : 6,
+                    cols: [{ flex: props.flex || 1, parts: [] }] };
             continue;
         }
         if (blk.type === 'col_break') {
-            if (inRow) {
-                parts.push('</div>'); // close previous column
-                const flex = props.flex || 1;
-                parts.push(`<div style="flex:${flex};">`);
+            if (row) row.cols.push({ flex: props.flex || 1, parts: [] });
+            continue;
+        }
+        if (blk.type === 'row_end') { flushRow(); continue; }
+
+        // ---- Automatic two-column band ----
+        // Consumes the run of adjacent blocks that opted into a column. The band
+        // ends when a Left block appears after a Right one — that starts a new band.
+        if (!row && dleColSide(blk)) {
+            const run = [];
+            let seenRight = false;
+            let j = i;
+            for (; j < list.length; j++) {
+                const b = list[j];
+                if (b.visible === false) continue;        // hidden blocks never split a band
+                const side = dleColSide(b);
+                if (!side) break;
+                if (side === 'left' && seenRight) break;
+                if (side === 'right') seenRight = true;
+                run.push(b);
             }
-            continue;
-        }
-        if (blk.type === 'row_end') {
-            if (inRow) { parts.push('</div></div>'); inRow = false; }
-            continue;
-        }
+            const lHtml = run.filter(b => dleColSide(b) === 'left')
+                             .map(b => dleRenderBlock(b, model)).filter(Boolean).join('\n');
+            const rHtml = run.filter(b => dleColSide(b) === 'right')
+                             .map(b => dleRenderBlock(b, model)).filter(Boolean).join('\n');
 
-        // ---- Spacer with configurable height ----
-        if (blk.type === 'spacer') {
-            const h = props.height || 8;
-            if (pendingClearfix) { parts.push('<div style="clear:both;"></div>'); pendingClearfix = false; }
-            parts.push(`<div style="height:${h}mm;"></div>`);
-            continue;
-        }
-
-        // ---- Logo with configurable size ----
-        if (blk.type === 'logo') {
-            const h = props.height || 20;
-            const w = props.width  || 50;
-            const src = props.src  || '';
-            if (pendingClearfix && !inRow) { parts.push('<div style="clear:both;"></div>'); pendingClearfix = false; }
-            if (src) {
-                parts.push(`<div style="padding:2mm 0;"><img src="${src}" style="max-height:${h}mm; max-width:${w}mm;" alt="Logo"/></div>`);
+            if (lHtml && rHtml) {
+                // Band settings come from the first block that defines them
+                const pick = (k) => {
+                    for (const b of run) {
+                        const v = (b.props || {})[k];
+                        if (v !== undefined && v !== null && v !== '') return v;
+                    }
+                    return undefined;
+                };
+                let lw = parseFloat(pick('col_width'));
+                if (!(lw >= 10 && lw <= 90)) lw = 50;
+                const gap    = parseFloat(pick('col_gap'));
+                const gapMm  = (gap >= 0 && gap <= 30) ? gap : 6;
+                // Widths total 100% and the gap lives inside the left cell's
+                // padding — `box-sizing:border-box` is global, so nothing overflows.
+                parts.push(dleRowHtml([
+                    { html: lHtml, width: lw,      padRight: gapMm },
+                    { html: rHtml, width: 100 - lw },
+                ], _VALIGN_CSS[pick('col_valign')] || ''));
             } else {
-                parts.push(`<div style="padding:2mm 0;"><div style="width:${w}mm; height:${h}mm; display:flex; align-items:center; justify-content:center; background:#f5f5f5; border:1pt dashed #bbb; color:#aaa; font-size:9pt; font-style:italic;">Company Logo</div></div>`);
+                // Nothing opposite — a lone column would just waste the page width
+                if (lHtml) parts.push(lHtml);
+                if (rHtml) parts.push(rHtml);
             }
+            i = j - 1;
             continue;
         }
 
-        // ---- Standard content blocks ----
-        const html = dleBlockHtml(blk.type, model, props);
+        // ---- Standard content block ----
+        const html = dleRenderBlock(blk, model);
         if (!html) continue;
-
-        if (DLE_FLOAT_BLOCKS.has(blk.type)) {
-            pendingClearfix = true;
-        } else if (!inRow) {
-            if (pendingClearfix) { parts.push('<div style="clear:both;"></div>'); pendingClearfix = false; }
-        }
-
-        if (props.same_line && !DLE_FLOAT_BLOCKS.has(blk.type)) {
-            const ilw = props.width || 50;
-            parts.push(`<div style="display:inline-block;vertical-align:top;width:${ilw}%;box-sizing:border-box;">${html}</div>`);
-        } else {
-            parts.push(html);
-        }
+        if (row) row.cols[row.cols.length - 1].parts.push(html);
+        else     parts.push(html);
     }
 
-    // Close any unclosed row
-    if (inRow) parts.push('</div></div>');
-    if (pendingClearfix) parts.push('<div style="clear:both;"></div>');
+    flushRow();
 
     return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${label} - {{doc_number}}</title>\n${DLE_CSS}\n</head><body>\n${parts.join('\n\n')}\n</body></html>`;
 }
@@ -6513,6 +7565,12 @@ class DocumentLayoutEditor extends Component {
                     </t>
                 </div>
                 <div class="dle-topbar-actions">
+                    <span t-if="state.isCustomized" class="dle-badge-custom"
+                          title="This template differs from the one shipped in the source tree">Customized</span>
+                    <span t-else="" class="dle-badge-stock"
+                          title="This template matches the one shipped in the source tree">Default</span>
+                    <button class="btn" t-on-click="onCompareShipped">&#9776; Compare</button>
+                    <button class="btn" t-on-click="onAskReset" t-att-disabled="state.resetting">Reset to default</button>
                     <button class="btn" t-on-click="onRefreshPreview">&#8635; Refresh</button>
                     <button class="btn btn-primary" t-on-click="onSave" t-att-disabled="state.saving">
                         <t t-if="state.saving">Saving&#8230;</t><t t-else="">Save</t>
@@ -6520,6 +7578,56 @@ class DocumentLayoutEditor extends Component {
                     <span t-if="state.saved" class="dle-saved-msg">&#10003; Saved</span>
                 </div>
             </div>
+
+            <!-- Reset confirmation -->
+            <t t-if="state.confirmReset">
+                <div class="gf-modal" t-on-click="onResetBackdrop">
+                    <div class="gf-modal-card" t-on-click.stop="">
+                        <h3 class="gf-modal-title">Reset to the shipped template?</h3>
+                        <p class="dle-reset-text">
+                            <t t-esc="currentDocLabel"/> goes back to the template that ships with
+                            this version of the software. The saved block layout for this document
+                            is discarded too, so it cannot re-apply itself on the next save.
+                        </p>
+                        <p class="dle-reset-text dle-reset-warn" t-if="state.isCustomized">
+                            Your customisations to this template will be lost.
+                        </p>
+                        <div class="gf-modal-actions">
+                            <button class="btn" t-on-click="() => this.state.confirmReset = false">Cancel</button>
+                            <button class="btn btn-primary" t-on-click="onResetDefault"
+                                    t-att-disabled="state.resetting">
+                                <t t-if="state.resetting">Resetting&#8230;</t><t t-else="">Reset</t>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </t>
+
+            <!-- Compare with the shipped template -->
+            <t t-if="state.showDiff">
+                <div class="gf-modal" t-on-click="onDiffBackdrop">
+                    <div class="dle-diff-card" t-on-click.stop="">
+                        <div class="dle-diff-head">
+                            <h3 class="gf-modal-title" style="margin:0;">
+                                <t t-esc="currentDocLabel"/> &#8212; yours vs. shipped
+                            </h3>
+                            <span class="dle-diff-stat" t-esc="diffSummary"/>
+                            <button class="btn" t-on-click="() => this.state.showDiff = false">Close</button>
+                        </div>
+                        <div class="dle-diff-body">
+                            <div t-if="!state.diffRows.length" class="dle-diff-same">
+                                Identical to the shipped template.
+                            </div>
+                            <t t-foreach="state.diffRows" t-as="dr" t-key="dr_index">
+                                <div t-attf-class="dle-diff-row dle-diff-{{dr.kind}}">
+                                    <span class="dle-diff-gutter" t-esc="dr.mark"/>
+                                    <span class="dle-diff-text" t-esc="dr.text"/>
+                                </div>
+                            </t>
+                        </div>
+                    </div>
+                </div>
+            </t>
 
             <!-- 3-panel main area -->
             <div class="dle-main">
@@ -6948,6 +8056,13 @@ class DocumentLayoutEditor extends Component {
             // Log window
             logOpen:         false,
             logLines:        [],
+            // Shipped-template baseline (ir_report_template.default_html)
+            defaultHtml:     '',
+            isCustomized:    false,
+            confirmReset:    false,
+            resetting:       false,
+            showDiff:        false,
+            diffRows:        [],
         });
         this.shellRef = useRef('shell');
         this._updateHeight = () => {
@@ -7195,9 +8310,130 @@ class DocumentLayoutEditor extends Component {
 
     onRefreshPreview() { this.rebuildHtml(); }
 
+    // ---- shipped-template baseline: compare & reset ----------------
+    // template_html is owned by the database; default_html is what the source
+    // tree ships. Keeping the two side by side is what lets a template be
+    // reset without a hand-written SQL migration (docs/089, docs/090).
+
+    get currentDocLabel() {
+        const dt = DLE_DOC_TYPES.find(d => d.model === this.state.docModel);
+        return dt ? dt.label : this.state.docModel;
+    }
+
+    get diffSummary() {
+        let add = 0, del = 0;
+        for (const r of this.state.diffRows) {
+            if (r.kind === 'add') add++;
+            else if (r.kind === 'del') del++;
+        }
+        return add || del ? `+${add} / -${del} lines` : 'no differences';
+    }
+
+    // Line diff, longest-common-subsequence. Templates are a few hundred lines,
+    // so the O(n·m) table is not worth avoiding. Unchanged runs longer than
+    // six lines collapse to a single "…" row to keep the panel readable.
+    buildDiff(mine, shipped) {
+        const A = (shipped || '').split('\n');
+        const B = (mine    || '').split('\n');
+        const n = A.length, m = B.length;
+        const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+        for (let i = n - 1; i >= 0; i--)
+            for (let j = m - 1; j >= 0; j--)
+                lcs[i][j] = A[i] === B[j] ? lcs[i + 1][j + 1] + 1
+                                          : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+        const raw = [];
+        let i = 0, j = 0;
+        while (i < n && j < m) {
+            if (A[i] === B[j])                       { raw.push({ kind: 'same', mark: ' ', text: A[i] }); i++; j++; }
+            else if (lcs[i + 1][j] >= lcs[i][j + 1]) { raw.push({ kind: 'del',  mark: '-', text: A[i] }); i++; }
+            else                                     { raw.push({ kind: 'add',  mark: '+', text: B[j] }); j++; }
+        }
+        while (i < n) raw.push({ kind: 'del', mark: '-', text: A[i++] });
+        while (j < m) raw.push({ kind: 'add', mark: '+', text: B[j++] });
+
+        const out = [];
+        let run = 0;
+        for (let k = 0; k < raw.length; k++) {
+            if (raw[k].kind !== 'same') { run = 0; out.push(raw[k]); continue; }
+            // keep 3 lines of context either side of a change
+            const nearChange = raw.slice(Math.max(0, k - 3), k + 4).some(r => r.kind !== 'same');
+            if (nearChange) { run = 0; out.push(raw[k]); }
+            else if (run++ === 0) out.push({ kind: 'skip', mark: '…', text: '' });
+        }
+        return out.every(r => r.kind === 'same' || r.kind === 'skip') ? [] : out;
+    }
+
+    onCompareShipped() {
+        if (!this.state.defaultHtml) {
+            this.addLog('No shipped baseline recorded for this template yet — restart the server once.');
+            return;
+        }
+        // Compare what is stored, not the unsaved buffer, so the panel matches
+        // the Customized badge.
+        this.state.diffRows = this.buildDiff(this.storedHtml || this.state.templateHtml,
+                                             this.state.defaultHtml);
+        this.state.showDiff = true;
+    }
+
+    onDiffBackdrop(ev)  { if (ev.target === ev.currentTarget) this.state.showDiff    = false; }
+    onResetBackdrop(ev) { if (ev.target === ev.currentTarget) this.state.confirmReset = false; }
+
+    onAskReset() { this.state.confirmReset = true; }
+
+    async onResetDefault() {
+        if (!this.state.templateId) return;
+        this.state.resetting = true;
+        try {
+            await RpcService.call('ir.report.template', 'action_reset_default',
+                                  [[this.state.templateId]], {});
+            this.addLog(`Reset ${this.currentDocLabel} to the shipped template.`);
+            this.state.confirmReset = false;
+            await this.onDocTypeChange(this.state.docModel);   // reload blocks + html
+        } catch (e) {
+            this.addLog(`Reset failed: ${e.message || e}`);
+        } finally {
+            this.state.resetting = false;
+        }
+    }
+
     onOpenRealPreview() {
         const id = parseInt(this.state.previewRecordId);
         if (id > 0) window.open(`/report/html/${this.state.docModel}/${id}`, '_blank');
+    }
+
+    // Bring a stored layout up to the column model.
+    // Runs on every load; both steps are self-disabling once a layout is re-saved,
+    // because every block then carries an explicit `col` value.
+    migrateBlocks(raw) {
+        const blocks = (Array.isArray(raw) ? raw : []).map(b => ({ ...b, props: { ...(b.props || {}) } }));
+        const notes  = [];
+
+        // 1. Legacy `same_line` / `width` inline pairing → column placement
+        let sameLine = 0;
+        for (const b of blocks) {
+            if (b.props.same_line === undefined) continue;
+            if (b.props.same_line && b.props.col === undefined) {
+                b.props.col = 'left';
+                if (b.type !== 'logo' && b.props.width) b.props.col_width = b.props.width;
+                sameLine++;
+            }
+            delete b.props.same_line;
+        }
+        if (sameLine) notes.push(`${sameLine} "Same Line" block(s) converted to columns`);
+
+        // 2. Layouts saved before columns existed: put the document details beside
+        //    the recipient, which is where they could never go before.
+        if (!blocks.some(b => b.props.col !== undefined)) {
+            const to = blocks.find(b => b.type === 'to_address');
+            const dd = blocks.find(b => b.type === 'doc_details');
+            if (to && dd) {
+                to.props.col = 'left';
+                if (to.props.col_width === undefined) to.props.col_width = 55;
+                dd.props.col = 'right';
+                notes.push('document details moved beside the recipient address');
+            }
+        }
+        return { blocks, notes };
     }
 
     async onDocTypeChange(model) {
@@ -7208,6 +8444,10 @@ class DocumentLayoutEditor extends Component {
         this.state.templateId    = null;
         this.state.templateHtml  = '';
         this.state.previewDoc    = '';
+        this.state.defaultHtml   = '';
+        this.state.isCustomized  = false;
+        this.state.showDiff      = false;
+        this.state.confirmReset  = false;
         // Load template record (for paper_format, orientation, and templateId)
         try {
             const tpls = await RpcService.call('ir.report.template', 'search_read',
@@ -7228,6 +8468,13 @@ class DocumentLayoutEditor extends Component {
                 this.state.docSettings.font_color        = tpls[0].font_color        || '#333333';
                 this.state.docSettings.line_height       = tpls[0].line_height       ?? 1.5;
                 this.state.docSettings.footer_text       = tpls[0].footer_text       || '';
+                // default_html only comes back from read(), not search_read()
+                const full = await RpcService.call('ir.report.template', 'read', [[tpls[0].id]], {});
+                if (Array.isArray(full) && full.length) {
+                    this.state.defaultHtml  = full[0].default_html || '';
+                    this.state.isCustomized = !!full[0].is_customized;
+                    this.storedHtml         = full[0].template_html || '';
+                }
             }
         } catch (e) { console.error(e); }
         // Load block config
@@ -7236,14 +8483,14 @@ class DocumentLayoutEditor extends Component {
             const cfgRows = await RpcService.call('ir.config.parameter', 'search_read',
                 [[['key', '=', cfgKey]]], { fields: ['id', 'value'], limit: 1 });
             if (cfgRows && cfgRows.length > 0 && cfgRows[0].value) {
-                this.state.blocks = JSON.parse(cfgRows[0].value);
+                const migrated = this.migrateBlocks(JSON.parse(cfgRows[0].value));
+                this.state.blocks = migrated.blocks;
+                if (migrated.notes.length) this.addLog(`Layout upgraded — ${migrated.notes.join('; ')}`);
             } else {
-                const defaults = DLE_DEFAULT_BLOCKS[model] || [];
-                this.state.blocks = defaults.map(t => ({ type: t, visible: true, props: {} }));
+                this.state.blocks = dleDefaultBlocks(model);
             }
         } catch (e) {
-            const defaults = DLE_DEFAULT_BLOCKS[model] || [];
-            this.state.blocks = defaults.map(t => ({ type: t, visible: true, props: {} }));
+            this.state.blocks = dleDefaultBlocks(model);
         }
         // Load design settings
         try {
@@ -7331,6 +8578,16 @@ class DocumentLayoutEditor extends Component {
                 }
             }
             this.state.saved = true;
+            // Refresh the Customized badge against the shipped baseline.
+            if (this.state.templateId) {
+                try {
+                    const full = await RpcService.call('ir.report.template', 'read', [[this.state.templateId]], {});
+                    if (Array.isArray(full) && full.length) {
+                        this.state.isCustomized = !!full[0].is_customized;
+                        this.storedHtml         = full[0].template_html || '';
+                    }
+                } catch (e) {}
+            }
             const docLabel = DLE_DOC_TYPES.find(d => d.model === this.state.docModel)?.label || this.state.docModel;
             this.addLog(`Saved: ${docLabel} template (${this.state.blocks.length} blocks)`);
             setTimeout(() => { if (this.state) this.state.saved = false; }, 3000);
@@ -8213,11 +9470,34 @@ class UserFormView extends Component {
                 <button class="btn" t-on-click="onBack">&#8592; Users</button>
                 <span class="so-ref" t-esc="state.record.login || 'New User'"/>
                 <div style="flex:1"/>
+                <t t-if="props.recordId">
+                    <button class="btn" t-on-click="onGenerateResetLink"
+                            t-att-disabled="state.linking"
+                            title="Create a one-time link this user can open to set their own password">
+                        <t t-if="state.linking">Generating…</t><t t-else="">Generate reset link</t>
+                    </button>
+                </t>
                 <button class="btn btn-primary" t-on-click="onSave" t-att-disabled="state.saving">
                     <t t-if="state.saving">Saving…</t><t t-else="">Save</t>
                 </button>
                 <button class="btn" t-on-click="onDiscard">Discard</button>
             </div>
+            <!-- Admin-issued reset link: shown after Generate, copied and sent by hand -->
+            <t t-if="state.resetLink">
+                <div class="alert alert-success" style="margin:12px 16px 0">
+                    <div style="font-weight:600;margin-bottom:6px">
+                        Reset link created — valid 24 hours, single use. Send it to the user; it is not emailed automatically.
+                    </div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <input class="field-input" style="flex:1;font-family:monospace;font-size:.8rem"
+                               readonly="readonly" t-att-value="state.resetLink"
+                               t-on-focus="ev => ev.target.select()"/>
+                        <button class="btn btn-sm" t-on-click="onCopyResetLink">
+                            <t t-esc="state.copied ? 'Copied' : 'Copy'"/>
+                        </button>
+                    </div>
+                </div>
+            </t>
             <t t-if="state.msg">
                 <div t-attf-class="alert {{state.msgType === 'error' ? 'alert-danger' : 'alert-success'}}"
                      style="margin:12px 16px 0">
@@ -8341,6 +9621,9 @@ class UserFormView extends Component {
             saving:         false,
             msg:            '',
             msgType:        'success',
+            linking:        false,   // generating a reset link
+            resetLink:      '',      // the generated link, shown for copy
+            copied:         false,
         });
         onMounted(async () => {
             const [partners, companies] = await Promise.all([
@@ -8431,6 +9714,40 @@ class UserFormView extends Component {
         if (this.props.recordId) this.loadRecord();
         else { this.state.record = { login:'', password:'', partner_id:0, company_id:0, active:true }; this.state.selectedGroups = {}; }
         this.state.msg = '';
+    }
+
+    // Ask the server to mint a one-time reset link for this user. The admin
+    // copies it and sends it to the user by hand — nothing is emailed, and the
+    // admin never has to know or type the user's new password.
+    async onGenerateResetLink() {
+        this.state.linking = true;
+        this.state.msg = '';
+        this.state.copied = false;
+        try {
+            const r = await RpcService.call('res.users', 'action_generate_reset_link',
+                [[this.props.recordId]], {});
+            this.state.resetLink = (r && r.reset_url) || '';
+            if (!this.state.resetLink) {
+                this.state.msg = 'Could not generate a reset link.'; this.state.msgType = 'error';
+            }
+        } catch (e) {
+            this.state.msg = e.message || 'Could not generate a reset link.';
+            this.state.msgType = 'error';
+        } finally {
+            this.state.linking = false;
+        }
+    }
+
+    async onCopyResetLink() {
+        try {
+            await navigator.clipboard.writeText(this.state.resetLink);
+            this.state.copied = true;
+            setTimeout(() => { this.state.copied = false; }, 2000);
+        } catch (e) {
+            // Clipboard API can be blocked (insecure context); the field is
+            // selectable, so the user can still copy manually.
+            this.state.copied = false;
+        }
     }
 
     onBack() { this.props.onBack(); }
@@ -8968,6 +10285,1288 @@ class ProductCategoryListView extends Component {
 }
 
 // ----------------------------------------------------------------
+// AssetFormView — account.asset detail: confirm → schedule → depreciate (docs/084)
+// ----------------------------------------------------------------
+class AssetFormView extends Component {
+    static components = { DatePicker };
+    static template = xml`
+        <div class="so-shell" t-on-change="onChange" t-on-input="onInput">
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Assets</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.name || 'New Asset'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <t t-if="isNew"><button class="btn btn-primary" t-on-click.stop="onCreate">Create</button></t>
+                        <t t-else="">
+                            <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                            <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
+                        </t>
+                        <button class="btn" t-on-click.stop="onBack">Back</button>
+                    </div>
+                </div>
+            </div>
+            <div class="so-statusbar">
+                <div class="so-sb-left">
+                    <t t-if="!isNew and state.record.state === 'draft'">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onConfirm">Confirm — build schedule</button>
+                    </t>
+                    <t t-if="state.record.state === 'open'">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onDepreciate">Post depreciation</button>
+                        <button class="btn ghost so-wf-btn"       t-on-click.stop="onClose">Set to closed</button>
+                    </t>
+                </div>
+                <div class="so-stepper">
+                    <div t-attf-class="so-step{{stepClass('draft')}}">Draft</div>
+                    <div t-attf-class="so-step{{stepClass('open')}}">Running</div>
+                    <div t-attf-class="so-step{{stepClass('close')}}">Closed</div>
+                </div>
+            </div>
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="so-card">
+                    <div class="so-card-head">
+                        <h1 class="so-doc-id" t-esc="state.record.name || 'New Asset'"/>
+                        <div class="so-stat-btns">
+                            <div class="so-stat-btn so-stat-btn-disabled"><span class="so-stat-num" t-esc="formatMoney(state.record.value_residual)"/><span class="so-stat-lbl">Book Value</span></div>
+                        </div>
+                    </div>
+                    <div class="so-info-grid">
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl">Asset Name</label>
+                                <input class="form-input" data-field="name" t-att-value="state.record.name || ''"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Asset Type</label>
+                                <select class="form-input" data-field="asset_type_id">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.types" t-as="o" t-key="o.id"><option t-att-value="o.id" t-att-selected="getM2oId(state.record.asset_type_id) === o.id ? true : undefined" t-esc="o.display"/></t>
+                                </select></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Gross Value</label>
+                                <input class="form-input" type="number" step="0.01" data-field="value" t-att-value="state.record.value !== undefined ? state.record.value : 0" t-att-readonly="isRunning ? true : undefined"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Acquisition Date</label>
+                                <DatePicker value="formatDate(state.record.acquisition_date)" onSelect.bind="setAcqDate"/></div>
+                        </div>
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl"># Depreciations</label>
+                                <input class="form-input" type="number" data-field="number" t-att-value="state.record.number !== undefined ? state.record.number : 5" t-att-readonly="isRunning ? true : undefined"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Months / period</label>
+                                <input class="form-input" type="number" data-field="period_months" t-att-value="state.record.period_months !== undefined ? state.record.period_months : 12" t-att-readonly="isRunning ? true : undefined"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Depreciation Journal</label>
+                                <select class="form-input" data-field="journal_id"><option value="0">—</option>
+                                    <t t-foreach="state.journals" t-as="o" t-key="o.id"><option t-att-value="o.id" t-att-selected="getM2oId(state.record.journal_id) === o.id ? true : undefined" t-esc="o.display"/></t></select></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Expense Account</label>
+                                <select class="form-input" data-field="account_expense_id"><option value="0">—</option>
+                                    <t t-foreach="state.accounts" t-as="o" t-key="o.id"><option t-att-value="o.id" t-att-selected="getM2oId(state.record.account_expense_id) === o.id ? true : undefined" t-esc="o.display"/></t></select></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Depreciation Account</label>
+                                <select class="form-input" data-field="account_depreciation_id"><option value="0">—</option>
+                                    <t t-foreach="state.accounts" t-as="o" t-key="o.id"><option t-att-value="o.id" t-att-selected="getM2oId(state.record.account_depreciation_id) === o.id ? true : undefined" t-esc="o.display"/></t></select></div>
+                        </div>
+                    </div>
+                    <t t-if="state.lines.length">
+                        <div class="so-tabs"><span class="so-tab active">Depreciation Board</span></div>
+                        <table class="so-lines-table">
+                            <thead><tr><th>#</th><th>Date</th><th class="so-col-num">Depreciation</th><th class="so-col-num">Cumulative</th><th class="so-col-num">Book Value</th><th>Status</th></tr></thead>
+                            <tbody>
+                                <t t-foreach="state.lines" t-as="l" t-key="l.id">
+                                    <tr>
+                                        <td t-esc="l.sequence"/>
+                                        <td t-esc="formatDate(l.depreciation_date)"/>
+                                        <td class="so-col-num" t-esc="formatMoney(l.amount)"/>
+                                        <td class="so-col-num" t-esc="formatMoney(l.depreciated_value)"/>
+                                        <td class="so-col-num" t-esc="formatMoney(l.remaining_value)"/>
+                                        <td><span t-attf-class="asset-badge {{ l.posted ? 'posted' : 'draft' }}" t-esc="l.posted ? 'Posted' : 'Draft'"/></td>
+                                    </tr>
+                                </t>
+                            </tbody>
+                        </table>
+                    </t>
+                </div>
+            </t>
+        </div>
+    `;
+    setup() {
+        this.state = useState({ loading: true, error: '', record: {}, lines: [],
+                                types: [], journals: [], accounts: [],
+                                isNew: !this.props.recordId });
+        onMounted(() => this.load());
+    }
+    get isNew()     { return !this.props.recordId; }
+    get isRunning() { return this.state.record.state === 'open' || this.state.record.state === 'close'; }
+    stepClass(s) {
+        const order = { draft: 0, open: 1, close: 2 };
+        const cur = order[this.state.record.state] ?? 0, x = order[s];
+        return x === cur ? ' active' : (x < cur ? ' done' : '');
+    }
+    getM2oId(v) {
+        if (!v && v !== 0) return 0;
+        if (typeof v === 'number') return v;
+        if (Array.isArray(v) && v.length) return typeof v[0] === 'number' ? v[0] : 0;
+        if (typeof v === 'string') return parseInt(v) || 0;
+        return 0;
+    }
+    formatMoney(v) { return (parseFloat(v) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+    formatDate(v)  { return (!v || v === false) ? '' : String(v).substring(0, 10); }
+    async load() {
+        this.state.loading = true; this.state.error = '';
+        try {
+            const [types, journals, accounts] = await Promise.all([
+                RpcService.call('account.asset.type', 'search_read', [[]], { fields: ['id','name'], limit: 200 }).catch(() => []),
+                RpcService.call('account.journal', 'search_read', [[]], { fields: ['id','name'], limit: 200 }).catch(() => []),
+                RpcService.call('account.account', 'search_read', [[]], { fields: ['id','name','code'], limit: 500 }).catch(() => []),
+            ]);
+            this.state.types    = (types || []).map(t => ({ id: t.id, display: t.name }));
+            this.state.journals = (journals || []).map(j => ({ id: j.id, display: j.name }));
+            this.state.accounts = (accounts || []).map(a => ({ id: a.id, display: (a.code ? a.code + ' ' : '') + a.name }));
+            if (this.props.recordId) {
+                const r = await RpcService.call('account.asset', 'read', [[this.props.recordId]],
+                    { fields: ['name','asset_type_id','value','value_residual','acquisition_date',
+                               'number','period_months','account_asset_id','account_depreciation_id',
+                               'account_expense_id','journal_id','state'] });
+                this.state.record = (Array.isArray(r) ? r[0] : r) || {};
+                const lines = await RpcService.call('account.asset.depreciation.line', 'search_read',
+                    [[['asset_id','=',this.props.recordId]]],
+                    { fields: ['id','sequence','depreciation_date','amount','remaining_value','depreciated_value','posted'], limit: 500 });
+                this.state.lines = (Array.isArray(lines) ? lines : []).sort((a, b) => a.sequence - b.sequence);
+            } else {
+                this.state.record = { state: 'draft', number: 5, period_months: 12 };
+                this.state.lines = [];
+            }
+        } catch (e) { this.state.error = e.message || 'Failed to load asset'; }
+        this.state.loading = false;
+    }
+    onChange(e) { const f = e.target.dataset.field; if (f && e.target.tagName === 'SELECT') this.state.record[f] = parseInt(e.target.value) || 0; }
+    onInput(e)  { const f = e.target.dataset.field; if (f && e.target.tagName !== 'SELECT') this.state.record[f] = e.target.value; }
+    setAcqDate(v) { this.state.record.acquisition_date = v; }
+    _vals() {
+        const r = this.state.record;
+        return {
+            name: r.name || '', asset_type_id: this.getM2oId(r.asset_type_id) || false,
+            value: parseFloat(r.value) || 0, acquisition_date: r.acquisition_date || false,
+            number: parseInt(r.number) || 5, period_months: parseInt(r.period_months) || 12,
+            journal_id: this.getM2oId(r.journal_id) || false,
+            account_expense_id: this.getM2oId(r.account_expense_id) || false,
+            account_depreciation_id: this.getM2oId(r.account_depreciation_id) || false,
+        };
+    }
+    async onCreate() { try { await RpcService.call('account.asset', 'create', [this._vals()], {}); this.props.onBack(); } catch (e) { this.state.error = e.message; } }
+    async onSave()   { try { await RpcService.call('account.asset', 'write', [[this.props.recordId], this._vals()], {}); await this.load(); } catch (e) { alert('Save failed: ' + (e.message || e)); } }
+    async onDelete() { try { await RpcService.call('account.asset', 'unlink', [[this.props.recordId]], {}); this.props.onBack(); } catch (e) { alert(e.message || e); } }
+    async onConfirm() { try { await this.onSaveQuiet(); await RpcService.call('account.asset', 'action_confirm', [[this.props.recordId]], {}); await this.load(); } catch (e) { alert('Confirm failed: ' + (e.message || e)); } }
+    async onSaveQuiet() { if (!this.isNew) await RpcService.call('account.asset', 'write', [[this.props.recordId], this._vals()], {}); }
+    async onDepreciate() { try { const n = await RpcService.call('account.asset', 'action_depreciate', [[this.props.recordId]], {}); await this.load(); alert(n ? (n + ' depreciation entr' + (n === 1 ? 'y' : 'ies') + ' posted.') : 'Nothing due yet.'); } catch (e) { alert('Depreciation failed: ' + (e.message || e)); } }
+    async onClose() { try { await RpcService.call('account.asset', 'action_close', [[this.props.recordId]], {}); await this.load(); } catch (e) { alert(e.message || e); } }
+    onBack() { this.props.onBack(); }
+}
+
+// ----------------------------------------------------------------
+// BudgetFormView — account.budget: planned vs actual per position (docs/085)
+// ----------------------------------------------------------------
+class BudgetFormView extends Component {
+    static components = { DatePicker };
+    static template = xml`
+        <div class="so-shell" t-on-change="onChange" t-on-input="onInput" t-on-click="onClick">
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Budgets</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.name || 'New Budget'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <t t-if="isNew"><button class="btn btn-primary" t-on-click.stop="onCreate">Create</button></t>
+                        <t t-else="">
+                            <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                            <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
+                        </t>
+                        <button class="btn" t-on-click.stop="onBack">Back</button>
+                    </div>
+                </div>
+            </div>
+            <div class="so-statusbar">
+                <div class="so-sb-left">
+                    <t t-if="!isNew">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onCompute">Refresh actuals</button>
+                        <t t-if="state.record.state === 'draft'">
+                            <button class="btn so-wf-btn" t-on-click.stop="onConfirm">Confirm</button>
+                        </t>
+                        <t t-if="state.record.state === 'confirm'">
+                            <button class="btn so-wf-btn" t-on-click.stop="onDone">Mark done</button>
+                        </t>
+                        <t t-if="state.record.state === 'done'">
+                            <button class="btn ghost so-wf-btn" t-on-click.stop="onDraft">Reset to draft</button>
+                        </t>
+                    </t>
+                </div>
+                <div class="so-stepper">
+                    <div t-attf-class="so-step{{stepClass('draft')}}">Draft</div>
+                    <div t-attf-class="so-step{{stepClass('confirm')}}">Confirmed</div>
+                    <div t-attf-class="so-step{{stepClass('done')}}">Done</div>
+                </div>
+            </div>
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="so-card">
+                    <div class="so-card-head">
+                        <h1 class="so-doc-id" t-esc="state.record.name || 'New Budget'"/>
+                        <div class="so-stat-btns">
+                            <div class="so-stat-btn so-stat-btn-disabled"><span class="so-stat-num" t-esc="formatMoney(totalPlanned)"/><span class="so-stat-lbl">Planned</span></div>
+                            <div class="so-stat-btn so-stat-btn-disabled"><span class="so-stat-num" t-esc="formatMoney(totalActual)"/><span class="so-stat-lbl">Actual</span></div>
+                        </div>
+                    </div>
+                    <div class="so-info-grid">
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl">Budget Name</label>
+                                <input class="form-input" data-field="name" t-att-value="state.record.name || ''"/></div>
+                        </div>
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl">Period From</label>
+                                <DatePicker value="formatDate(state.record.date_from)" onSelect.bind="setFrom"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Period To</label>
+                                <DatePicker value="formatDate(state.record.date_to)" onSelect.bind="setTo"/></div>
+                        </div>
+                    </div>
+
+                    <div class="so-tabs"><span class="so-tab active">Budget Lines</span></div>
+                    <table class="so-lines-table">
+                        <thead><tr>
+                            <th>Budgetary Position</th>
+                            <th class="so-col-num">Planned</th>
+                            <th class="so-col-num">Actual</th>
+                            <th class="so-col-num">Remaining</th>
+                            <th style="width:180px">Achieved</th>
+                            <th class="so-col-del"/>
+                        </tr></thead>
+                        <tbody>
+                            <t t-foreach="state.lines" t-as="l" t-key="l._key">
+                                <tr>
+                                    <td>
+                                        <select class="o2m-input" data-line-field="post_id" t-att-data-key="l._key">
+                                            <option value="0">—</option>
+                                            <t t-foreach="state.posts" t-as="o" t-key="o.id">
+                                                <option t-att-value="o.id" t-att-selected="getM2oId(l.post_id) === o.id ? true : undefined" t-esc="o.display"/>
+                                            </t>
+                                        </select>
+                                    </td>
+                                    <td class="so-col-num">
+                                        <input class="o2m-input" type="number" step="0.01" data-line-field="planned_amount"
+                                               t-att-data-key="l._key" t-att-value="l.planned_amount !== undefined ? l.planned_amount : 0"/>
+                                    </td>
+                                    <td class="so-col-num" t-esc="formatMoney(l.practical_amount)"/>
+                                    <td class="so-col-num" t-esc="formatMoney(remainingOf(l))"/>
+                                    <td>
+                                        <div class="bg-meter"><div t-attf-class="bg-fill {{ pctOf(l) > 100 ? 'over' : '' }}" t-attf-style="width:{{ pctWidth(l) }}%"/></div>
+                                        <span class="bg-pct" t-esc="pctOf(l) + '%'"/>
+                                    </td>
+                                    <td class="so-col-del">
+                                        <button class="btn btn-sm btn-danger" data-del-line="1" t-att-data-key="l._key">✕</button>
+                                    </td>
+                                </tr>
+                            </t>
+                            <t t-if="!state.lines.length">
+                                <tr><td colspan="6" class="trn-empty-row">No budget lines yet — add one below.</td></tr>
+                            </t>
+                        </tbody>
+                    </table>
+                    <div class="so-line-adds"><button class="btn so-add-line" data-add-line="1">+ Add a line</button></div>
+                </div>
+            </t>
+        </div>
+    `;
+    setup() {
+        this.state = useState({ loading: true, error: '', record: {}, lines: [], posts: [], deleted: [] });
+        this._key = 1;
+        onMounted(() => this.load());
+    }
+    get isNew() { return !this.props.recordId; }
+    get totalPlanned() { return this.state.lines.reduce((s, l) => s + (parseFloat(l.planned_amount) || 0), 0); }
+    get totalActual()  { return this.state.lines.reduce((s, l) => s + (parseFloat(l.practical_amount) || 0), 0); }
+    stepClass(s) {
+        const order = { draft: 0, confirm: 1, done: 2 };
+        const cur = order[this.state.record.state] ?? 0, x = order[s];
+        return x === cur ? ' active' : (x < cur ? ' done' : '');
+    }
+    pctOf(l) {
+        const p = parseFloat(l.planned_amount) || 0, a = parseFloat(l.practical_amount) || 0;
+        return p ? Math.round(a / p * 100) : 0;
+    }
+    remainingOf(l) { return (parseFloat(l.planned_amount) || 0) - (parseFloat(l.practical_amount) || 0); }
+    pctWidth(l) { return Math.max(0, Math.min(100, this.pctOf(l))); }
+    getM2oId(v) {
+        if (!v && v !== 0) return 0;
+        if (typeof v === 'number') return v;
+        if (Array.isArray(v) && v.length) return typeof v[0] === 'number' ? v[0] : 0;
+        if (typeof v === 'string') return parseInt(v) || 0;
+        return 0;
+    }
+    formatMoney(v) { return (parseFloat(v) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+    formatDate(v)  { return (!v || v === false) ? '' : String(v).substring(0, 10); }
+    async load() {
+        this.state.loading = true; this.state.error = '';
+        try {
+            const posts = await RpcService.call('account.budget.post', 'search_read', [[]],
+                { fields: ['id', 'name'], limit: 200 }).catch(() => []);
+            this.state.posts = (posts || []).map(p => ({ id: p.id, display: p.name }));
+            if (this.props.recordId) {
+                const r = await RpcService.call('account.budget', 'read', [[this.props.recordId]],
+                    { fields: ['name', 'date_from', 'date_to', 'state'] });
+                this.state.record = (Array.isArray(r) ? r[0] : r) || {};
+                const lines = await RpcService.call('account.budget.line', 'search_read',
+                    [[['budget_id', '=', this.props.recordId]]],
+                    { fields: ['id', 'post_id', 'planned_amount', 'practical_amount'], limit: 500 });
+                this.state.lines = (Array.isArray(lines) ? lines : []).map(l => ({ _key: String(this._key++), ...l }));
+            } else {
+                this.state.record = { state: 'draft' };
+                this.state.lines = [];
+            }
+        } catch (e) { this.state.error = e.message || 'Failed to load budget'; }
+        this.state.loading = false;
+    }
+    onChange(e) {
+        const lf = e.target.dataset.lineField;
+        if (lf) { const l = this.state.lines.find(x => x._key === e.target.dataset.key); if (l) l[lf] = parseInt(e.target.value) || 0; return; }
+        const f = e.target.dataset.field; if (f && e.target.tagName === 'SELECT') this.state.record[f] = parseInt(e.target.value) || 0;
+    }
+    onInput(e) {
+        if (e.target.tagName === 'SELECT') return;
+        const lf = e.target.dataset.lineField;
+        if (lf) { const l = this.state.lines.find(x => x._key === e.target.dataset.key); if (l) l[lf] = e.target.value; return; }
+        const f = e.target.dataset.field; if (f) this.state.record[f] = e.target.value;
+    }
+    onClick(e) {
+        if (e.target.dataset.addLine) {
+            e.preventDefault();
+            this.state.lines.push({ _key: String(this._key++), id: null, post_id: 0, planned_amount: 0, practical_amount: 0 });
+            return;
+        }
+        if (e.target.dataset.delLine) {
+            e.preventDefault();
+            const k = e.target.dataset.key;
+            const l = this.state.lines.find(x => x._key === k);
+            if (l && l.id) this.state.deleted.push(l.id);
+            this.state.lines = this.state.lines.filter(x => x._key !== k);
+        }
+    }
+    setFrom(v) { this.state.record.date_from = v; }
+    setTo(v)   { this.state.record.date_to   = v; }
+    _vals() {
+        const r = this.state.record;
+        return { name: r.name || '', date_from: r.date_from || false, date_to: r.date_to || false };
+    }
+    async syncLines(budgetId) {
+        if (this.state.deleted.length) {
+            await RpcService.call('account.budget.line', 'unlink', [this.state.deleted], {});
+            this.state.deleted = [];
+        }
+        for (const l of this.state.lines) {
+            const vals = { budget_id: budgetId, post_id: this.getM2oId(l.post_id) || false,
+                           planned_amount: parseFloat(l.planned_amount) || 0 };
+            if (!l.id) await RpcService.call('account.budget.line', 'create', [vals], {});
+            else       await RpcService.call('account.budget.line', 'write', [[l.id], vals], {});
+        }
+    }
+    async onCreate() {
+        try {
+            const id = await RpcService.call('account.budget', 'create', [this._vals()], {});
+            await this.syncLines(id);
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+    async onSave() {
+        try {
+            await RpcService.call('account.budget', 'write', [[this.props.recordId], this._vals()], {});
+            await this.syncLines(this.props.recordId);
+            await this.onCompute();
+        } catch (e) { alert('Save failed: ' + (e.message || e)); }
+    }
+    async onDelete() { try { await RpcService.call('account.budget', 'unlink', [[this.props.recordId]], {}); this.props.onBack(); } catch (e) { alert(e.message || e); } }
+    async onCompute() { try { await RpcService.call('account.budget', 'action_compute', [[this.props.recordId]], {}); await this.load(); } catch (e) { alert('Could not refresh actuals: ' + (e.message || e)); } }
+    async onConfirm() { await this._state('action_confirm'); }
+    async onDone()    { await this._state('action_done'); }
+    async onDraft()   { await this._state('action_draft'); }
+    async _state(m)   { try { await RpcService.call('account.budget', m, [[this.props.recordId]], {}); await this.load(); } catch (e) { alert(e.message || e); } }
+    onBack() { this.props.onBack(); }
+}
+
+// ----------------------------------------------------------------
+// BankAccountFormView — account.bank.account: the debit/credit register (docs/087)
+// Index · Description · Date · Debit · Credit, with a running balance.
+// ----------------------------------------------------------------
+class BankAccountFormView extends Component {
+    static template = xml`
+        <div class="so-shell" t-on-change="onChange" t-on-input="onInput" t-on-click="onClick">
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Bank Accounts</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.name || 'New Bank Account'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <t t-if="isNew"><button class="btn btn-primary" t-on-click.stop="onCreate">Create</button></t>
+                        <t t-else="">
+                            <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                            <button class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
+                        </t>
+                        <button class="btn" t-on-click.stop="onBack">Back</button>
+                    </div>
+                </div>
+            </div>
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="so-card">
+                    <div class="so-card-head">
+                        <h1 class="so-doc-id" t-esc="state.record.name || 'New Bank Account'"/>
+                        <div class="so-stat-btns">
+                            <div class="so-stat-btn so-stat-btn-disabled">
+                                <span class="so-stat-num" t-esc="formatMoney(balance)"/>
+                                <span class="so-stat-lbl">Balance</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="so-info-grid">
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl">Account Name</label>
+                                <input class="form-input" data-field="name" t-att-value="state.record.name || ''"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Bank</label>
+                                <input class="form-input" data-field="bank_name" t-att-value="state.record.bank_name || ''"/></div>
+                        </div>
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl">Account Number</label>
+                                <input class="form-input" data-field="account_number" t-att-value="state.record.account_number || ''"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Journal</label>
+                                <select class="form-input" data-field="journal_id"><option value="0">—</option>
+                                    <t t-foreach="state.journals" t-as="o" t-key="o.id">
+                                        <option t-att-value="o.id" t-att-selected="getM2oId(state.record.journal_id) === o.id ? true : undefined" t-esc="o.display"/>
+                                    </t></select></div>
+                        </div>
+                    </div>
+
+                    <div class="so-tabs"><span class="so-tab active">Entries</span></div>
+                    <table class="so-lines-table">
+                        <thead><tr>
+                            <th style="width:60px">#</th>
+                            <th>Description</th>
+                            <th style="width:150px">Date</th>
+                            <th class="so-col-num">Debit</th>
+                            <th class="so-col-num">Credit</th>
+                            <th class="so-col-num">Balance</th>
+                            <th class="so-col-del"/>
+                        </tr></thead>
+                        <tbody>
+                            <t t-foreach="rowsWithBalance" t-as="l" t-key="l._key">
+                                <tr>
+                                    <td t-esc="l._idx"/>
+                                    <td><input class="o2m-input" data-line-field="name" t-att-data-key="l._key"
+                                               t-att-value="l.name || ''" placeholder="Description"/></td>
+                                    <td><input class="o2m-input" type="date" data-line-field="date" t-att-data-key="l._key"
+                                               t-att-value="formatDate(l.date)"/></td>
+                                    <td class="so-col-num"><input class="o2m-input" type="number" step="0.01"
+                                               data-line-field="debit" t-att-data-key="l._key"
+                                               t-att-value="l.debit !== undefined ? l.debit : 0"/></td>
+                                    <td class="so-col-num"><input class="o2m-input" type="number" step="0.01"
+                                               data-line-field="credit" t-att-data-key="l._key"
+                                               t-att-value="l.credit !== undefined ? l.credit : 0"/></td>
+                                    <td class="so-col-num" t-esc="formatMoney(l._balance)"/>
+                                    <td class="so-col-del">
+                                        <button class="btn btn-sm btn-danger" data-del-line="1" t-att-data-key="l._key">✕</button>
+                                    </td>
+                                </tr>
+                            </t>
+                            <t t-if="!state.lines.length">
+                                <tr><td colspan="7" class="trn-empty-row">No entries yet — add the first line below.</td></tr>
+                            </t>
+                        </tbody>
+                        <tfoot>
+                            <tr class="bank-total-row">
+                                <td colspan="3">Totals</td>
+                                <td class="so-col-num" t-esc="formatMoney(totalDebit)"/>
+                                <td class="so-col-num" t-esc="formatMoney(totalCredit)"/>
+                                <td class="so-col-num" t-esc="formatMoney(balance)"/>
+                                <td/>
+                            </tr>
+                        </tfoot>
+                    </table>
+                    <div class="so-line-adds"><button class="btn so-add-line" data-add-line="1">+ Add a line</button></div>
+                </div>
+            </t>
+        </div>
+    `;
+    setup() {
+        this.state = useState({ loading: true, error: '', record: {}, lines: [], journals: [], deleted: [] });
+        this._key = 1;
+        onMounted(() => this.load());
+    }
+    get isNew() { return !this.props.recordId; }
+    get totalDebit()  { return this.state.lines.reduce((s, l) => s + (parseFloat(l.debit)  || 0), 0); }
+    get totalCredit() { return this.state.lines.reduce((s, l) => s + (parseFloat(l.credit) || 0), 0); }
+    get balance()     { return this.totalDebit - this.totalCredit; }
+    // Index + running balance, computed for display (never stored, so it can't drift).
+    get rowsWithBalance() {
+        let run = 0;
+        return this.state.lines.map((l, i) => {
+            run += (parseFloat(l.debit) || 0) - (parseFloat(l.credit) || 0);
+            return Object.assign({}, l, { _idx: i + 1, _balance: run });
+        });
+    }
+    getM2oId(v) {
+        if (!v && v !== 0) return 0;
+        if (typeof v === 'number') return v;
+        if (Array.isArray(v) && v.length) return typeof v[0] === 'number' ? v[0] : 0;
+        if (typeof v === 'string') return parseInt(v) || 0;
+        return 0;
+    }
+    formatMoney(v) { return (parseFloat(v) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+    formatDate(v)  { return (!v || v === false) ? '' : String(v).substring(0, 10); }
+    async load() {
+        this.state.loading = true; this.state.error = '';
+        try {
+            const js = await RpcService.call('account.journal', 'search_read', [[]],
+                { fields: ['id', 'name'], limit: 200 }).catch(() => []);
+            this.state.journals = (js || []).map(j => ({ id: j.id, display: j.name }));
+            if (this.props.recordId) {
+                const r = await RpcService.call('account.bank.account', 'read', [[this.props.recordId]],
+                    { fields: ['name', 'bank_name', 'account_number', 'journal_id', 'active'] });
+                this.state.record = (Array.isArray(r) ? r[0] : r) || {};
+                const lines = await RpcService.call('account.bank.account.line', 'search_read',
+                    [[['bank_account_id', '=', this.props.recordId]]],
+                    { fields: ['id', 'sequence', 'date', 'name', 'debit', 'credit'], limit: 1000 });
+                this.state.lines = (Array.isArray(lines) ? lines : [])
+                    .sort((a, b) => (a.sequence - b.sequence) || (a.id - b.id))
+                    .map(l => ({ _key: String(this._key++), ...l }));
+            } else {
+                this.state.record = { active: true };
+                this.state.lines = [];
+            }
+        } catch (e) { this.state.error = e.message || 'Failed to load bank account'; }
+        this.state.loading = false;
+    }
+    onChange(e) {
+        const lf = e.target.dataset.lineField;
+        if (lf) { const l = this.state.lines.find(x => x._key === e.target.dataset.key); if (l) l[lf] = e.target.value; return; }
+        const f = e.target.dataset.field; if (f && e.target.tagName === 'SELECT') this.state.record[f] = parseInt(e.target.value) || 0;
+    }
+    onInput(e) {
+        if (e.target.tagName === 'SELECT') return;
+        const lf = e.target.dataset.lineField;
+        if (lf) { const l = this.state.lines.find(x => x._key === e.target.dataset.key); if (l) l[lf] = e.target.value; return; }
+        const f = e.target.dataset.field; if (f) this.state.record[f] = e.target.value;
+    }
+    onClick(e) {
+        if (e.target.dataset.addLine) {
+            e.preventDefault();
+            const today = new Date().toISOString().slice(0, 10);
+            this.state.lines.push({ _key: String(this._key++), id: null,
+                sequence: this.state.lines.length + 1, date: today, name: '', debit: 0, credit: 0 });
+            return;
+        }
+        if (e.target.dataset.delLine) {
+            e.preventDefault();
+            const k = e.target.dataset.key;
+            const l = this.state.lines.find(x => x._key === k);
+            if (l && l.id) this.state.deleted.push(l.id);
+            this.state.lines = this.state.lines.filter(x => x._key !== k);
+        }
+    }
+    _vals() {
+        const r = this.state.record;
+        return { name: r.name || '', bank_name: r.bank_name || '', account_number: r.account_number || '',
+                 journal_id: this.getM2oId(r.journal_id) || false };
+    }
+    async syncLines(id) {
+        if (this.state.deleted.length) {
+            await RpcService.call('account.bank.account.line', 'unlink', [this.state.deleted], {});
+            this.state.deleted = [];
+        }
+        let seq = 0;
+        for (const l of this.state.lines) {
+            seq += 1;
+            const vals = { bank_account_id: id, sequence: seq, date: l.date || false,
+                           name: l.name || '', debit: parseFloat(l.debit) || 0, credit: parseFloat(l.credit) || 0 };
+            if (!l.id) await RpcService.call('account.bank.account.line', 'create', [vals], {});
+            else       await RpcService.call('account.bank.account.line', 'write', [[l.id], vals], {});
+        }
+    }
+    async onCreate() {
+        try {
+            const id = await RpcService.call('account.bank.account', 'create', [this._vals()], {});
+            await this.syncLines(id);
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message; }
+    }
+    async onSave() {
+        try {
+            await RpcService.call('account.bank.account', 'write', [[this.props.recordId], this._vals()], {});
+            await this.syncLines(this.props.recordId);
+            await this.load();
+        } catch (e) { alert('Save failed: ' + (e.message || e)); }
+    }
+    async onDelete() { try { await RpcService.call('account.bank.account', 'unlink', [[this.props.recordId]], {}); this.props.onBack(); } catch (e) { alert(e.message || e); } }
+    onBack() { this.props.onBack(); }
+}
+
+// ----------------------------------------------------------------
+// AccountDashboard — adjustable journal cards (docs/087)
+// ----------------------------------------------------------------
+class AccountDashboard extends Component {
+    static template = xml`
+        <div class="dash-screen">
+            <div class="dash-head">
+                <div>
+                    <h2>Accounting Dashboard</h2>
+                    <p class="dash-sub">A quick read on what is owed, owing and on hand.</p>
+                </div>
+                <button class="btn" t-on-click="toggleCustomize" t-esc="state.customizing ? 'Done' : 'Customize'"/>
+            </div>
+
+            <t t-if="state.customizing">
+                <div class="dash-customize">
+                    <div class="dash-customize-title">Show these cards</div>
+                    <t t-foreach="state.cards" t-as="c" t-key="c.id">
+                        <label class="dash-toggle">
+                            <input type="checkbox" t-att-checked="isOn(c.id)" t-on-change="() => this.toggle(c.id)"/>
+                            <span t-esc="c.title"/>
+                        </label>
+                    </t>
+                </div>
+            </t>
+
+            <t t-if="state.loading"><div class="dash-msg">Loading…</div></t>
+            <t t-elif="state.error"><div class="dash-msg dash-err" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="dash-grid">
+                    <t t-foreach="visibleCards" t-as="c" t-key="c.id">
+                        <div class="dash-card">
+                            <div class="dash-card-title" t-esc="c.title"/>
+                            <div class="dash-card-amount" t-esc="c.amount"/>
+                            <div class="dash-card-sub"><t t-esc="c.subtitle"/> · <t t-esc="c.count"/></div>
+                        </div>
+                    </t>
+                    <t t-if="!visibleCards.length">
+                        <div class="dash-msg">No cards selected — press <b>Customize</b> to choose some.</div>
+                    </t>
+                </div>
+            </t>
+        </div>
+    `;
+    setup() {
+        this.state = useState({ loading: true, error: '', cards: [], enabled: [], customizing: false });
+        onMounted(() => this.load());
+    }
+    get visibleCards() { return this.state.cards.filter(c => this.state.enabled.includes(c.id)); }
+    isOn(id) { return this.state.enabled.includes(id); }
+    toggleCustomize() { this.state.customizing = !this.state.customizing; }
+    async toggle(id) {
+        this.state.enabled = this.isOn(id)
+            ? this.state.enabled.filter(x => x !== id)
+            : [...this.state.enabled, id];
+        await this.save();
+    }
+    async save() {
+        try {
+            await fetch('/web/account/dashboard?cards=' + encodeURIComponent(this.state.enabled.join(',')),
+                        { credentials: 'same-origin' });
+        } catch (_) {}
+    }
+    async load() {
+        this.state.loading = true; this.state.error = '';
+        try {
+            const res = await fetch('/web/account/dashboard', { credentials: 'same-origin' });
+            if (!res.ok) throw new Error('Could not load the dashboard (' + res.status + ').');
+            const data = await res.json();
+            this.state.cards   = data.cards || [];
+            this.state.enabled = (data.enabled || '').split(',').map(s => s.trim()).filter(Boolean);
+        } catch (e) { this.state.error = (e && e.message) || 'Failed to load dashboard.'; }
+        this.state.loading = false;
+    }
+}
+
+// ----------------------------------------------------------------
+// AccountSettings — the Accounting settings screen (docs/088)
+// Surfaces the new switches (fiscal year, lock dates, tax periodicity,
+// defaults) and links to the config lists that already have their own menus.
+// ----------------------------------------------------------------
+class AccountSettings extends Component {
+    static template = xml`
+        <div class="set-screen">
+            <div class="set-head">
+                <div>
+                    <h2>Accounting Settings</h2>
+                    <p class="set-sub">Changes save as you edit.</p>
+                </div>
+                <t t-if="state.saved"><span class="set-saved">Saved</span></t>
+            </div>
+            <t t-if="state.loading"><div class="dash-msg">Loading…</div></t>
+            <t t-elif="state.error"><div class="dash-msg dash-err" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="set-section">
+                    <h3>Fiscal year</h3>
+                    <div class="set-row">
+                        <label class="set-lbl">Last day</label>
+                        <input class="set-in" type="number" min="1" max="31"
+                               t-att-value="val('account.fiscal_year_last_day') || 31"
+                               t-on-change="(e) => this.save('account.fiscal_year_last_day', e.target.value)"/>
+                        <label class="set-lbl">Last month</label>
+                        <select class="set-in" t-on-change="(e) => this.save('account.fiscal_year_last_month', e.target.value)">
+                            <t t-foreach="months" t-as="m" t-key="m.v">
+                                <option t-att-value="m.v" t-att-selected="(val('account.fiscal_year_last_month') || '12') === m.v ? true : undefined" t-esc="m.n"/>
+                            </t>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="set-section set-lock">
+                    <h3>Lock dates</h3>
+                    <p class="set-hint">Entries dated on or before a lock date can no longer be posted — this is what protects a closed period.</p>
+                    <div class="set-row">
+                        <label class="set-lbl">All users lock date</label>
+                        <input class="set-in" type="date" t-att-value="val('account.lock_date')"
+                               t-on-change="(e) => this.save('account.lock_date', e.target.value)"/>
+                        <label class="set-lbl">Tax return lock date</label>
+                        <input class="set-in" type="date" t-att-value="val('account.tax_lock_date')"
+                               t-on-change="(e) => this.save('account.tax_lock_date', e.target.value)"/>
+                    </div>
+                </div>
+
+                <div class="set-section">
+                    <h3>Taxes</h3>
+                    <div class="set-row">
+                        <label class="set-lbl">Default sales tax</label>
+                        <select class="set-in" t-on-change="(e) => this.save('account.default_sale_tax_id', e.target.value)">
+                            <option value="">—</option>
+                            <t t-foreach="salesTaxes" t-as="t" t-key="t.id">
+                                <option t-att-value="sid(t.id)" t-att-selected="val('account.default_sale_tax_id') === sid(t.id) ? true : undefined" t-esc="t.name"/>
+                            </t>
+                        </select>
+                        <label class="set-lbl">Default purchase tax</label>
+                        <select class="set-in" t-on-change="(e) => this.save('account.default_purchase_tax_id', e.target.value)">
+                            <option value="">—</option>
+                            <t t-foreach="purchaseTaxes" t-as="t" t-key="t.id">
+                                <option t-att-value="sid(t.id)" t-att-selected="val('account.default_purchase_tax_id') === sid(t.id) ? true : undefined" t-esc="t.name"/>
+                            </t>
+                        </select>
+                    </div>
+                    <div class="set-row">
+                        <label class="set-lbl">Tax return periodicity</label>
+                        <select class="set-in" t-on-change="(e) => this.save('account.tax_periodicity', e.target.value)">
+                            <t t-foreach="periodicities" t-as="p" t-key="p.v">
+                                <option t-att-value="p.v" t-att-selected="(val('account.tax_periodicity') || 'bimonthly') === p.v ? true : undefined" t-esc="p.n"/>
+                            </t>
+                        </select>
+                        <label class="set-lbl">Tax rounding</label>
+                        <select class="set-in" t-on-change="(e) => this.save('account.tax_rounding', e.target.value)">
+                            <option value="per_line"  t-att-selected="(val('account.tax_rounding') || 'per_line') === 'per_line' ? true : undefined">Round per line</option>
+                            <option value="per_tax"   t-att-selected="val('account.tax_rounding') === 'per_tax' ? true : undefined">Round globally per tax</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="set-section">
+                    <h3>Default journals</h3>
+                    <div class="set-row">
+                        <label class="set-lbl">Sales journal</label>
+                        <select class="set-in" t-on-change="(e) => this.save('account.default_sale_journal_id', e.target.value)">
+                            <option value="">—</option>
+                            <t t-foreach="saleJournals" t-as="j" t-key="j.id">
+                                <option t-att-value="sid(j.id)" t-att-selected="val('account.default_sale_journal_id') === sid(j.id) ? true : undefined" t-esc="j.name"/>
+                            </t>
+                        </select>
+                        <label class="set-lbl">Purchase journal</label>
+                        <select class="set-in" t-on-change="(e) => this.save('account.default_purchase_journal_id', e.target.value)">
+                            <option value="">—</option>
+                            <t t-foreach="purchaseJournals" t-as="j" t-key="j.id">
+                                <option t-att-value="sid(j.id)" t-att-selected="val('account.default_purchase_journal_id') === sid(j.id) ? true : undefined" t-esc="j.name"/>
+                            </t>
+                        </select>
+                    </div>
+                    <div class="set-row">
+                        <label class="set-check">
+                            <input type="checkbox" t-att-checked="val('account.multi_currency') === '1'"
+                                   t-on-change="(e) => this.save('account.multi_currency', e.target.checked ? '1' : '0')"/>
+                            <span>Enable multi-currency</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="set-section">
+                    <h3>Configured elsewhere</h3>
+                    <p class="set-hint">These already have their own screens — this is just where to find them.</p>
+                    <div class="set-links">
+                        <t t-foreach="links" t-as="l" t-key="l">
+                            <span class="set-link" t-esc="l"/>
+                        </t>
+                    </div>
+                </div>
+            </t>
+        </div>
+    `;
+    setup() {
+        this.state = useState({ loading: true, error: '', values: {}, taxes: [], journals: [], saved: false });
+        this.months = [['1','January'],['2','February'],['3','March'],['4','April'],['5','May'],['6','June'],
+                       ['7','July'],['8','August'],['9','September'],['10','October'],['11','November'],['12','December']]
+                      .map(([v, n]) => ({ v, n }));
+        this.periodicities = [{ v: 'monthly', n: 'Monthly' }, { v: 'bimonthly', n: 'Bi-monthly (SST-02)' },
+                              { v: 'quarterly', n: 'Quarterly' }, { v: 'yearly', n: 'Yearly' }];
+        this.links = ['Chart of Accounts', 'Taxes', 'Journals', 'Payment Terms', 'Fiscal Positions',
+                      'Account Types', 'Currencies', 'Incoterms', 'Journal Groups', 'Bank Accounts',
+                      'Budgetary Positions', 'Asset Types', 'Analytic Accounts', 'Document Templates'];
+        onMounted(() => this.load());
+    }
+    val(k) { return this.state.values[k] || ''; }
+    // String() is not available inside OWL templates - use this instead.
+    sid(v) { return v == null ? '' : ('' + v); }
+    get salesTaxes()       { return this.state.taxes.filter(t => t.scope === 'sale'); }
+    get purchaseTaxes()    { return this.state.taxes.filter(t => t.scope === 'purchase'); }
+    get saleJournals()     { return this.state.journals.filter(j => j.type === 'sale'); }
+    get purchaseJournals() { return this.state.journals.filter(j => j.type === 'purchase'); }
+    async load() {
+        this.state.loading = true; this.state.error = '';
+        try {
+            const res = await fetch('/web/account/settings', { credentials: 'same-origin' });
+            if (!res.ok) throw new Error('Could not load settings (' + res.status + ').');
+            const d = await res.json();
+            this.state.values = d.values || {};
+            this.state.taxes = d.taxes || [];
+            this.state.journals = d.journals || [];
+        } catch (e) { this.state.error = (e && e.message) || 'Failed to load settings.'; }
+        this.state.loading = false;
+    }
+    async save(key, value) {
+        try {
+            const res = await fetch('/web/account/settings?key=' + encodeURIComponent(key) +
+                                    '&value=' + encodeURIComponent(value == null ? '' : value),
+                                    { credentials: 'same-origin' });
+            if (!res.ok) throw new Error('Save failed (' + res.status + ').');
+            const d = await res.json();
+            this.state.values = d.values || this.state.values;
+            this.state.saved = true;
+            setTimeout(() => { this.state.saved = false; }, 1500);
+        } catch (e) { this.state.error = (e && e.message) || 'Could not save that setting.'; }
+    }
+}
+
+// ----------------------------------------------------------------
+// ExpenseSheetFormView — hr.expense.sheet: the claim, its receipts, and the
+// approval chain that turns them into a journal entry (docs/090).
+//
+// Draft → Submitted → Approved → Posted → Paid. The expense lines are only
+// editable while the report is a draft: once it has been submitted, the totals
+// are what somebody is approving, and after posting they are in the ledger.
+// ----------------------------------------------------------------
+class ExpenseSheetFormView extends Component {
+    static components = { DatePicker, AttachmentPanel };
+    static template = xml`
+        <div class="so-shell" t-on-change="onChange" t-on-input="onInput">
+            <div class="so-page-header">
+                <div class="so-header-left">
+                    <div class="so-breadcrumbs">
+                        <span class="so-bc-link" t-on-click.stop="onBack">Expense Reports</span>
+                        <span class="so-bc-sep">›</span>
+                        <span class="so-bc-cur" t-esc="state.record.name || 'New Expense Report'"/>
+                    </div>
+                    <div class="so-action-btns">
+                        <t t-if="isNew"><button class="btn btn-primary" t-on-click.stop="onCreate">Create</button></t>
+                        <t t-else="">
+                            <button t-if="isDraft" class="btn btn-primary" t-on-click.stop="onSave">Save</button>
+                            <button t-if="isDraft" class="btn btn-danger"  t-on-click.stop="onDelete">Delete</button>
+                        </t>
+                        <button class="btn" t-on-click.stop="onBack">Back</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="so-statusbar">
+                <div class="so-sb-left">
+                    <button t-if="!isNew and state.record.state === 'draft'" class="btn btn-primary so-wf-btn"
+                            t-on-click.stop="onSubmit">Submit to Manager</button>
+                    <t t-if="state.record.state === 'submit'">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onApprove">Approve</button>
+                        <button class="btn ghost so-wf-btn"       t-on-click.stop="onRefuse">Refuse</button>
+                        <button class="btn ghost so-wf-btn"       t-on-click.stop="onDraft">Reset to Draft</button>
+                    </t>
+                    <t t-if="state.record.state === 'approve'">
+                        <button class="btn btn-primary so-wf-btn" t-on-click.stop="onPost">Post Journal Entry</button>
+                        <button class="btn ghost so-wf-btn"       t-on-click.stop="onRefuse">Refuse</button>
+                    </t>
+                    <button t-if="state.record.state === 'post' and !isCompanyPaid" class="btn btn-primary so-wf-btn"
+                            t-on-click.stop="onPay">Register Reimbursement</button>
+                    <span t-if="state.record.state === 'post' and isCompanyPaid" class="exp-note">
+                        Paid by the company — nothing to reimburse.
+                    </span>
+                    <button t-if="state.record.state === 'cancel'" class="btn ghost so-wf-btn"
+                            t-on-click.stop="onDraft">Reset to Draft</button>
+                </div>
+                <div class="so-stepper">
+                    <div t-attf-class="so-step{{stepClass('draft')}}">Draft</div>
+                    <div t-attf-class="so-step{{stepClass('submit')}}">Submitted</div>
+                    <div t-attf-class="so-step{{stepClass('approve')}}">Approved</div>
+                    <div t-attf-class="so-step{{stepClass('post')}}">Posted</div>
+                    <div t-attf-class="so-step{{stepClass('done')}}">Paid</div>
+                </div>
+            </div>
+
+            <t t-if="state.loading"><div class="loading">Loading…</div></t>
+            <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
+            <t t-else="">
+                <div class="so-card">
+                    <div class="so-card-head">
+                        <h1 class="so-doc-id" t-esc="state.record.name || 'New Expense Report'"/>
+                        <div class="so-stat-btns">
+                            <div class="so-stat-btn so-stat-btn-disabled">
+                                <span class="so-stat-num" t-esc="formatMoney(sheetTotal)"/>
+                                <span class="so-stat-lbl">Total</span>
+                            </div>
+                            <div t-if="state.record.move_id" class="so-stat-btn" t-on-click.stop="onOpenMove">
+                                <span class="so-stat-num">📄</span>
+                                <span class="so-stat-lbl">Journal Entry</span>
+                            </div>
+                            <div t-if="state.record.payment_move_id" class="so-stat-btn" t-on-click.stop="onOpenPayment">
+                                <span class="so-stat-num">💵</span>
+                                <span class="so-stat-lbl">Reimbursement</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="so-info-grid">
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl">Report Name</label>
+                                <input class="form-input" data-field="name" placeholder="e.g. March client visits"
+                                       t-att-value="state.record.name || ''" t-att-readonly="isDraft ? undefined : true"/></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Employee</label>
+                                <select class="form-input" data-field="employee_id" t-att-disabled="isDraft ? undefined : true">
+                                    <option value="0">—</option>
+                                    <t t-foreach="state.employees" t-as="o" t-key="o.id">
+                                        <option t-att-value="o.id"
+                                                t-att-selected="getM2oId(state.record.employee_id) === o.id ? true : undefined"
+                                                t-esc="o.display"/>
+                                    </t>
+                                </select></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Date</label>
+                                <DatePicker value="formatDate(state.record.date)" onSelect.bind="setDate"/></div>
+                        </div>
+                        <div class="so-info-col">
+                            <div class="so-field-row"><label class="so-field-lbl">Paid By</label>
+                                <select class="form-input" data-field="payment_mode" t-att-disabled="isDraft ? undefined : true">
+                                    <option value="own_account"
+                                            t-att-selected="!isCompanyPaid ? true : undefined">Employee (to reimburse)</option>
+                                    <option value="company_account"
+                                            t-att-selected="isCompanyPaid ? true : undefined">Company</option>
+                                </select></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Journal</label>
+                                <select class="form-input" data-field="journal_id" t-att-disabled="isDraft ? undefined : true">
+                                    <option value="0">— default —</option>
+                                    <t t-foreach="state.journals" t-as="o" t-key="o.id">
+                                        <option t-att-value="o.id"
+                                                t-att-selected="getM2oId(state.record.journal_id) === o.id ? true : undefined"
+                                                t-esc="o.display"/>
+                                    </t>
+                                </select></div>
+                            <div class="so-field-row"><label class="so-field-lbl">Notes</label>
+                                <input class="form-input" data-field="note"
+                                       t-att-value="state.record.note === false ? '' : (state.record.note || '')"
+                                       t-att-readonly="isDraft ? undefined : true"/></div>
+                        </div>
+                    </div>
+
+                    <div class="so-tabs"><span class="so-tab active">Expenses</span></div>
+                    <table class="so-lines-table">
+                        <thead>
+                            <tr>
+                                <th style="width:26%">Description</th>
+                                <th style="width:12%">Date</th>
+                                <th style="width:20%">Expense Account</th>
+                                <th class="so-col-num" style="width:8%">Qty</th>
+                                <th class="so-col-num" style="width:12%">Unit Price</th>
+                                <th style="width:12%">Tax</th>
+                                <th class="so-col-num" style="width:10%">Total</th>
+                                <th t-if="isDraft" style="width:34px"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <t t-foreach="state.lines" t-as="l" t-key="l._key">
+                                <tr>
+                                    <td><input class="o2m-input" data-lf="name" t-att-data-line="l._key"
+                                               t-att-value="l.name || ''" t-att-readonly="isDraft ? undefined : true"
+                                               placeholder="What was bought"/></td>
+                                    <td><input class="o2m-input" type="date" data-lf="date" t-att-data-line="l._key"
+                                               t-att-value="formatDate(l.date)" t-att-readonly="isDraft ? undefined : true"/></td>
+                                    <td>
+                                        <select class="o2m-input" data-lf="account_id" t-att-data-line="l._key"
+                                                t-att-disabled="isDraft ? undefined : true">
+                                            <option value="0">— default —</option>
+                                            <t t-foreach="state.accounts" t-as="a" t-key="a.id">
+                                                <option t-att-value="a.id"
+                                                        t-att-selected="getM2oId(l.account_id) === a.id ? true : undefined"
+                                                        t-esc="a.display"/>
+                                            </t>
+                                        </select>
+                                    </td>
+                                    <td class="so-col-num"><input class="o2m-input" type="number" step="0.01"
+                                               data-lf="quantity" t-att-data-line="l._key"
+                                               t-att-value="l.quantity !== undefined ? l.quantity : 1"
+                                               t-att-readonly="isDraft ? undefined : true"/></td>
+                                    <td class="so-col-num"><input class="o2m-input" type="number" step="0.01"
+                                               data-lf="unit_amount" t-att-data-line="l._key"
+                                               t-att-value="l.unit_amount !== undefined ? l.unit_amount : 0"
+                                               t-att-readonly="isDraft ? undefined : true"/></td>
+                                    <td>
+                                        <select class="o2m-input" data-lf="tax_id" t-att-data-line="l._key"
+                                                t-att-disabled="isDraft ? undefined : true">
+                                            <option value="0">— none —</option>
+                                            <t t-foreach="state.taxes" t-as="tx" t-key="tx.id">
+                                                <option t-att-value="tx.id"
+                                                        t-att-selected="getM2oId(l.tax_id) === tx.id ? true : undefined"
+                                                        t-esc="tx.display"/>
+                                            </t>
+                                        </select>
+                                    </td>
+                                    <td class="so-col-num" t-esc="formatMoney(lineTotal(l))"/>
+                                    <td t-if="isDraft" class="so-col-del">
+                                        <button class="btn btn-sm btn-danger"
+                                                t-on-click.stop="() => this.removeLine(l._key)">✕</button>
+                                    </td>
+                                </tr>
+                            </t>
+                            <tr t-if="!state.lines.length">
+                                <td t-att-colspan="isDraft ? 8 : 7" class="trn-empty-row">
+                                    No expenses on this report yet.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div t-if="isDraft" class="so-line-adds">
+                        <button class="btn so-add-line" t-on-click.stop="addLine">+ Add an expense</button>
+                    </div>
+
+                    <div class="so-footer">
+                        <div class="so-notes-wrap">
+                            <p class="exp-note">
+                                SST paid on an expense is not recoverable input tax, so the full
+                                tax-inclusive amount is charged to the expense account.
+                            </p>
+                        </div>
+                        <div class="so-totals">
+                            <div class="so-total-row"><span class="so-total-lbl">Tax included</span>
+                                 <span class="so-total-val" t-esc="formatMoney(taxTotal)"/></div>
+                            <div class="so-total-row so-total-grand"><span class="so-total-lbl">Total</span>
+                                 <span class="so-total-val" t-esc="formatMoney(sheetTotal)"/></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Receipts. Read-only once the report leaves draft: what the
+                     approver saw is part of the record from that point on. -->
+                <AttachmentPanel model="'hr.expense.sheet'"
+                                 recordId="props.recordId"
+                                 title="'Receipts'"
+                                 readonly="!isDraft"/>
+            </t>
+        </div>
+    `;
+
+    setup() {
+        this.state = useState({ loading: true, error: '', record: {}, lines: [], deleted: [],
+                                employees: [], journals: [], accounts: [], taxes: [] });
+        this._key = 1;
+        onMounted(() => this.load());
+    }
+
+    get isNew()         { return !this.props.recordId; }
+    get isDraft()       { return this.isNew || (this.state.record.state || 'draft') === 'draft'; }
+    get isCompanyPaid() { return this.state.record.payment_mode === 'company_account'; }
+
+    get sheetTotal() { return this.state.lines.reduce((s, l) => s + this.lineTotal(l), 0); }
+    get taxTotal()   { return this.state.lines.reduce((s, l) => s + this.lineTax(l), 0); }
+
+    stepClass(s) {
+        const order = { draft: 0, submit: 1, approve: 2, post: 3, done: 4 };
+        const st = this.state.record.state || 'draft';
+        if (st === 'cancel') return s === 'draft' ? ' active' : '';
+        const cur = order[st] ?? 0, x = order[s];
+        return x === cur ? ' active' : (x < cur ? ' done' : '');
+    }
+
+    getM2oId(v) {
+        if (!v && v !== 0) return 0;
+        if (typeof v === 'number') return v;
+        if (Array.isArray(v) && v.length) return typeof v[0] === 'number' ? v[0] : 0;
+        if (typeof v === 'string') return parseInt(v) || 0;
+        return 0;
+    }
+    formatMoney(v) { return (parseFloat(v) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+    formatDate(v)  { return (!v || v === false) ? '' : String(v).substring(0, 10); }
+
+    // Mirrors the server's computation so the totals move as the user types,
+    // instead of only after a round trip.
+    lineTax(l) {
+        const base = (parseFloat(l.quantity) || 0) * (parseFloat(l.unit_amount) || 0);
+        const tax  = this.state.taxes.find(t => t.id === this.getM2oId(l.tax_id));
+        if (!tax) return 0;
+        if (tax.fixed) return tax.priceInclude ? 0 : tax.rate;
+        return tax.priceInclude ? base - (base * 100) / (100 + tax.rate)
+                                : (base * tax.rate) / 100;
+    }
+    lineTotal(l) {
+        const base = (parseFloat(l.quantity) || 0) * (parseFloat(l.unit_amount) || 0);
+        const tax  = this.state.taxes.find(t => t.id === this.getM2oId(l.tax_id));
+        return (tax && !tax.priceInclude) ? base + this.lineTax(l) : base;
+    }
+
+    async load() {
+        this.state.loading = true; this.state.error = '';
+        try {
+            const [emps, journals, accounts, taxes] = await Promise.all([
+                RpcService.call('hr.employee', 'search_read', [[]], { fields: ['id','name'], limit: 300 }).catch(() => []),
+                RpcService.call('account.journal', 'search_read', [[]], { fields: ['id','name','code'], limit: 100 }).catch(() => []),
+                RpcService.call('account.account', 'search_read', [[]], { fields: ['id','name','code'], limit: 500 }).catch(() => []),
+                RpcService.call('account.tax', 'search_read', [[]], { fields: ['id','name','amount','amount_type','price_include'], limit: 100 }).catch(() => []),
+            ]);
+            this.state.employees = (emps || []).map(e => ({ id: e.id, display: e.name }));
+            this.state.journals  = (journals || []).map(j => ({ id: j.id, display: (j.code ? j.code + ' — ' : '') + j.name }));
+            this.state.accounts  = (accounts || []).map(a => ({ id: a.id, display: (a.code ? a.code + ' ' : '') + a.name }));
+            this.state.taxes     = (taxes || []).map(t => ({
+                id: t.id, display: t.name, rate: parseFloat(t.amount) || 0,
+                fixed: t.amount_type === 'fixed', priceInclude: !!t.price_include,
+            }));
+
+            if (this.props.recordId) {
+                const r = await RpcService.call('hr.expense.sheet', 'read', [[this.props.recordId]],
+                    { fields: ['name','employee_id','date','total_amount','payment_mode','state',
+                               'journal_id','move_id','payment_move_id','note'] });
+                this.state.record = (Array.isArray(r) ? r[0] : r) || {};
+                const lines = await RpcService.call('hr.expense', 'search_read',
+                    [[['sheet_id','=',this.props.recordId]]],
+                    { fields: ['id','name','date','account_id','quantity','unit_amount',
+                               'tax_id','tax_amount','total_amount','state'], limit: 200 });
+                this.state.lines = (Array.isArray(lines) ? lines : [])
+                    .map(l => ({ _key: String(this._key++), ...l }));
+            } else {
+                this.state.record = { state: 'draft', payment_mode: 'own_account',
+                                      date: new Date().toISOString().substring(0, 10) };
+                this.state.lines  = [];
+            }
+            this.state.deleted = [];
+        } catch (e) { this.state.error = e.message || 'Failed to load the expense report'; }
+        this.state.loading = false;
+    }
+
+    onChange(e) {
+        const key = e.target.dataset.line;
+        if (key) return this.setLineField(key, e.target.dataset.lf, e.target.value);
+        const f = e.target.dataset.field;
+        if (!f) return;
+        this.state.record[f] = (f === 'employee_id' || f === 'journal_id')
+            ? (parseInt(e.target.value) || 0) : e.target.value;
+    }
+    onInput(e) {
+        const key = e.target.dataset.line;
+        if (key) return this.setLineField(key, e.target.dataset.lf, e.target.value);
+        const f = e.target.dataset.field;
+        if (f && e.target.tagName !== 'SELECT') this.state.record[f] = e.target.value;
+    }
+    setLineField(key, field, value) {
+        const l = this.state.lines.find(x => x._key === key);
+        if (!l || !field) return;
+        l[field] = (field === 'account_id' || field === 'tax_id') ? (parseInt(value) || 0) : value;
+    }
+    setDate(v) { this.state.record.date = v; }
+
+    addLine() {
+        this.state.lines.push({ _key: String(this._key++), name: '', quantity: 1, unit_amount: 0,
+                                account_id: 0, tax_id: 0,
+                                date: this.state.record.date || new Date().toISOString().substring(0, 10) });
+    }
+    removeLine(key) {
+        const i = this.state.lines.findIndex(x => x._key === key);
+        if (i < 0) return;
+        if (this.state.lines[i].id) this.state.deleted.push(this.state.lines[i].id);
+        this.state.lines.splice(i, 1);
+    }
+
+    _vals() {
+        const r = this.state.record;
+        return {
+            name:         r.name || '',
+            employee_id:  this.getM2oId(r.employee_id) || false,
+            date:         r.date || false,
+            payment_mode: r.payment_mode || 'own_account',
+            journal_id:   this.getM2oId(r.journal_id) || false,
+            note:         r.note === false ? '' : (r.note || ''),
+        };
+    }
+
+    async syncLines(sheetId) {
+        if (this.state.deleted.length) {
+            await RpcService.call('hr.expense', 'unlink', [this.state.deleted], {});
+            this.state.deleted = [];
+        }
+        for (const l of this.state.lines) {
+            const vals = {
+                sheet_id:     sheetId,
+                name:         l.name || 'Expense',
+                date:         l.date || false,
+                employee_id:  this.getM2oId(this.state.record.employee_id) || false,
+                account_id:   this.getM2oId(l.account_id) || false,
+                quantity:     parseFloat(l.quantity) || 0,
+                unit_amount:  parseFloat(l.unit_amount) || 0,
+                tax_id:       this.getM2oId(l.tax_id) || false,
+                payment_mode: this.state.record.payment_mode || 'own_account',
+            };
+            if (!l.id) await RpcService.call('hr.expense', 'create', [vals], {});
+            else       await RpcService.call('hr.expense', 'write', [[l.id], vals], {});
+        }
+    }
+
+    async onCreate() {
+        try {
+            const id = await RpcService.call('hr.expense.sheet', 'create', [this._vals()], {});
+            await this.syncLines(id);
+            this.props.onBack();
+        } catch (e) { this.state.error = e.message || String(e); }
+    }
+    async onSave() {
+        try {
+            await RpcService.call('hr.expense.sheet', 'write', [[this.props.recordId], this._vals()], {});
+            await this.syncLines(this.props.recordId);
+            await this.load();
+        } catch (e) { alert('Save failed: ' + (e.message || e)); }
+    }
+    async onDelete() {
+        if (!confirm('Delete this expense report and its expenses?')) return;
+        try {
+            const ids = this.state.lines.filter(l => l.id).map(l => l.id);
+            if (ids.length) await RpcService.call('hr.expense', 'unlink', [ids], {});
+            await RpcService.call('hr.expense.sheet', 'unlink', [[this.props.recordId]], {});
+            this.props.onBack();
+        } catch (e) { alert(e.message || e); }
+    }
+
+    // Unsaved line edits are flushed before a workflow step, so what gets
+    // approved is what is on screen.
+    async _wf(method, confirmMsg) {
+        if (confirmMsg && !confirm(confirmMsg)) return;
+        try {
+            if (this.isDraft) { await this.syncLines(this.props.recordId); }
+            await RpcService.call('hr.expense.sheet', method, [[this.props.recordId]], {});
+            await this.load();
+        } catch (e) { alert(e.message || e); }
+    }
+    async onSubmit()  { await this._wf('action_submit'); }
+    async onApprove() { await this._wf('action_approve'); }
+    async onRefuse()  { await this._wf('action_refuse', 'Refuse this expense report?'); }
+    async onDraft()   { await this._wf('action_reset_draft'); }
+    async onPost()    { await this._wf('action_post', 'Post the journal entry for this expense report?'); }
+    async onPay()     { await this._wf('action_register_payment', 'Register the reimbursement payment?'); }
+
+    onOpenMove()    { const id = this.getM2oId(this.state.record.move_id);         if (id) window.open('/report/html/account.move/' + id, '_blank'); }
+    onOpenPayment() { const id = this.getM2oId(this.state.record.payment_move_id); if (id) window.open('/report/html/account.move/' + id, '_blank'); }
+    onBack() { this.props.onBack(); }
+}
+
+// ----------------------------------------------------------------
 // CUSTOM_VIEWS — models that replace ActionView entirely
 //
 // These take over the whole action regardless of list/form mode, so they
@@ -8993,8 +11592,24 @@ const CUSTOM_VIEWS = {
     'rental.demo.data':   RentalDemoData,
     // Custom screens for the new modules (components loaded by index.html).
     'barcode.scan':       BarcodeScan,
-    'part.search':        PartSearch,
     'bank.reconcile':     BankReconcile,
+    'company.admin':      CompanyAdmin,
+    'db.backups':         DbBackups,
+    'db.studio':          DbStudio,
+    'part.lookup':        PartLookup,
+    'part.catalog':       PartCatalog,
+    // Categories are a hierarchy, so the screen is a tree rather than a flat
+    // list with a "Parent" column (CategoryTree.js).
+    'product.category':   CategoryTree,
+    'project.board':      TaskBoard,
+    'project.timegrid':   TimesheetGrid,
+    'help.center':        HelpCenter,
+    'bom.editor':         BomEditor,
+    'account.report':     AccountReports,
+    'account.dashboard':  AccountDashboard,
+    'account.settings':   AccountSettings,
+    // Settings -> AI Agent (docs/110). The key is write-only; see AiSettings.js.
+    'ir.ai.settings':     AiSettings,
 };
 
 // ----------------------------------------------------------------
@@ -9010,7 +11625,34 @@ class ActionView extends Component {
                 <t t-component="customView"/>
             </t>
             <t t-elif="state.mode === 'list'">
-                <t t-if="isCategoryModel">
+                <!-- docs/095: the generic view switcher. Every action used to be
+                     list-or-form; these four are driven by read_group and work on
+                     any model, so they are offered everywhere rather than being
+                     configured per action. -->
+                <div class="view-switch-bar">
+                    <span class="rv-switch">
+                        <button t-foreach="altViews" t-as="v" t-key="v.id"
+                                t-attf-class="{{ state.altView === v.id ? 'active' : '' }}"
+                                t-att-title="v.title"
+                                t-on-click="() => this.setAltView(v.id)" t-esc="v.label"/>
+                    </span>
+                </div>
+                <t t-if="state.altView === 'grouped'">
+                    <GroupedListView action="currentAction" onOpenForm.bind="openForm"/>
+                </t>
+                <t t-elif="state.altView === 'kanban'">
+                    <KanbanView action="currentAction" onOpenForm.bind="openForm"/>
+                </t>
+                <t t-elif="state.altView === 'pivot'">
+                    <PivotView action="currentAction"/>
+                </t>
+                <t t-elif="state.altView === 'graph'">
+                    <GraphView action="currentAction"/>
+                </t>
+                <t t-elif="state.altView === 'calendar'">
+                    <CalendarView action="currentAction" onOpenForm.bind="openForm"/>
+                </t>
+                <t t-elif="isCategoryModel">
                     <ProductCategoryListView/>
                 </t>
                 <t t-elif="isProductModel">
@@ -9102,6 +11744,22 @@ class ActionView extends Component {
                     <UserFormView recordId="state.recordId"
                                   onBack.bind="backToList"/>
                 </t>
+                <t t-elif="isAssetModel">
+                    <AssetFormView recordId="state.recordId"
+                                   onBack.bind="backToList"/>
+                </t>
+                <t t-elif="isBudgetModel">
+                    <BudgetFormView recordId="state.recordId"
+                                    onBack.bind="backToList"/>
+                </t>
+                <t t-elif="isBankAccountModel">
+                    <BankAccountFormView recordId="state.recordId"
+                                         onBack.bind="backToList"/>
+                </t>
+                <t t-elif="isExpenseSheetModel">
+                    <ExpenseSheetFormView recordId="state.recordId"
+                                          onBack.bind="backToList"/>
+                </t>
                 <t t-else="">
                     <FormView action="currentAction"
                               viewDef="state.formView"
@@ -9112,7 +11770,22 @@ class ActionView extends Component {
         </div>
     `;
 
-    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor, PortalUserListView, UserFormView, GroupsListView, ProductCategoryTree, ProductCategoryListView };
+    static components = { ListView, FormView, SaleOrderFormView, PurchaseOrderFormView, InvoiceFormView, TransferFormView, LocationFormView, WarehouseFormView, ProductFormView, BomFormView, ContactFormView, ReportSettingsView, ERPSettingsView, DocumentLayoutEditor, PortalUserListView, UserFormView, GroupsListView, ProductCategoryTree, ProductCategoryListView, AssetFormView, BudgetFormView, BankAccountFormView, ExpenseSheetFormView,
+        // docs/095 — generic views, loaded from components/RecordViews.js
+        GroupedListView, KanbanView, PivotView, GraphView, CalendarView };
+
+    // docs/095 — the alternate views offered on every list.
+    get altViews() {
+        return [
+            { id: 'list',     label: 'List',     title: 'The plain list' },
+            { id: 'grouped',  label: 'Grouped',  title: 'Group rows and subtotal them' },
+            { id: 'kanban',   label: 'Kanban',   title: 'A card per record, a column per group' },
+            { id: 'pivot',    label: 'Pivot',    title: 'Cross-tabulate two fields' },
+            { id: 'graph',    label: 'Graph',    title: 'Bar, line or pie' },
+            { id: 'calendar', label: 'Calendar', title: 'Place records on a month grid' },
+        ];
+    }
+    setAltView(v) { this.state.altView = v; }
 
     // Use overrideAction when navigateTo() has been called, else fall back to props.action
     get currentAction()          { return this.state.overrideAction || this.props.action; }
@@ -9124,6 +11797,10 @@ class ActionView extends Component {
     get isStockLocationModel()   { return this.currentAction.res_model === 'stock.location'; }
     get isStockWarehouseModel()  { return this.currentAction.res_model === 'stock.warehouse'; }
     get isProductModel()         { return this.currentAction.res_model === 'product.product'; }
+    get isAssetModel()           { return this.currentAction.res_model === 'account.asset'; }
+    get isBudgetModel()          { return this.currentAction.res_model === 'account.budget'; }
+    get isBankAccountModel()     { return this.currentAction.res_model === 'account.bank.account'; }
+    get isExpenseSheetModel()    { return this.currentAction.res_model === 'hr.expense.sheet'; }
     get isBomModel()             { return this.currentAction.res_model === 'mrp.bom'; }
     get isPartnerModel()         { return this.currentAction.res_model === 'res.partner'; }
     get isUsersModel()           { return this.currentAction.res_model === 'res.users'; }
@@ -9195,6 +11872,7 @@ class ActionView extends Component {
         this.state = useState({
             loading:            true,
             mode:               'list',
+            altView:            'list',   // docs/095 — list | grouped | kanban | pivot | graph | calendar
             recordId:           null,
             listView:           null,
             formView:           null,
@@ -9213,6 +11891,12 @@ class ActionView extends Component {
             const model = this.props.action.res_model;
             const result = await RpcService.getViews(model, [[false, 'list'], [false, 'form']]);
             this.state.listView = result.views?.list || null;
+            // Arrived here by clicking a record elsewhere: go straight to its
+            // form rather than dropping the user on a list they must search.
+            if (this.props.initialRecordId) {
+                this.state.recordId = this.props.initialRecordId;
+                this.state.mode     = 'form';
+            }
             this.state.formView = result.views?.form || null;
             // Load all categories for the product browser tree
             if (model === 'product.product') {
@@ -9249,6 +11933,10 @@ class ActionView extends Component {
             this.state.overrideAction = { res_model: model, domain: domain || [] };
             this.state.recordId       = null;
             this.state.mode           = 'list';
+            // docs/095 — land on the plain list. Carrying, say, a pivot across
+            // to a different model would open on a cross-tab of fields that
+            // model may not have.
+            this.state.altView        = 'list';
         } catch (e) {
             console.error('navigateTo failed:', e);
         } finally {
@@ -9264,7 +11952,7 @@ class HomeScreen extends Component {
     static template = xml`
         <div class="home-screen">
             <div class="home-header">
-                <span class="home-title">odoo-cpp</span>
+                <span class="home-title">c-erp</span>
                 <UserMenu/>
             </div>
             <div class="app-grid">
@@ -9395,7 +12083,8 @@ class MainApp extends Component {
                         <div class="loading">Loading…</div>
                     </t>
                     <t t-elif="state.action">
-                        <ActionView action="state.action" t-key="state.action.id"/>
+                        <ActionView action="state.action" initialRecordId="state.pendingRecordId"
+                                    t-key="state.action.id + ':' + (state.pendingRecordId || 0)"/>
                     </t>
                     <t t-else="">
                         <div class="welcome">
@@ -9420,8 +12109,49 @@ class MainApp extends Component {
             activeMenuId:  null,
             action:        null,
             loadingAction: false,
+            pendingRecordId: null,
         });
-        onMounted(() => this.loadMenus());
+        onMounted(() => {
+            this.loadMenus();
+            // The one place a child component can ask the shell to navigate.
+            //
+            // There is no hash router in this app — screens are reached by
+            // clicking menus — so `location.hash = '#action=...'` did nothing at
+            // all. Three screens used it to open a record and silently failed.
+            // A registered hook is honest about the coupling and works.
+            window.ErpNav = {
+                openRecord: (model, id) => this.openRecord(model, id),
+                available: true,
+            };
+        });
+        owl.onWillUnmount(() => { if (window.ErpNav) delete window.ErpNav; });
+    }
+
+    /**
+     * Open a record in its form view, from anywhere.
+     *
+     * Finds an action for the model rather than requiring the caller to know an
+     * action id — a component that shows products should not have to know which
+     * menu entry happens to point at them.
+     */
+    async openRecord(model, recordId) {
+        if (!model) return false;
+        try {
+            const acts = await RpcService.call('ir.actions.act_window', 'search_read',
+                [[['res_model', '=', model]]], { fields: ['id', 'name'], limit: 1 });
+            if (!acts || !acts.length) {
+                console.warn('openRecord: no action for model', model);
+                return false;
+            }
+            const action = await RpcService.loadAction(acts[0].id);
+            this.state.mode            = 'app';
+            this.state.action          = action;
+            this.state.pendingRecordId = recordId || null;
+            return true;
+        } catch (e) {
+            console.error('openRecord failed:', e);
+            return false;
+        }
     }
 
     async loadMenus() {
@@ -9463,13 +12193,15 @@ class MainApp extends Component {
     }
 
     goHome() {
-        this.state.mode      = 'home';
-        this.state.activeApp = null;
-        this.state.action    = null;
+        this.state.mode            = 'home';
+        this.state.activeApp       = null;
+        this.state.action          = null;
+        this.state.pendingRecordId = null;
     }
 
     async activateLeaf(leaf) {
-        this.state.activeMenuId = leaf.id;
+        this.state.activeMenuId    = leaf.id;
+        this.state.pendingRecordId = null;
         if (!leaf.action_id) return;
 
         this.state.loadingAction = true;

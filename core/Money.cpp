@@ -9,7 +9,7 @@
 #include <limits>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 using infrastructure::ValidationError;
 
@@ -258,4 +258,4 @@ int64_t Money::impliedRate(const Money& received) const {
     return clampToInt64(divRoundHalfAway(num, u_), "implied rate");
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

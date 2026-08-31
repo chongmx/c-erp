@@ -35,7 +35,7 @@
 //   cost of gaplessness and it is the right trade for document numbers,
 //   which are low-frequency.
 //
-// PREFIX PLACEHOLDERS (Odoo convention)
+// PREFIX PLACEHOLDERS (the reference ERP convention)
 //   %(year)s %(y)s %(month)s %(day)s  — e.g. "INV/%(year)s/"
 // ============================================================
 #include <memory>
@@ -47,9 +47,9 @@
 // plain class — declaring that keeps <pqxx/pqxx> out of this header
 // (PERF-E) while still accepting a pqxx::work by reference.
 namespace pqxx { class transaction_base; }
-namespace odoo::infrastructure { class DbConnection; }
+namespace cerp::infrastructure { class DbConnection; }
 
-namespace odoo::core {
+namespace cerp::core {
 
 class IrSequence {
 public:
@@ -104,4 +104,4 @@ private:
     static std::unique_ptr<IrSequence> s_instance_;
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

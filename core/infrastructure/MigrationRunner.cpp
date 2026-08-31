@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <trantor/utils/Logger.h>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 MigrationRunner::MigrationRunner(std::shared_ptr<DbConnection> db)
     : db_(std::move(db)) {}
@@ -83,4 +83,4 @@ void MigrationRunner::runPending() {
         LOG_INFO << "[migrations] Schema is up to date.";
 }
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

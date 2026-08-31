@@ -4,7 +4,7 @@
 //
 // Maps a stable "module.name" xml_id to a concrete (model, res_id), so a
 // seeded record can be referenced by a name that never changes even as
-// serial ids do. The standard Odoo mechanism; a number of later features
+// serial ids do. The standard the reference ERP mechanism; a number of later features
 // (data export, module uninstall, referencing config rows) assume it.
 //
 // All operations take the CALLER'S transaction: an xml_id and the record
@@ -15,7 +15,7 @@
 
 namespace pqxx { class transaction_base; }
 
-namespace odoo::core {
+namespace cerp::core {
 
 struct XmlRef {
     std::string model;
@@ -54,4 +54,4 @@ public:
                                const std::string& model, int resId);
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

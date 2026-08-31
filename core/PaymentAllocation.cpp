@@ -7,7 +7,7 @@
 #include <pqxx/pqxx>
 #include <trantor/utils/Logger.h>
 
-namespace odoo::core {
+namespace cerp::core {
 
 using infrastructure::ValidationError;
 
@@ -176,4 +176,4 @@ void PaymentAllocation::unallocate(pqxx::transaction_base& txn, int paymentId) {
         refreshResidual(txn, r[0].as<int>());
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

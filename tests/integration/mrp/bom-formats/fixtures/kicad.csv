@@ -1,0 +1,6 @@
+Reference,Qty,Value,Footprint,Datasheet,Description,DNP
+"C1,C2,C5",3,100nF,Capacitor_SMD:C_0603_1608Metric,~,Unpolarized capacitor,
+R1-R4,4,4k7,Resistor_SMD:R_0603_1608Metric,~,Resistor,
+L1,1,1uH,Inductor_SMD:L_0603_1608Metric,~,Inductor,
+FB1,1,220R,Inductor_SMD:L_0603_1608Metric,~,Ferrite bead,
+TP1,1,TestPoint,TestPoint:TestPoint_Pad_D1.0mm,~,Test point,DNP

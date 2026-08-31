@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 /**
  * @brief Parse a CSV string into a 2-D vector of strings.
@@ -134,4 +134,4 @@ inline std::string buildCsv(const std::vector<std::vector<std::string>>& rows) {
     return out;
 }
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

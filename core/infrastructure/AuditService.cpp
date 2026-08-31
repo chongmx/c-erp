@@ -8,7 +8,7 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 // ── Static members ────────────────────────────────────────────
 std::once_flag                AuditService::s_once_;
@@ -67,4 +67,4 @@ void AuditService::log(const std::string&      model,
     }
 }
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

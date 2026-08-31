@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::stock {
+namespace cerp::modules::stock {
 
 class StockModule : public core::IModule {
 public:
@@ -43,4 +43,4 @@ private:
     void seedMenus_();
 };
 
-} // namespace odoo::modules::stock
+} // namespace cerp::modules::stock

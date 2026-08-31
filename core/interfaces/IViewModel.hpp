@@ -6,15 +6,15 @@
 #include <vector>
 #include <unordered_map>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // CallKwArgs — parsed JSON-RPC call_kw payload
 // ============================================================
 /**
- * @brief Structured representation of an Odoo JSON-RPC call_kw request.
+ * @brief Structured representation of an the reference ERP JSON-RPC call_kw request.
  *
- * Odoo's frontend sends:
+ * the reference ERP's frontend sends:
  * @code
  * {
  *   "model":  "res.partner",
@@ -28,7 +28,7 @@ namespace odoo::core {
  * to the matching ViewModel's callKw().
  */
 struct CallKwArgs {
-    std::string   model;   ///< Odoo model name, e.g. "res.partner"
+    std::string   model;   ///< the reference ERP model name, e.g. "res.partner"
     std::string   method;  ///< Method name, e.g. "search_read", "create"
     nlohmann::json args;   ///< Positional arguments (JSON array)
     nlohmann::json kwargs; ///< Keyword arguments (JSON object)
@@ -143,7 +143,7 @@ struct CallKwArgs {
  * ViewModels own:
  *   - Dispatching method names to typed handler functions.
  *   - Translating raw JSON args/kwargs into typed service calls.
- *   - Formatting service results into Odoo-compatible JSON responses.
+ *   - Formatting service results into the reference ERP-compatible JSON responses.
  *
  * They do NOT own:
  *   - Business logic (delegate to IService).
@@ -164,7 +164,7 @@ public:
     // ----------------------------------------------------------
 
     /**
-     * @brief Odoo model name this ViewModel handles, e.g. "res.partner".
+     * @brief the reference ERP model name this ViewModel handles, e.g. "res.partner".
      * Must match the key used at ViewModelFactory registration.
      */
     virtual std::string modelName() const = 0;
@@ -174,14 +174,14 @@ public:
     // ----------------------------------------------------------
 
     /**
-     * @brief Dispatch an Odoo JSON-RPC call_kw request.
+     * @brief Dispatch an the reference ERP JSON-RPC call_kw request.
      *
      * The dispatcher calls this for every request whose model name matches
      * this ViewModel. Implementations typically delegate to a method dispatch
      * table built by BaseViewModel::REGISTER_METHOD.
      *
      * @param call  Parsed call_kw arguments.
-     * @returns     JSON result in Odoo wire format.
+     * @returns     JSON result in the reference ERP wire format.
      * @throws      std::runtime_error if method is unknown or arguments invalid.
      */
     virtual nlohmann::json callKw(const CallKwArgs& call) = 0;
@@ -218,4 +218,4 @@ public:
     }
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

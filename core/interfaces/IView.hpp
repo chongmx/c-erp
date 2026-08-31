@@ -3,13 +3,13 @@
 #include <string>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // ViewType constants
 // ============================================================
 /**
- * @brief Standard Odoo view type strings.
+ * @brief Standard the reference ERP view type strings.
  *
  * Use these constants as the viewType argument to ViewFactory::getView()
  * and as the suffix in ViewFactory registration keys.
@@ -21,7 +21,7 @@ namespace ViewType {
     inline constexpr const char* Form   = "form";
     inline constexpr const char* List   = "list";
     inline constexpr const char* Kanban = "kanban";
-    inline constexpr const char* Tree   = "tree";   // alias for list in older Odoo
+    inline constexpr const char* Tree   = "tree";   // alias for list in older the reference ERP
     inline constexpr const char* Search = "search";
     inline constexpr const char* Graph  = "graph";
     inline constexpr const char* Pivot  = "pivot";
@@ -38,7 +38,7 @@ namespace ViewType {
  *
  * Views are pure JSON shape descriptors. They receive record data that
  * has already been fetched by the ViewModel/Service layer and transform
- * it into an Odoo-compatible JSON payload for the OWL/JS frontend.
+ * it into an the reference ERP-compatible JSON payload for the OWL/JS frontend.
  *
  * Design decisions:
  *   - NO template parameter. Views speak nlohmann::json at every boundary,
@@ -76,7 +76,7 @@ public:
     virtual std::string viewName() const = 0;
 
     /**
-     * @brief Odoo model name this view belongs to, e.g. "res.partner".
+     * @brief the reference ERP model name this view belongs to, e.g. "res.partner".
      * Derived from viewName() by default; override if key format differs.
      */
     virtual std::string modelName() const {
@@ -102,7 +102,7 @@ public:
     /**
      * @brief Return the view's XML architecture as a JSON string.
      *
-     * Odoo's frontend expects a "arch" field containing the view XML
+     * the reference ERP's frontend expects a "arch" field containing the view XML
      * (e.g. <form><field name="name"/>...</form>).
      * This method returns the raw XML string that will be placed in arch.
      *
@@ -114,7 +114,7 @@ public:
     /**
      * @brief Return field metadata for this view's visible fields.
      *
-     * Format mirrors Odoo's fields_get() response:
+     * Format mirrors the reference ERP's fields_get() response:
      * @code
      * {
      *   "name":  { "type": "char",    "string": "Name",  "required": true },
@@ -217,4 +217,4 @@ public:
     }
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

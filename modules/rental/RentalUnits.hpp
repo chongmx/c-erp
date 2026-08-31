@@ -19,7 +19,7 @@
 
 namespace pqxx { class transaction_base; }
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
 struct EventCtx;
 
@@ -68,4 +68,4 @@ public:
                                  const EventCtx& ctx);
 };
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

@@ -7,15 +7,15 @@
 #include <variant>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // Domain
 // ============================================================
 /**
- * @brief Represents an Odoo domain expression as a typed C++ value.
+ * @brief Represents an the reference ERP domain expression as a typed C++ value.
  *
- * An Odoo domain is a JSON array of leaves and logical operators:
+ * An the reference ERP domain is a JSON array of leaves and logical operators:
  * @code
  *   [["active","=",true], "|", ["name","ilike","acme"], ["email","ilike","acme"]]
  * @endcode
@@ -24,7 +24,7 @@ namespace odoo::core {
  *   - domainFromJson()   — parse a JSON array into a Domain
  *   - toSql()           — compile to a parameterised WHERE clause
  *
- * The SQL compiler covers the operators Odoo's OWL frontend commonly sends.
+ * The SQL compiler covers the operators the reference ERP's OWL frontend commonly sends.
  * Unsupported operators throw std::runtime_error at compile time, not silently.
  */
 
@@ -120,9 +120,26 @@ public:
      * `like 'ZZZZZ'` -> 0 rows. See verify_domain_field_allowlist.sh.
      */
     SqlResult toSql(const std::set<std::string>* allowed) const {
+        return toSql(allowed, std::string{});
+    }
+
+    /**
+     * Compile with every column qualified by a table ALIAS.
+     *
+     * Needed wherever the SELECT joins more than one table: an unqualified
+     * `state = $1` is ambiguous the moment stock_move is joined to
+     * stock_picking, and PostgreSQL rejects the whole query. The symptom is a
+     * masked "internal error" on any FILTERED read while the unfiltered one
+     * works perfectly -- which is how it survived, because nothing filters in
+     * a smoke test. Found by the 08-warehouse journey, against
+     * Inventory -> Reporting -> Moves History.
+     *
+     * The alias is the caller's own literal (e.g. "sm"), never user input.
+     */
+    SqlResult toSql(const std::set<std::string>* allowed, const std::string& alias) const {
         if (isEmpty()) return {"TRUE", {}};
         SqlResult r;
-        r.clause = compileNode_(root_, r.params, allowed);
+        r.clause = compileNode_(root_, r.params, allowed, alias);
         return r;
     }
 
@@ -131,17 +148,18 @@ private:
 
     static std::string compileNode_(const DomainNode&           node,
                                     std::vector<std::string>&    params,
-                                    const std::set<std::string>* allowed) {
+                                    const std::set<std::string>* allowed,
+                                    const std::string&           alias = {}) {
         switch (node.kind) {
             case DomainNode::Kind::Leaf:
-                return compileLeaf_(node.leaf, params, allowed);
+                return compileLeaf_(node.leaf, params, allowed, alias);
 
             case DomainNode::Kind::And: {
                 if (node.children.empty()) return "TRUE";
                 std::string s = "(";
                 for (std::size_t i = 0; i < node.children.size(); ++i) {
                     if (i) s += " AND ";
-                    s += compileNode_(node.children[i], params, allowed);
+                    s += compileNode_(node.children[i], params, allowed, alias);
                 }
                 return s + ")";
             }
@@ -151,21 +169,25 @@ private:
                 std::string s = "(";
                 for (std::size_t i = 0; i < node.children.size(); ++i) {
                     if (i) s += " OR ";
-                    s += compileNode_(node.children[i], params, allowed);
+                    s += compileNode_(node.children[i], params, allowed, alias);
                 }
                 return s + ")";
             }
 
             case DomainNode::Kind::Not:
-                return "(NOT " + compileNode_(node.children[0], params, allowed) + ")";
+                return "(NOT " + compileNode_(node.children[0], params, allowed, alias) + ")";
         }
         return "TRUE";
     }
 
     static std::string compileLeaf_(const DomainLeaf&            leaf,
                                     std::vector<std::string>&    params,
-                                    const std::set<std::string>* allowed) {
-        const std::string col = sanitizeColumn_(leaf.field, allowed);
+                                    const std::set<std::string>* allowed,
+                                    const std::string&           alias = {}) {
+        // Qualified AFTER the allowlist check, so an alias can never become a
+        // way of smuggling an unregistered column past it.
+        const std::string bare = sanitizeColumn_(leaf.field, allowed);
+        const std::string col  = alias.empty() ? bare : (alias + "." + bare);
         const std::string op  = leaf.op;
 
         auto placeholder = [&]() -> std::string {
@@ -250,12 +272,12 @@ private:
 };
 
 // ============================================================
-// domainFromJson — parse a raw Odoo domain JSON array
+// domainFromJson — parse a raw the reference ERP domain JSON array
 // ============================================================
 /**
  * @brief Parse a JSON domain expression into a typed Domain.
  *
- * Implements the standard Odoo domain stack-based parser:
+ * Implements the standard the reference ERP domain stack-based parser:
  *   - Strings "&", "|", "!" are logical operators.
  *   - Arrays of 3 elements are leaves: [field, op, value].
  *   - Default implicit AND between all top-level leaves.
@@ -267,7 +289,7 @@ inline Domain domainFromJson(const nlohmann::json& j) {
     if (!j.is_array() || j.empty())
         return Domain{};
 
-    // Stack-based Odoo domain parser
+    // Stack-based the reference ERP domain parser
     // Each element is either an operator string or a 3-element leaf array.
     std::vector<DomainNode> stack;
 
@@ -317,4 +339,4 @@ inline Domain domainFromJson(const nlohmann::json& j) {
     return Domain{DomainNode::makeAnd(std::move(stack))};
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

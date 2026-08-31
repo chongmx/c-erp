@@ -1,0 +1,6 @@
+group=integration
+order=40
+scenario=baseline
+needs=none
+provides=none
+timeout=300

@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::auth {
+namespace cerp::modules::auth {
 
 // ================================================================
 // AuthModule
@@ -20,7 +20,7 @@ namespace odoo::modules::auth {
  *
  * Usage in main():
  * @code
- *   container->addModule<odoo::modules::auth::AuthModule>();
+ *   container->addModule<cerp::modules::auth::AuthModule>();
  * @endcode
  */
 class AuthModule : public core::IModule {
@@ -57,6 +57,7 @@ private:
     void seedGroups_();
     void seedGroupPermissions_();
     void seedAdminUser_();
+    void migrateCompanyIdentity_();   ///< docs/094 — config params -> res_company
 };
 
-} // namespace odoo::modules::auth
+} // namespace cerp::modules::auth

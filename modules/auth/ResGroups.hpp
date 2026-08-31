@@ -2,7 +2,7 @@
 #include "BaseModel.hpp"
 #include "FieldRegistry.hpp"
 
-namespace odoo::modules::auth {
+namespace cerp::modules::auth {
 
 // ================================================================
 // ResGroups — res.groups
@@ -55,4 +55,4 @@ public:
     }
 };
 
-} // namespace odoo::modules::auth
+} // namespace cerp::modules::auth

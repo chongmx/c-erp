@@ -11,14 +11,14 @@
 // filename from the request never touches the path — no traversal is
 // possible because the path is derived, not supplied.
 //
-// This mirrors Odoo's filestore layout and the split the existing
+// This mirrors the reference ERP's filestore layout and the split the existing
 // payment_proof table already uses: metadata in the DB, bytes on disk,
 // chosen over a bytea column so a 20 MB datasheet does not enter every
 // row SELECT and every pg_dump.
 // =============================================================
 #include <string>
 
-namespace odoo::core {
+namespace cerp::core {
 
 struct StoredFile {
     std::string checksum;    ///< sha256 hex of the content
@@ -54,4 +54,4 @@ public:
     static std::string sha256Hex(const std::string& bytes);
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

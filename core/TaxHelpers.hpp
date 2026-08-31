@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 /**
  * @brief Load tax definitions for a JSON id array, in sequence order.
@@ -92,4 +92,4 @@ inline void applyLineTaxes(pqxx::transaction_base& txn,
     vals["price_total"]    = res.totalIncluded.toJson();
 }
 
-} // namespace odoo::core
+} // namespace cerp::core

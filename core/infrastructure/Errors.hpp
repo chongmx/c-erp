@@ -1,7 +1,7 @@
 #pragma once
 #include <stdexcept>
 
-namespace odoo::infrastructure {
+namespace cerp::infrastructure {
 
 /**
  * @brief Thrown when an authenticated user lacks permission for the requested operation.
@@ -61,7 +61,7 @@ class PoolExhaustedException : public std::runtime_error {
  *        match the client's expected value (another user saved first).
  *
  * Caught by JsonRpcDispatcher to return a 409-coded JSON-RPC error
- * (error.data.name = "odoo.exceptions.ConcurrencyConflict") so the frontend
+ * (error.data.name = "cerp.exceptions.ConcurrencyConflict") so the frontend
  * can distinguish it from generic failures and show a conflict banner.
  *
  * Only raised when the caller supplies __expected_write_date in the values
@@ -71,4 +71,4 @@ class ConcurrencyConflictException : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
-} // namespace odoo::infrastructure
+} // namespace cerp::infrastructure

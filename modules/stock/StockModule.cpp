@@ -26,6 +26,7 @@
 #include "IModule.hpp"
 #include "Factories.hpp"
 #include "BaseModel.hpp"
+#include "RecordRuleSql.hpp"
 #include "IrSequence.hpp"
 #include "IrCron.hpp"
 #include "StockQuant.hpp"
@@ -44,7 +45,7 @@
 #include <vector>
 #include <cmath>
 
-namespace odoo::modules::stock {
+namespace cerp::modules::stock {
 
 // Parses a Many2one field that may arrive as int, string "1", or [1,"Name"] array.
 static int parseM2o(const nlohmann::json& j, const std::string& key) {
@@ -56,8 +57,8 @@ static int parseM2o(const nlohmann::json& j, const std::string& key) {
     return 0;
 }
 
-using namespace odoo::core;
-using namespace odoo::infrastructure;
+using namespace cerp::core;
+using namespace cerp::infrastructure;
 
 // ================================================================
 // 1. MODELS
@@ -269,6 +270,7 @@ public:
     int         locationDestId = 0;
     int         companyId      = 0;
     std::string origin;
+    int         lotId          = 0;   // stock.production.lot; 0 = untracked
 
     explicit StockMove(std::shared_ptr<DbConnection> db)
         : BaseModel<StockMove>(std::move(db)) {}
@@ -285,6 +287,10 @@ public:
         fieldRegistry_.add({"location_dest_id", FieldType::Many2one,"To",               true,  false, true,  false, "stock.location"});
         fieldRegistry_.add({"company_id",       FieldType::Many2one,"Company",           false, false, true,  false, "res.company"});
         fieldRegistry_.add({"origin",           FieldType::Char,    "Source Document"});
+        // Validation already enforces that a tracked product carries a lot; the
+        // field has to be registered for the transfer form to be able to set one
+        // — BaseModel::write skips any key the registry does not know, silently.
+        fieldRegistry_.add({"lot_id",           FieldType::Many2one,"Lot/Serial",        false, false, true,  false, "stock.production.lot"});
         fieldRegistry_.setPrecision(core::DecimalPrecision::kStock,
                                     {"product_uom_qty", "quantity"});
         fieldRegistry_.markScaled({"product_uom_qty", "quantity"});   // P2: migration 940
@@ -302,6 +308,7 @@ public:
         j["location_dest_id"]= locationDestId > 0 ? nlohmann::json(locationDestId) : nlohmann::json(false);
         j["company_id"]      = companyId      > 0 ? nlohmann::json(companyId)      : nlohmann::json(false);
         j["origin"]          = origin.empty() ? nlohmann::json(false) : nlohmann::json(origin);
+        j["lot_id"]          = lotId          > 0 ? nlohmann::json(lotId)          : nlohmann::json(false);
     }
 
     void deserializeFields(const nlohmann::json& j) override {
@@ -316,6 +323,8 @@ public:
         if (const int v = parseM2o(j, "location_id"))      locationId     = v;
         if (const int v = parseM2o(j, "location_dest_id")) locationDestId = v;
         if (const int v = parseM2o(j, "company_id"))       companyId      = v;
+        // Explicit false clears the lot, so this cannot use the truthy shortcut.
+        if (j.contains("lot_id")) lotId = parseM2o(j, "lot_id");
     }
 
     std::vector<std::string> validate() const override {
@@ -440,7 +449,8 @@ private:
             "id","name","picking_type_id","state","partner_id","location_id",
             "location_dest_id","scheduled_date","origin","company_id",
             "sale_id","purchase_id","user_id"};
-        auto [where, paramVec] = domainFromJson(call.domain()).toSql(&kCols);
+        // joins stock_location twice and res_partner: name and state are ambiguous unqualified
+        auto [where, paramVec] = domainFromJson(call.domain()).toSql(&kCols, "sp");
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
@@ -465,17 +475,17 @@ private:
             LEFT JOIN res_partner    rp     ON rp.id     = sp.partner_id
             WHERE )";
         sql += where;
+        // S-30: this custom read bypasses BaseModel, so enforce ir.rule here
+        // (record-rule bypass fix, 071 §1.2) — as an id-subquery, alias-safe.
+        pqxx::params p; for (auto& s : paramVec) p.append(s);
+        core::appendRecordRuleSubquery(sql, p, "stock.picking", core::RuleOp::Read,
+                                       extractContext_(call), "stock_picking", "sp.id",
+                                       static_cast<int>(paramVec.size()));
         sql += " ORDER BY sp.id DESC";
         sql += " LIMIT " + std::to_string(lim);
         if (off > 0) sql += " OFFSET " + std::to_string(off);
 
-        pqxx::result res;
-        if (paramVec.empty()) {
-            res = txn.exec(sql);
-        } else {
-            pqxx::params p; for (auto& s : paramVec) p.append(s);
-            res = txn.exec(sql, p);
-        }
+        pqxx::result res = txn.exec(sql, p);
 
         auto m2o = [](const pqxx::row& row,
                       const char* idCol, const char* nameCol) -> nlohmann::json {
@@ -616,7 +626,7 @@ private:
                 "UPDATE stock_move SET state='confirmed' WHERE picking_id=$1 AND state='draft'",
                 pqxx::params{id});
 
-            odoo::modules::mail::postLog(txn, "stock.picking", id, 0,
+            cerp::modules::mail::postLog(txn, "stock.picking", id, 0,
                 "Transfer confirmed.", "log_note");
             txn.commit();
         }
@@ -709,7 +719,8 @@ private:
             auto moves = txn.exec(
                 "SELECT sm.id, sm.product_id, sm.location_id, sm.location_dest_id, "
                 "       sm.product_uom_qty, sm.quantity, sm.reserved_qty, sm.company_id, "
-                "       COALESCE(sm.lot_id,0) AS lot_id, COALESCE(pp.tracking,'none') AS tracking "
+                "       COALESCE(sm.lot_id,0) AS lot_id, COALESCE(pp.tracking,'none') AS tracking, "
+                "       pp.name AS product_name "
                 "FROM stock_move sm JOIN product_product pp ON pp.id = sm.product_id "
                 "WHERE sm.picking_id=$1 AND sm.state NOT IN ('done','cancel')",
                 pqxx::params{id});
@@ -749,10 +760,17 @@ private:
                 const long long   done     = doneRaw > 0 ? doneRaw : demand;
                 // Lots/serial enforcement: a tracked product needs a lot, and a
                 // serial move is exactly one unit.
+                // ValidationError, not runtime_error: SEC-28 masks a plain
+                // runtime_error to "An internal error occurred" in production,
+                // which told the operator nothing about what to fix. The whole
+                // point of this check is that the message reaches them.
                 if ((track == "lot" || track == "serial") && lot <= 0)
-                    throw std::runtime_error("A lot/serial number is required for this product");
+                    throw cerp::infrastructure::ValidationError(
+                        "A lot/serial number is required for " +
+                        std::string(m["product_name"].is_null() ? "this product" : m["product_name"].c_str()) + ".");
                 if (track == "serial" && done != 1000000)
-                    throw std::runtime_error("A serial-tracked move must be exactly one unit");
+                    throw cerp::infrastructure::ValidationError(
+                        "A serial-tracked move must be exactly one unit — split the operation.");
                 if (reserved > 0)
                     core::StockQuant::release(txn, prod, src, reserved, lot);
                 // Value a purchase receipt at its PO price, so average/FIFO
@@ -777,16 +795,38 @@ private:
                 "UPDATE stock_picking SET state='done', write_date=now() WHERE id=$1",
                 pqxx::params{id});
 
+            // The parcel travels with the goods: a package packed on this
+            // transfer now sits wherever its contents landed. Putaway may have
+            // redirected the destination, so this reads it back off the moves
+            // rather than off the picking header.
+            txn.exec(R"(
+                UPDATE stock_quant_package p
+                SET location_id = m.location_dest_id, write_date = now()
+                FROM (SELECT DISTINCT ON (result_package_id) result_package_id, location_dest_id
+                      FROM stock_move
+                      WHERE picking_id = $1 AND result_package_id IS NOT NULL
+                      ORDER BY result_package_id, id) m
+                WHERE p.id = m.result_package_id
+            )", pqxx::params{id});
+
             // Update linked sale order lines qty_delivered
             if (saleId > 0 && code == "outgoing") {
+                // qty_delivered holds BIGINT micro-units. Read the sum as an
+                // INTEGER: binding a double appends it in the shortest form,
+                // and 4000000.0 serialises as "4e+06", which a bigint column
+                // rejects outright — so validating a delivery raised by a sale
+                // order failed for every quantity of one unit or more. Same
+                // class as the invoice-total bug in SaleModule's
+                // action_create_invoices; the ::bigint cast keeps the value
+                // integral all the way through.
                 auto moves = txn.exec(
-                    "SELECT product_id, SUM(quantity) AS qty "
+                    "SELECT product_id, SUM(quantity)::bigint AS qty "
                     "FROM stock_move WHERE picking_id=$1 AND state='done' "
                     "GROUP BY product_id",
                     pqxx::params{id});
                 for (const auto& m : moves) {
-                    const int    productId = m["product_id"].as<int>();
-                    const double qty       = m["qty"].as<double>();
+                    const int       productId = m["product_id"].as<int>();
+                    const long long qty       = m["qty"].as<long long>(0);
                     txn.exec(
                         "UPDATE sale_order_line "
                         "SET qty_delivered = qty_delivered + $1, write_date=now() "
@@ -809,14 +849,17 @@ private:
 
             // Update linked purchase order lines qty_received
             if (purchaseId > 0 && code == "incoming") {
+                // qty_received is BIGINT micro-units too, and had the identical
+                // defect — a receipt against a purchase order could not be
+                // validated. See the note above.
                 auto moves = txn.exec(
-                    "SELECT product_id, SUM(quantity) AS qty "
+                    "SELECT product_id, SUM(quantity)::bigint AS qty "
                     "FROM stock_move WHERE picking_id=$1 AND state='done' "
                     "GROUP BY product_id",
                     pqxx::params{id});
                 for (const auto& m : moves) {
-                    const int    productId = m["product_id"].as<int>();
-                    const double qty       = m["qty"].as<double>();
+                    const int       productId = m["product_id"].as<int>();
+                    const long long qty       = m["qty"].as<long long>(0);
                     txn.exec(
                         "UPDATE purchase_order_line "
                         "SET qty_received = qty_received + $1, write_date=now() "
@@ -884,7 +927,7 @@ private:
                 }
             }
 
-            odoo::modules::mail::postLog(txn, "stock.picking", id, 0,
+            cerp::modules::mail::postLog(txn, "stock.picking", id, 0,
                 "Transfer validated.", "log_note");
             txn.commit();
         }
@@ -1029,7 +1072,8 @@ private:
             "id","picking_id","product_id","product_uom_id","name","product_uom_qty",
             "quantity","state","location_id","location_dest_id","company_id",
             "origin","reserved_qty","lot_id","production_id"};
-        auto [where, paramVec] = domainFromJson(call.domain()).toSql(&kCols);
+        // joins stock_picking: state, name and company_id are ambiguous unqualified
+        auto [where, paramVec] = domainFromJson(call.domain()).toSql(&kCols, "sm");
 
         auto conn = db_->acquire();
         pqxx::work txn{conn.get()};
@@ -1052,7 +1096,17 @@ private:
                    sm.location_dest_id,
                    COALESCE(sl_dst.complete_name, sl_dst.name) AS location_dest_name,
                    sm.company_id,
-                   rc.name           AS company_name
+                   rc.name           AS company_name,
+                   sm.lot_id,
+                   lot.name          AS lot_name,
+                   COALESCE(pp.tracking,'none') AS tracking,
+                   sm.result_package_id,
+                   -- Scalar subquery, not a join: stock_quant_package also has a
+                   -- picking_id column, and the domain filter below emits an
+                   -- unqualified `picking_id = $1` that a join would make
+                   -- ambiguous, breaking every search_read on this model.
+                   (SELECT name FROM stock_quant_package
+                     WHERE id = sm.result_package_id) AS result_package_name
             FROM stock_move sm
             LEFT JOIN stock_picking   sp     ON sp.id  = sm.picking_id
             LEFT JOIN product_product pp     ON pp.id  = sm.product_id
@@ -1060,19 +1114,19 @@ private:
             LEFT JOIN stock_location   sl_src ON sl_src.id = sm.location_id
             LEFT JOIN stock_location   sl_dst ON sl_dst.id = sm.location_dest_id
             LEFT JOIN res_company      rc    ON rc.id  = sm.company_id
+            LEFT JOIN stock_production_lot lot ON lot.id = sm.lot_id
             WHERE )";
         sql += where;
+        // S-30: enforce ir.rule on this custom read (record-rule bypass fix, 071 §1.2).
+        pqxx::params p; for (auto& s : paramVec) p.append(s);
+        core::appendRecordRuleSubquery(sql, p, "stock.move", core::RuleOp::Read,
+                                       extractContext_(call), "stock_move", "sm.id",
+                                       static_cast<int>(paramVec.size()));
         sql += " ORDER BY sm.id DESC";
         sql += " LIMIT " + std::to_string(lim);
         if (off > 0) sql += " OFFSET " + std::to_string(off);
 
-        pqxx::result res;
-        if (paramVec.empty()) {
-            res = txn.exec(sql);
-        } else {
-            pqxx::params p; for (auto& s : paramVec) p.append(s);
-            res = txn.exec(sql, p);
-        }
+        pqxx::result res = txn.exec(sql, p);
 
         nlohmann::json arr = nlohmann::json::array();
         for (const auto& row : res) {
@@ -1092,6 +1146,12 @@ private:
             obj["location_id"]      = m2o(row, "location_id",      "location_name");
             obj["location_dest_id"] = m2o(row, "location_dest_id", "location_dest_name");
             obj["company_id"]       = m2o(row, "company_id",       "company_name");
+            // Lot/serial and package ride along so the transfer form can show
+            // and edit them without a second round trip per line.
+            obj["lot_id"]            = (row["lot_id"].is_null() || row["lot_id"].as<int>(0) == 0)
+                                       ? nlohmann::json(false) : m2o(row, "lot_id", "lot_name");
+            obj["tracking"]          = row["tracking"].is_null() ? "none" : row["tracking"].c_str();
+            obj["result_package_id"] = m2o(row, "result_package_id", "result_package_name");
             arr.push_back(std::move(obj));
         }
         return arr;
@@ -1305,6 +1365,7 @@ public:
         REGISTER_METHOD("search_count",    handleSearchCount)
         REGISTER_METHOD("set_on_hand",     handleSetOnHand)
         REGISTER_METHOD("resolve_barcode", handleResolveBarcode)
+        REGISTER_METHOD("product_summary", handleProductSummary)
     }
 
     std::string modelName() const override { return "stock.quant"; }
@@ -1430,6 +1491,66 @@ private:
         out["location_id"] = loc;
         out["quantity"]    = core::Money::fromMicros(newQ).toJson();
         return out;
+    }
+
+    // product_summary — the numbers the Product form's stat row shows.
+    //
+    // qty_available is the on-hand across internal locations. incoming/outgoing
+    // are the not-yet-done moves crossing the internal boundary, so
+    // virtual_available = on hand + what is coming − what is committed, which is
+    // the figure that decides whether a sale can be promised. Counts of the
+    // product's reordering and putaway rules ride along so the form can show the
+    // right numbers without three more round trips.
+    nlohmann::json handleProductSummary(const CallKwArgs& call) {
+        int prod = 0;
+        const auto& v = call.arg(0);
+        if (v.is_number_integer())      prod = v.get<int>();
+        else if (v.is_array() && !v.empty() && v[0].is_number_integer()) prod = v[0].get<int>();
+        else if (v.is_object())         prod = parseM2o(v, "product_id");
+        if (prod <= 0) throw std::runtime_error("product_summary: a product_id is required");
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        auto onHand = txn.exec(
+            "SELECT COALESCE(SUM(q.quantity),0) AS q, COALESCE(SUM(q.reserved_quantity),0) AS r "
+            "FROM stock_quant q JOIN stock_location sl ON sl.id=q.location_id "
+            "WHERE q.product_id=$1 AND sl.usage='internal'",
+            pqxx::params{prod});
+        const long long qty = onHand.empty() ? 0 : onHand[0]["q"].as<long long>(0);
+        const long long rsv = onHand.empty() ? 0 : onHand[0]["r"].as<long long>(0);
+
+        // Pending moves. product_uom_qty is NUMERIC in major units here, unlike
+        // the quant columns — scale it to micros so every figure below is micros.
+        auto flow = txn.exec(R"(
+            SELECT
+              COALESCE(SUM(CASE WHEN dst.usage='internal' AND src.usage<>'internal'
+                                THEN m.product_uom_qty ELSE 0 END),0) * 1000000 AS incoming,
+              COALESCE(SUM(CASE WHEN src.usage='internal' AND dst.usage<>'internal'
+                                THEN m.product_uom_qty ELSE 0 END),0) * 1000000 AS outgoing
+            FROM stock_move m
+            JOIN stock_location src ON src.id = m.location_id
+            JOIN stock_location dst ON dst.id = m.location_dest_id
+            WHERE m.product_id = $1 AND m.state NOT IN ('done','cancel','draft')
+        )", pqxx::params{prod});
+        const long long inc = flow.empty() ? 0 : flow[0]["incoming"].as<long long>(0);
+        const long long out = flow.empty() ? 0 : flow[0]["outgoing"].as<long long>(0);
+
+        auto counts = txn.exec(
+            "SELECT (SELECT count(*) FROM stock_warehouse_orderpoint WHERE product_id=$1 AND active) AS op, "
+            "       (SELECT count(*) FROM stock_putaway_rule         WHERE product_id=$1) AS pw",
+            pqxx::params{prod});
+
+        nlohmann::json j;
+        j["product_id"]        = prod;
+        j["qty_available"]     = core::Money::fromMicros(qty).toJson();
+        j["reserved"]          = core::Money::fromMicros(rsv).toJson();
+        j["incoming_qty"]      = core::Money::fromMicros(inc).toJson();
+        j["outgoing_qty"]      = core::Money::fromMicros(out).toJson();
+        j["virtual_available"] = core::Money::fromMicros(qty + inc - out).toJson();
+        j["orderpoint_count"]  = counts.empty() ? 0 : counts[0]["op"].as<int>(0);
+        j["putaway_count"]     = counts.empty() ? 0 : counts[0]["pw"].as<int>(0);
+        return j;
     }
 
     // Barcode resolver: a scanned code → what it is (product / location / lot).
@@ -2192,14 +2313,22 @@ public:
 // (on-hand + open incoming POs/MOs) is below the minimum, draft a
 // replenishment up to the maximum, rounded to the multiple — a purchase
 // order (buy) or a manufacturing order (make). Returns a summary.
-static nlohmann::json runReorderScheduler(std::shared_ptr<DbConnection> db) {
+// `productFilter` > 0 restricts the run to one product's rules — that is what
+// the Product form's Replenish button uses.
+static nlohmann::json runReorderScheduler(std::shared_ptr<DbConnection> db, int productFilter = 0) {
     auto conn = db->acquire();
     pqxx::work txn{conn.get()};
-    int checked = 0, created = 0;
-    auto ops = txn.exec(
-        "SELECT id, product_id, location_id, product_min_qty, product_max_qty, "
-        "       qty_multiple, route, supplier_id, company_id "
-        "FROM stock_warehouse_orderpoint WHERE active=TRUE");
+    int checked = 0, created = 0, noVendor = 0;
+    auto ops = productFilter > 0
+        ? txn.exec(
+            "SELECT id, product_id, location_id, product_min_qty, product_max_qty, "
+            "       qty_multiple, route, supplier_id, company_id "
+            "FROM stock_warehouse_orderpoint WHERE active=TRUE AND product_id=$1",
+            pqxx::params{productFilter})
+        : txn.exec(
+            "SELECT id, product_id, location_id, product_min_qty, product_max_qty, "
+            "       qty_multiple, route, supplier_id, company_id "
+            "FROM stock_warehouse_orderpoint WHERE active=TRUE");
     for (const auto& op : ops) {
         ++checked;
         const int         opId  = op["id"].as<int>();
@@ -2265,7 +2394,11 @@ static nlohmann::json runReorderScheduler(std::shared_ptr<DbConnection> db) {
                     if (si[0]["price"].as<long long>(0) > 0) price = si[0]["price"].as<long long>(price);
                 }
             }
-            if (vendor <= 0) continue;   // no vendor on the rule or in the vendor pricelist
+            // No vendor on the rule and none in the vendor pricelist: there is
+            // nobody to buy from. Counted, not silent — the Product form's
+            // Replenish button reports it, because "nothing happened" and
+            // "nothing could happen" are different answers.
+            if (vendor <= 0) { ++noVendor; continue; }
             const int poId = txn.exec(
                 "INSERT INTO purchase_order (name, state, partner_id, date_order, company_id, origin) "
                 "VALUES ('New','draft',$1,now(),$2,$3) RETURNING id",
@@ -2283,6 +2416,7 @@ static nlohmann::json runReorderScheduler(std::shared_ptr<DbConnection> db) {
     nlohmann::json out;
     out["orderpoints_checked"]      = checked;
     out["replenishments_created"]   = created;
+    out["skipped_no_vendor"]        = noVendor;
     return out;
 }
 
@@ -2350,7 +2484,12 @@ private:
     nlohmann::json handleFieldsGet(const CallKwArgs& call)   { StockWarehouseOrderpoint p(db_); return p.fieldsGet(call.fields()); }
     nlohmann::json handleSearchCount(const CallKwArgs& call) { StockWarehouseOrderpoint p(db_); p.setUserContext(extractContext_(call)); return p.searchCount(call.domain()); }
     nlohmann::json handleRunScheduler(const CallKwArgs& call) {
-        auto res = runReorderScheduler(db_);
+        // Optional {product_id} narrows the run to one product (Replenish).
+        int prod = 0;
+        const auto& v = call.arg(0);
+        if (v.is_object())              prod = parseM2o(v, "product_id");
+        else if (v.is_number_integer()) prod = v.get<int>();
+        auto res = runReorderScheduler(db_, prod);
         if (AuditService::ready())
             AuditService::instance().log("stock.warehouse.orderpoint", "run_scheduler", {}, extractContext_(call).uid);
         return res;
@@ -2380,6 +2519,227 @@ public:
             {"route",           {{"type","selection"}, {"string","Route"}}},
         };
     }
+    nlohmann::json render(const nlohmann::json&) const override { return {}; }
+};
+
+// ----------------------------------------------------------------
+// StockQuantPackage — stock.quant.package (a physical parcel)
+//
+// Scope, stated plainly: a package here is a LOGISTICS label, not a third
+// dimension of the quant ledger. Put in Pack groups a transfer's operations
+// under a named parcel so the delivery note can say what is in which box, and
+// the parcel's location follows the transfer when it is validated. Quants stay
+// keyed by (product, location, lot) — adding package to that key would touch
+// costing, reservation and valuation, which is a much larger change than the
+// packing slip this actually buys.
+// ----------------------------------------------------------------
+class StockQuantPackage : public BaseModel<StockQuantPackage> {
+public:
+    ODOO_MODEL("stock.quant.package", "stock_quant_package")
+
+    std::string name;
+    int locationId = 0, pickingId = 0, companyId = 0;
+
+    explicit StockQuantPackage(std::shared_ptr<DbConnection> db)
+        : BaseModel<StockQuantPackage>(std::move(db)) {}
+
+    void registerFields() override {
+        fieldRegistry_.add({"name",        FieldType::Char,     "Package Reference", true});
+        fieldRegistry_.add({"location_id", FieldType::Many2one, "Location", false, false, true, true, "stock.location"});
+        fieldRegistry_.add({"picking_id",  FieldType::Many2one, "Packed In", false, false, true, true, "stock.picking"});
+        fieldRegistry_.add({"company_id",  FieldType::Many2one, "Company",  false, false, true, false, "res.company"});
+    }
+    void serializeFields(nlohmann::json& j) const override {
+        j["name"]        = name;
+        j["location_id"] = locationId > 0 ? nlohmann::json(locationId) : nlohmann::json(false);
+        j["picking_id"]  = pickingId  > 0 ? nlohmann::json(pickingId)  : nlohmann::json(false);
+        j["company_id"]  = companyId  > 0 ? nlohmann::json(companyId)  : nlohmann::json(false);
+    }
+    void deserializeFields(const nlohmann::json& j) override {
+        if (j.contains("name") && j["name"].is_string()) name = j["name"].get<std::string>();
+        if (const int v = parseM2o(j, "location_id")) locationId = v;
+        if (const int v = parseM2o(j, "picking_id"))  pickingId  = v;
+        if (const int v = parseM2o(j, "company_id"))  companyId  = v;
+    }
+    std::vector<std::string> validate() const override {
+        std::vector<std::string> e;
+        if (name.empty()) e.push_back("Package reference is required");
+        return e;
+    }
+};
+
+// StockQuantPackageViewModel — CRUD plus put_in_pack and the contents readout.
+class StockQuantPackageViewModel : public GenericViewModel<StockQuantPackage> {
+public:
+    explicit StockQuantPackageViewModel(std::shared_ptr<DbConnection> db)
+        : GenericViewModel<StockQuantPackage>(std::move(db))
+    {
+        REGISTER_METHOD("contents", handleContents)
+        REGISTER_MUTATOR("put_in_pack", handlePutInPack)
+        REGISTER_MUTATOR("unpack",      handleUnpack)
+    }
+    std::string modelName() const override { return "stock.quant.package"; }
+
+private:
+    // put_in_pack({picking_id, move_ids?}) — parcel up a transfer's operations.
+    // Without move_ids, every not-yet-packed operation on the transfer goes in,
+    // which is the common case (one box per delivery).
+    nlohmann::json handlePutInPack(const CallKwArgs& call) {
+        const auto& v = call.arg(0);
+        int pickingId = 0;
+        std::vector<int> moveIds;
+        if (v.is_object()) {
+            pickingId = parseM2o(v, "picking_id");
+            if (v.contains("move_ids") && v["move_ids"].is_array())
+                for (const auto& m : v["move_ids"])
+                    if (m.is_number_integer()) moveIds.push_back(m.get<int>());
+        } else if (v.is_number_integer()) {
+            pickingId = v.get<int>();
+        }
+        if (pickingId <= 0)
+            throw cerp::infrastructure::ValidationError("put_in_pack: a transfer is required.");
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        auto pick = txn.exec(
+            "SELECT state, location_dest_id, company_id FROM stock_picking WHERE id=$1",
+            pqxx::params{pickingId});
+        if (pick.empty())
+            throw cerp::infrastructure::ValidationError("Transfer not found.");
+        const std::string st = pick[0]["state"].c_str();
+        if (st == "done" || st == "cancel")
+            throw cerp::infrastructure::ValidationError(
+                "A " + std::string(st == "done" ? "completed" : "cancelled") +
+                " transfer cannot be packed.");
+
+        // Which operations are going in the box.
+        std::string sql =
+            "SELECT id FROM stock_move WHERE picking_id=$1 "
+            "AND state NOT IN ('done','cancel') AND result_package_id IS NULL";
+        pqxx::params p; p.append(pickingId);
+        if (!moveIds.empty()) {
+            sql += " AND id IN (";
+            for (size_t i = 0; i < moveIds.size(); ++i) {
+                if (i) sql += ",";
+                sql += "$" + std::to_string(i + 2);
+                p.append(moveIds[i]);
+            }
+            sql += ")";
+        }
+        auto rows = txn.exec(sql, p);
+        if (rows.empty())
+            throw cerp::infrastructure::ValidationError(
+                "Nothing left to pack on this transfer — every operation is already in a package.");
+
+        const int dest = pick[0]["location_dest_id"].is_null() ? 0 : pick[0]["location_dest_id"].as<int>();
+        const int comp = pick[0]["company_id"].is_null() ? 0 : pick[0]["company_id"].as<int>();
+        txn.exec("INSERT INTO ir_sequence (code,name,prefix,padding,reset_policy) "
+                 "VALUES ('stock.package','Package','PACK',5,'never') "
+                 "ON CONFLICT (code) WHERE company_id IS NULL DO NOTHING");
+        const std::string pname = core::IrSequence::instance().nextByCode(txn, "stock.package");
+
+        const int pkgId = txn.exec(
+            "INSERT INTO stock_quant_package (name, location_id, picking_id, company_id) "
+            "VALUES ($1, NULLIF($2,0), $3, NULLIF($4,0)) RETURNING id",
+            pqxx::params{pname, dest, pickingId, comp})[0][0].as<int>();
+        for (const auto& r : rows)
+            txn.exec("UPDATE stock_move SET result_package_id=$2 WHERE id=$1",
+                     pqxx::params{r["id"].as<int>(), pkgId});
+        txn.commit();
+
+        if (AuditService::ready())
+            AuditService::instance().log("stock.quant.package", "put_in_pack",
+                                         {pkgId}, extractContext_(call).uid);
+        nlohmann::json out;
+        out["id"]      = pkgId;
+        out["name"]    = pname;
+        out["moves"]   = static_cast<int>(rows.size());
+        return out;
+    }
+
+    nlohmann::json handleUnpack(const CallKwArgs& call) {
+        const auto ids = call.ids();
+        if (ids.empty()) throw cerp::infrastructure::ValidationError("No package selected.");
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        for (int id : ids) {
+            auto done = txn.exec(
+                "SELECT count(*) FROM stock_move WHERE result_package_id=$1 AND state='done'",
+                pqxx::params{id});
+            if (!done.empty() && done[0][0].as<int>(0) > 0)
+                throw cerp::infrastructure::ValidationError(
+                    "This package has already shipped — it cannot be unpacked.");
+            txn.exec("UPDATE stock_move SET result_package_id=NULL WHERE result_package_id=$1",
+                     pqxx::params{id});
+            txn.exec("DELETE FROM stock_quant_package WHERE id=$1", pqxx::params{id});
+        }
+        txn.commit();
+        return true;
+    }
+
+    // What is in the box: one row per operation, with product and quantity.
+    nlohmann::json handleContents(const CallKwArgs& call) {
+        int pkgId = 0;
+        const auto& v = call.arg(0);
+        if (v.is_number_integer()) pkgId = v.get<int>();
+        else if (v.is_array() && !v.empty() && v[0].is_number_integer()) pkgId = v[0].get<int>();
+        else if (v.is_object()) pkgId = parseM2o(v, "package_id");
+        if (pkgId <= 0) throw std::runtime_error("contents: a package id is required");
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        auto rows = txn.exec(
+            "SELECT m.id, m.product_id, pp.name AS product_name, "
+            "       m.product_uom_qty, m.quantity, m.state "
+            "FROM stock_move m LEFT JOIN product_product pp ON pp.id=m.product_id "
+            "WHERE m.result_package_id=$1 ORDER BY m.id", pqxx::params{pkgId});
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& r : rows) {
+            nlohmann::json j;
+            j["move_id"]      = r["id"].as<int>();
+            j["product_id"]   = r["product_id"].is_null() ? nlohmann::json(false)
+                : nlohmann::json::array({r["product_id"].as<int>(),
+                                         r["product_name"].is_null() ? "" : std::string(r["product_name"].c_str())});
+            j["demand"]       = core::Money::fromMicros(r["product_uom_qty"].as<long long>(0)).toJson();
+            j["quantity"]     = core::Money::fromMicros(r["quantity"].as<long long>(0)).toJson();
+            j["state"]        = r["state"].is_null() ? "" : r["state"].c_str();
+            arr.push_back(std::move(j));
+        }
+        return arr;
+    }
+};
+
+class StockQuantPackageListView : public core::BaseView {
+public:
+    std::string viewName()  const override { return "stock.quant.package.list"; }
+    std::string modelName() const override { return "stock.quant.package"; }
+    std::string viewType()  const override { return "list"; }
+    std::string arch() const override {
+        return "<list string=\"Packages\"><field name=\"name\"/><field name=\"location_id\"/>"
+               "<field name=\"picking_id\"/><field name=\"company_id\"/></list>";
+    }
+    nlohmann::json fields() const override { return pkgFields(); }
+    nlohmann::json render(const nlohmann::json&) const override { return {}; }
+    static nlohmann::json pkgFields() {
+        return {
+            {"name",        {{"type","char"},     {"string","Package Reference"}}},
+            {"location_id", {{"type","many2one"}, {"string","Location"},  {"relation","stock.location"}}},
+            {"picking_id",  {{"type","many2one"}, {"string","Packed In"}, {"relation","stock.picking"}}},
+            {"company_id",  {{"type","many2one"}, {"string","Company"},   {"relation","res.company"}}},
+        };
+    }
+};
+
+class StockQuantPackageFormView : public core::BaseView {
+public:
+    std::string viewName()  const override { return "stock.quant.package.form"; }
+    std::string modelName() const override { return "stock.quant.package"; }
+    std::string viewType()  const override { return "form"; }
+    std::string arch() const override {
+        return "<form string=\"Package\"><field name=\"name\"/><field name=\"location_id\"/>"
+               "<field name=\"picking_id\"/><field name=\"company_id\"/></form>";
+    }
+    nlohmann::json fields() const override { return StockQuantPackageListView::pkgFields(); }
     nlohmann::json render(const nlohmann::json&) const override { return {}; }
 };
 
@@ -2489,6 +2849,7 @@ void StockModule::registerModels() {
     models_.registerCreator("stock.landed.cost.line", [db]{ return std::make_shared<StockLandedCostLineModel>(db); });
     models_.registerCreator("stock.warehouse.orderpoint", [db]{ return std::make_shared<StockWarehouseOrderpoint>(db); });
     models_.registerCreator("stock.putaway.rule",         [db]{ return std::make_shared<StockPutawayRule>(db); });
+    models_.registerCreator("stock.quant.package",        [db]{ return std::make_shared<StockQuantPackage>(db); });
 }
 
 void StockModule::registerServices() {}
@@ -2503,6 +2864,8 @@ void StockModule::registerViews() {
     views_.registerView<StockLandedCostListView>("stock.landed.cost.list");
     views_.registerView<StockWarehouseOrderpointListView>("stock.warehouse.orderpoint.list");
     views_.registerView<StockPutawayRuleListView>("stock.putaway.rule.list");
+    views_.registerView<StockQuantPackageListView>("stock.quant.package.list");
+    views_.registerView<StockQuantPackageFormView>("stock.quant.package.form");
 }
 
 void StockModule::registerViewModels() {
@@ -2539,6 +2902,9 @@ void StockModule::registerViewModels() {
     });
     viewModels_.registerCreator("stock.warehouse.orderpoint", [db]{
         return std::make_shared<StockWarehouseOrderpointViewModel>(db);
+    });
+    viewModels_.registerCreator("stock.quant.package", [db]{
+        return std::make_shared<StockQuantPackageViewModel>(db);
     });
     viewModels_.registerCreator("stock.putaway.rule", [db]{
         return std::make_shared<GenericViewModel<StockPutawayRule>>(db);
@@ -2681,6 +3047,23 @@ void StockModule::ensureSchema_() {
     // Lots/serial: the lot a move carries (NULL = untracked).
     txn.exec("ALTER TABLE stock_move ADD COLUMN IF NOT EXISTS lot_id INTEGER");
     txn.exec("CREATE INDEX IF NOT EXISTS idx_stock_move_lot ON stock_move(lot_id)");
+
+    // Packages: a parcel a transfer's operations are grouped under. See the
+    // StockQuantPackage comment for what this deliberately is not.
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS stock_quant_package (
+            id          SERIAL  PRIMARY KEY,
+            name        VARCHAR NOT NULL,
+            location_id INTEGER REFERENCES stock_location(id) ON DELETE SET NULL,
+            picking_id  INTEGER REFERENCES stock_picking(id)  ON DELETE SET NULL,
+            company_id  INTEGER REFERENCES res_company(id)    ON DELETE SET NULL,
+            create_date TIMESTAMP DEFAULT now(),
+            write_date  TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec("ALTER TABLE stock_move ADD COLUMN IF NOT EXISTS result_package_id "
+             "INTEGER REFERENCES stock_quant_package(id) ON DELETE SET NULL");
+    txn.exec("CREATE INDEX IF NOT EXISTS idx_stock_move_package ON stock_move(result_package_id)");
     txn.exec(R"(
         CREATE TABLE IF NOT EXISTS stock_production_lot (
             id          SERIAL PRIMARY KEY,
@@ -2858,9 +3241,14 @@ void StockModule::seedMenus_() {
             (27, 'Inventory Valuation', 'stock.valuation.layer', 'list',      '[]', '{}'),
             (28, 'Lots/Serial Numbers', 'stock.production.lot',  'list,form', '[]', '{}'),
             (29, 'Landed Costs',        'stock.landed.cost',     'list,form', '[]', '{}'),
-            (30, 'Reordering Rules',    'stock.warehouse.orderpoint', 'list,form', '[]', '{}'),
+            -- id 30 is owned by ReportModule ('Document Templates') and is seeded
+            -- there with ON CONFLICT DO UPDATE, so it won this id and the
+            -- Reordering Rules menu opened the template editor. Use 94.
+            (94, 'Reordering Rules',    'stock.warehouse.orderpoint', 'list,form', '[]', '{}'),
             (31, 'Putaway Rules',       'stock.putaway.rule',    'list,form', '[]', '{}'),
-            (47, 'Barcode',             'barcode.scan',          'list',      '[]', '{}')
+            (47, 'Barcode',             'barcode.scan',          'list',      '[]', '{}'),
+            -- 99 was the next free act_window id (HrModule took 97/98).
+            (99, 'Packages',            'stock.quant.package',   'list,form', '[]', '{}')
         ON CONFLICT (id) DO UPDATE
             SET name = EXCLUDED.name, domain = EXCLUDED.domain
     )");
@@ -2887,7 +3275,7 @@ void StockModule::seedMenus_() {
             (202, 'Internal Transfers', 91, 30, 24),
             (95,  'All Transfers',      91, 40, 17),
             (207, 'Landed Costs',       91, 50, 29),
-            (208, 'Reordering Rules',   92, 30, 30),
+            (208, 'Reordering Rules',   92, 30, 94),
             (210, 'Barcode',            91, 60, 47)
         ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
             sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
@@ -2898,7 +3286,9 @@ void StockModule::seedMenus_() {
             (99,  'Moves History',       97, 10, 21),
             (204, 'On Hand',             97,  5, 26),
             (205, 'Inventory Valuation', 97,  7, 27),
-            (206, 'Lots/Serial Numbers', 96, 30, 28)
+            (206, 'Lots/Serial Numbers', 96, 30, 28),
+            -- menu id 69 was free (60-68 allocated; 70 is the Purchase app root).
+            (69,  'Packages',            96, 40, 99)
         ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
             sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
     )");
@@ -2916,4 +3306,4 @@ void StockModule::seedMenus_() {
 }
 
 void StockModule::registerRoutes()   {}
-} // namespace odoo::modules::stock
+} // namespace cerp::modules::stock

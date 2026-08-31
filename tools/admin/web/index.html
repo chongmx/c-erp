@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>ERP Admin Console</title>
+<style>
+  :root { --bg:#0f1420; --surface:#171d2b; --surface2:#1e2536; --line:rgba(255,255,255,.10);
+          --ink:#e6e9ef; --muted:#8f97a6; --accent:#5b8cff; --ok:#3fb950; --bad:#f85149; --warn:#d29922; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:14px 20px; border-bottom:1px solid var(--line); background:var(--surface); }
+  header .logo { font-weight:700; letter-spacing:.02em; }
+  header .lock { color:var(--warn); font-size:12px; margin-left:auto; }
+  nav { display:flex; gap:4px; padding:8px 16px; border-bottom:1px solid var(--line); background:var(--surface); flex-wrap:wrap; }
+  nav button { background:transparent; border:none; color:var(--muted); padding:8px 14px; border-radius:8px; cursor:pointer; font:inherit; }
+  nav button.active { background:var(--surface2); color:var(--ink); }
+  main { padding:20px; max-width:1100px; margin:0 auto; }
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:16px; }
+  .card h2 { margin:0 0 12px; font-size:16px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  input, select { background:#0c1119; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:8px 10px; font:inherit; }
+  input { min-width:150px; }
+  button.act { background:var(--accent); color:#fff; border:none; border-radius:8px; padding:8px 14px; cursor:pointer; font:inherit; font-weight:600; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:6px 12px; cursor:pointer; font:inherit; }
+  button.danger { background:transparent; border:1px solid rgba(248,81,73,.5); color:var(--bad); border-radius:8px; padding:6px 12px; cursor:pointer; }
+  table { width:100%; border-collapse:collapse; }
+  th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); padding:6px 8px; border-bottom:1px solid var(--line); }
+  td { padding:8px; border-bottom:1px solid rgba(255,255,255,.05); vertical-align:middle; }
+  pre { background:#0a0e16; border:1px solid var(--line); border-radius:8px; padding:12px; overflow:auto; max-height:360px; white-space:pre-wrap; word-break:break-word; font:12px/1.5 ui-monospace,Menlo,Consolas,monospace; }
+  .pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:12px; }
+  .pill.ok { background:rgba(63,185,80,.15); color:var(--ok); }
+  .pill.bad { background:rgba(248,81,73,.15); color:var(--bad); }
+  .muted { color:var(--muted); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
+  .stat { background:var(--surface2); border-radius:10px; padding:12px 14px; }
+  .stat .k { font-size:12px; color:var(--muted); } .stat .v { font-size:18px; font-weight:600; margin-top:2px; }
+  .hint { color:var(--muted); font-size:13px; margin:0 0 10px; }
+  .toast { position:fixed; right:16px; bottom:16px; background:var(--surface2); border:1px solid var(--line); padding:10px 14px; border-radius:10px; max-width:420px; box-shadow:0 8px 24px rgba(0,0,0,.4); }
+  #gate { max-width:520px; margin:80px auto; text-align:center; }
+</style>
+</head>
+<body>
+<div id="gate" class="card" style="display:none">
+  <h2>🔒 ERP Admin Console</h2>
+  <p class="hint">This console is loopback-only. Open the URL printed on the server console
+     (it carries the one-time access token), reached over your SSH tunnel.</p>
+  <p class="pill bad" id="gateMsg">No valid token.</p>
+</div>
+
+<div id="appwrap" style="display:none">
+  <header>
+    <span class="logo">🛠️ ERP Admin Console</span>
+    <span class="lock">🔒 loopback-only · SSH access</span>
+  </header>
+  <nav id="tabs"></nav>
+  <main id="view"></main>
+</div>
+
+<script>
+const TABS = ['Overview','Companies','Databases','nginx','SSL','Logs','Service'];
+let TOKEN = '';
+
+// pull the token from the URL, store it, and scrub it from the address bar.
+(function initToken() {
+  const u = new URL(location.href);
+  const t = u.searchParams.get('token') || sessionStorage.getItem('erp_admin_token') || '';
+  if (t) { TOKEN = t; sessionStorage.setItem('erp_admin_token', t); u.searchParams.delete('token'); history.replaceState({}, '', u.toString()); }
+})();
+
+async function api(path, method='GET', body=null) {
+  const opts = { method, headers: { 'X-Admin-Token': TOKEN } };
+  if (body) { opts.headers['Content-Type']='application/json'; opts.body=JSON.stringify(body); }
+  const r = await fetch(path, opts);
+  if (r.status === 401) { showGate('Unauthorized — token missing or invalid.'); throw new Error('unauthorized'); }
+  return r.json();
+}
+function showGate(msg){ document.getElementById('gate').style.display='block'; document.getElementById('appwrap').style.display='none'; document.getElementById('gateMsg').textContent=msg; }
+function toast(msg){ const t=document.createElement('div'); t.className='toast'; t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),4000); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+const $ = (h)=>{ const d=document.createElement('div'); d.innerHTML=h; return d; };
+
+let current = 'Overview';
+function renderTabs(){
+  const nav = document.getElementById('tabs'); nav.innerHTML='';
+  TABS.forEach(t=>{ const b=document.createElement('button'); b.textContent=t; b.className=t===current?'active':''; b.onclick=()=>{current=t; renderTabs(); renderView();}; nav.appendChild(b); });
+}
+const view = ()=>document.getElementById('view');
+
+async function renderView(){
+  view().innerHTML = '<p class="muted">Loading…</p>';
+  try { await ({Overview,Companies,Databases,nginx:Nginx,SSL,Logs,Service}[current])(); }
+  catch(e){ if(e.message!=='unauthorized') view().innerHTML='<div class="card">Error: '+esc(e.message)+'</div>'; }
+}
+
+// ── Overview ──
+async function Overview(){
+  const o = await api('/api/overview');
+  const svc = (o.service&&o.service.output||'').trim();
+  view().innerHTML = `
+    <div class="card"><h2>System overview</h2>
+      <div class="grid">
+        <div class="stat"><div class="k">c-erp service</div><div class="v">${svc==='active'?'<span class="pill ok">active</span>':'<span class="pill bad">'+esc(svc||'unknown')+'</span>'}</div></div>
+        <div class="stat"><div class="k">database</div><div class="v">${o.db_ok?'<span class="pill ok">reachable</span>':'<span class="pill bad">unreachable</span>'}</div></div>
+        <div class="stat"><div class="k">db target</div><div class="v" style="font-size:14px">${esc(o.db.user)}@${esc(o.db.host)}:${esc(o.db.port)}</div></div>
+      </div>
+      <h2 style="margin-top:16px">Disk</h2><pre>${esc((o.disk&&o.disk.output)||'')}</pre>
+      <h2>Uptime</h2><pre>${esc((o.uptime&&o.uptime.output)||'')}</pre>
+    </div>`;
+}
+
+// ── Companies ──
+async function Companies(){
+  const d = await api('/api/tenants');
+  const rows = (d.tenants||[]).map(t=>`<tr>
+      <td>${esc(t.name)}</td><td>${esc(t.subdomain||'')}</td>
+      <td>${(t.email_domains||[]).map(esc).join(', ')}</td>
+      <td>${t.active===false?'<span class="pill bad">off</span>':'<span class="pill ok">on</span>'}</td>
+      <td><button class="ghost" data-toggle="${esc(t.name)}">${t.active===false?'Enable':'Disable'}</button></td>
+    </tr>`).join('');
+  view().innerHTML = `
+    <div class="card"><h2>Companies (tenants) <span class="muted" style="font-size:12px">${esc(d.file)}</span></h2>
+      <table><thead><tr><th>Database</th><th>Subdomain</th><th>Email domains</th><th>Active</th><th></th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="5" class="muted">No tenants registered (single-company).</td></tr>'}</tbody></table>
+    </div>
+    <div class="card"><h2>Create a new company</h2>
+      <p class="hint">Creates the database, registers it, and provisions its schema (needs a CREATEDB role).</p>
+      <div class="row">
+        <input id="cName" placeholder="database name e.g. acme"/>
+        <input id="cSub" placeholder="subdomain (optional)"/>
+        <input id="cEmails" placeholder="email domains csv (optional)"/>
+        <button class="act" id="cCreate">Create + provision</button>
+      </div>
+      <pre id="cOut" style="display:none"></pre>
+    </div>
+    <div class="card"><h2>Link an existing database</h2>
+      <div class="row">
+        <input id="lName" placeholder="existing database name"/>
+        <input id="lSub" placeholder="subdomain (optional)"/>
+        <button class="ghost" id="lLink">Register as tenant</button>
+      </div>
+    </div>`;
+  view().querySelectorAll('[data-toggle]').forEach(b=>b.onclick=async()=>{ await api('/api/tenants/toggle','POST',{name:b.dataset.toggle}); renderView(); });
+  document.getElementById('cCreate').onclick=async()=>{
+    const out=document.getElementById('cOut'); out.style.display='block'; out.textContent='Provisioning…';
+    const r=await api('/api/tenants/create','POST',{name:cName.value.trim(),subdomain:cSub.value.trim(),email_domains:cEmails.value.trim()});
+    out.textContent=r.output||JSON.stringify(r); if(r.ok){toast('Company created');renderView();}
+  };
+  document.getElementById('lLink').onclick=async()=>{ const r=await api('/api/tenants/link','POST',{name:lName.value.trim(),subdomain:lSub.value.trim()}); if(r.error)toast(r.error);else{toast('Linked');renderView();} };
+}
+
+// ── Databases ──
+async function Databases(){
+  const [dbs, bks] = await Promise.all([api('/api/databases'), api('/api/backups')]);
+  const dbRows = (dbs.databases||[]).map(d=>`<tr><td>${esc(d.name)}</td><td class="muted">${esc(d.size)}</td>
+     <td><button class="ghost" data-backup="${esc(d.name)}">Backup</button></td></tr>`).join('');
+  const bkRows = (bks.files||[]).map(f=>`<tr><td>${esc(f)}</td>
+     <td class="row"><input style="min-width:120px" placeholder="restore into db" data-target="${esc(f)}"/>
+       <button class="ghost" data-restore="${esc(f)}">Restore</button>
+       <a class="ghost" href="/api/backup/download?file=${encodeURIComponent(f)}&token=${encodeURIComponent(TOKEN)}">Download</a></td></tr>`).join('');
+  view().innerHTML = `
+    <div class="card"><h2>Databases</h2>
+      <table><thead><tr><th>Name</th><th>Size</th><th></th></tr></thead><tbody>${dbRows||'<tr><td colspan=3 class=muted>none</td></tr>'}</tbody></table>
+      ${dbs.ok?'':'<p class="pill bad">'+esc(dbs.error||'query failed')+'</p>'}
+    </div>
+    <div class="card"><h2>Backups <span class="muted" style="font-size:12px">${esc(bks.dir||'')}</span></h2>
+      <p class="hint">pg_dump custom format (.dump). Restore drops+recreates objects in the target database.</p>
+      <table><thead><tr><th>File</th><th>Actions</th></tr></thead><tbody>${bkRows||'<tr><td colspan=2 class=muted>no backups yet</td></tr>'}</tbody></table>
+    </div>`;
+  view().querySelectorAll('[data-backup]').forEach(b=>b.onclick=async()=>{ b.textContent='…'; const r=await api('/api/backup','POST',{db:b.dataset.backup}); toast(r.ok?'Backup: '+r.file:'Backup failed'); renderView(); });
+  view().querySelectorAll('[data-restore]').forEach(b=>b.onclick=async()=>{
+    const tgt=view().querySelector('[data-target="'+b.dataset.restore+'"]').value.trim();
+    if(!tgt) return toast('Enter a target database');
+    if(!confirm('Restore '+b.dataset.restore+' into "'+tgt+'"? This overwrites objects in that database.')) return;
+    b.textContent='…'; const r=await api('/api/restore','POST',{db:tgt,file:b.dataset.restore}); toast('Restore done (code '+r.code+')'); });
+}
+
+// ── nginx ──
+async function Nginx(){
+  const n = await api('/api/nginx');
+  view().innerHTML = `
+    <div class="card"><h2>nginx <span class="pill ${n.test&&n.test.ok?'ok':'bad'}">${n.test&&n.test.ok?'config OK':'config error'}</span></h2>
+      <div class="row"><button class="act" id="nReload">Test &amp; reload</button></div>
+      <h2 style="margin-top:14px">nginx -t</h2><pre>${esc((n.test&&n.test.output)||'')}</pre>
+      <h2>${esc(n.config_path)}</h2><pre>${esc(n.config||'(not readable — may need privileges)')}</pre>
+    </div>`;
+  document.getElementById('nReload').onclick=async()=>{ const r=await api('/api/nginx/reload','POST',{}); toast(r.ok?'nginx reloaded':'reload failed: '+((r.output||'').slice(0,120))); renderView(); };
+}
+
+// ── SSL ──
+async function SSL(){
+  const s = await api('/api/ssl');
+  view().innerHTML = `
+    <div class="card"><h2>SSL certificates (certbot)</h2>
+      <div class="row"><label><input type="checkbox" id="dry" checked/> dry-run</label><button class="act" id="renew">Renew</button></div>
+      <pre style="margin-top:12px">${esc((s.output)||'certbot not available or needs privileges')}</pre>
+      <pre id="renewOut" style="display:none"></pre>
+    </div>`;
+  document.getElementById('renew').onclick=async()=>{ const o=document.getElementById('renewOut'); o.style.display='block'; o.textContent='Running…'; const r=await api('/api/ssl/renew','POST',{dry_run:document.getElementById('dry').checked}); o.textContent=r.output||JSON.stringify(r); };
+}
+
+// ── Logs ──
+async function Logs(){
+  view().innerHTML = `
+    <div class="card"><h2>Logs</h2>
+      <div class="row"><select id="lsrc"><option value="server">c-erp log</option><option value="journal">journalctl (c-erp)</option><option value="nginx">nginx error</option></select>
+        <input id="llines" type="number" value="200" style="min-width:90px"/><button class="ghost" id="lgo">Fetch</button></div>
+      <pre id="lout" style="margin-top:12px">—</pre>
+    </div>`;
+  const go=async()=>{ const r=await api('/api/logs?src='+lsrc.value+'&lines='+encodeURIComponent(llines.value)); document.getElementById('lout').textContent=(r.output||'(empty)'); };
+  document.getElementById('lgo').onclick=go; go();
+}
+
+// ── Service ──
+async function Service(){
+  view().innerHTML = `
+    <div class="card"><h2>c-erp service</h2>
+      <div class="row">
+        <button class="act" data-svc="restart">Restart</button>
+        <button class="ghost" data-svc="start">Start</button>
+        <button class="danger" data-svc="stop">Stop</button>
+        <button class="ghost" data-svc="status">Refresh status</button>
+      </div>
+      <pre id="sout" style="margin-top:12px">—</pre>
+    </div>`;
+  const run=async(a)=>{ const r=await api('/api/service','POST',{action:a}); document.getElementById('sout').textContent=r.output||JSON.stringify(r); };
+  view().querySelectorAll('[data-svc]').forEach(b=>b.onclick=()=>{ if(b.dataset.svc==='stop'&&!confirm('Stop the c-erp service?'))return; run(b.dataset.svc); });
+  run('status');
+}
+
+// ── boot ──
+(async function(){
+  if (!TOKEN) return showGate('No token in URL. Use the link printed on the server console.');
+  try { await api('/api/whoami'); }
+  catch(e){ return; }   // showGate already called on 401
+  document.getElementById('appwrap').style.display='block';
+  renderTabs(); renderView();
+})();
+</script>
+</body>
+</html>

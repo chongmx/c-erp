@@ -15,7 +15,7 @@
 # The base64 detail matters. The header comment in AuthService.hpp calls
 # this "passlib format", but base64Encode_() is an OpenSSL BIO chain using
 # the standard alphabet, NOT passlib's adapted alphabet. A hash produced by
-# python-passlib or real Odoo will NOT verify against this app, and vice
+# python-passlib or real the reference ERP will NOT verify against this app, and vice
 # versa. Total length is always 135 for a 600000-round hash.
 #
 # Why the database and not the RPC API:

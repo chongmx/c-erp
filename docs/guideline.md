@@ -447,7 +447,7 @@ Use bare integers only in `checkModelAccess_()` which has inline comments mappin
 ### Model naming
 
 - C++ class: `PascalCase` (e.g., `StockPicking`)
-- Odoo model name: `snake.dot` (e.g., `"stock.picking"`)
+- the reference ERP model name: `snake.dot` (e.g., `"stock.picking"`)
 - SQL table: `snake_underscore` (e.g., `"stock_picking"`)
 - View key: `"model.name.list"` / `"model.name.form"`
 - ViewModel key: same as model name `"stock.picking"`

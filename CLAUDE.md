@@ -13,34 +13,97 @@ cmake --build ./build
 rm -rf ./build
 ```
 
-## Test commands (P7)
+## Test commands (docs/109)
+
+The whole suite lives in `tests/`, with one entry point.
 
 ```bash
 # Everything — unit + integration. This is what CI runs; exit 0 means green.
-./scripts/run_tests.sh
+./tests/run.sh
 
 # Unit only: no database, no server, runs in milliseconds
-./scripts/run_tests.sh --unit
+./tests/run.sh --unit
 
-# One suite while iterating on it
-./scripts/run_tests.sh --unit --filter Money
+# A group, or one test, while iterating
+./tests/run.sh --group security
+./tests/run.sh --only bank
+bash tests/integration/account/bank-recon/test.sh
+
+# What would run, in order, and what database state each demands
+./tests/run.sh --list
+
+# One unit suite
+./tests/run.sh --unit --filter Money
 ./build/erp_tests Tax
 ```
 
+`scripts/run_tests.sh` still works — it forwards to `tests/run.sh`.
+
+**Before writing or debugging a test, read `tests/docs/tooling.md`** — every
+tool, flag and helper function, with the trap each one hides (`pg()` strips
+spaces, `has_error` matches the error *object*, an empty id means the INSERT
+failed). `tests/docs/browser-render-checks.md` covers driving a real browser,
+which is the only way to catch an OWL template error.
+
 `erp_tests` is **not** part of the default build target — `cmake --build ./build`
-stays the fast path. `run_tests.sh` builds it explicitly.
+stays the fast path. `tests/run.sh` builds it explicitly. Its source list is a
+glob over `tests/unit/*/`, evaluated at **configure** time, so a newly added
+unit file needs `cmake -B ./build` re-run once before it compiles.
 
-Two tiers, and both are load-bearing:
+## Database snapshots — the testing workflow (docs/104)
 
-- **unit** (`tests/*.cpp`, registered with `ERP_TEST`) — pure functions only.
-  Never let these acquire a database dependency.
-- **integration** (`scripts/verify_*.sh`) — drive the real HTTP API against real
-  PostgreSQL. These catch what unit tests structurally cannot: migrations, field
-  registration, SQL, and whether the wiring between them is connected at all.
+**A clean database means one thing: `db/snapshots/baseline.dump`.** It holds the
+schema plus the reference data every module seeds (chart of accounts, journals,
+units, footprints, stages, menus, help), one company and the admin user — and no
+transactions, no products, no test debris.
 
-Writing a new integration script: end with `All checks passed.` or
-`*** FAILURES ***`. The runner treats a missing verdict as a failure, so a script
-that dies early can never be scored as a pass.
+```bash
+./scripts/make_baseline.sh                    # rebuild the baseline
+./scripts/db_snapshot.sh restore db/snapshots/baseline.dump   # reset to clean
+./scripts/db_snapshot.sh take   my.dump       # capture any state
+./scripts/audit_test_leaks.sh                 # which tests leave rows behind
+```
+
+`tests/run.sh` does this on every run, in order:
+
+1. snapshots the working database to `log/pretest.dump`,
+2. loads `baseline.dump` so the run starts from identical data,
+3. runs the suite,
+4. **restores `log/pretest.dump`** — your data comes back exactly as it was.
+
+Flags: `--no-baseline` (run against the working database), `--keep-db` (skip the
+restore; the snapshot is still taken), `--baseline <file>`.
+
+### Writing tests under this workflow
+
+- **Seed your own fixtures.** A clean baseline has zero products and zero
+  orders. A script that assumes one exists is not testing what it claims to.
+  Running against the baseline is how you find out.
+- **Synthesise a snapshot for a corner case.** Build the state you need, dump it
+  with `db_snapshot.sh take`, and restore it at the start of the test. That is
+  the supported way to test against a large, awkward or historical database
+  without carrying it in the working one.
+- **Never rely on rows another script left behind.** `audit_test_leaks.sh`
+  measures who leaks; the restore stops it accumulating, but a script that reads
+  another's debris is still broken.
+
+Both tiers are load-bearing:
+
+- **unit** (`tests/unit/<subject>/*.cpp`, registered with `ERP_TEST`) — pure
+  functions only. Never let these acquire a database dependency.
+- **integration / functional / security** (`tests/**/test.sh`) — drive the real
+  HTTP API against real PostgreSQL. These catch what unit tests structurally
+  cannot: migrations, field registration, SQL, and whether the wiring between
+  them is connected at all.
+
+**A test is a folder**, holding a `test.sh` and a `meta` that declares its group,
+order, database `scenario` and whether it `needs=fixtures`. Order and database
+state are declared, not implied by filename. See `tests/README.md` for the
+template and the full `meta` reference.
+
+Every test must end with `All checks passed.` or `*** FAILURES ***`. The runner
+scores on that line rather than the exit code, and treats a **missing** verdict
+as a failure — so a test that dies early can never be scored as a pass.
 
 ## Project structure
 

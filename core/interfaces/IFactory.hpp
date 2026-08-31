@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ============================================================
 // Lifetime
@@ -54,4 +54,4 @@ public:
     virtual std::vector<std::string> registeredNames() const = 0;
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

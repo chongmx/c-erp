@@ -20,10 +20,10 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::portal {
+namespace cerp::modules::portal {
 
-using namespace odoo::core;
-using namespace odoo::infrastructure;
+using namespace cerp::core;
+using namespace cerp::infrastructure;
 
 // Forward declarations for types used in private members
 class PortalSessionManager;
@@ -76,4 +76,4 @@ private:
     void seedMenu_();
 };
 
-} // namespace odoo::modules::portal
+} // namespace cerp::modules::portal

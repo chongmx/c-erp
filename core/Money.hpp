@@ -39,7 +39,7 @@
 #include <string_view>
 #include <vector>
 
-namespace odoo::core {
+namespace cerp::core {
 
 // ── Currency descriptor ───────────────────────────────────────
 // Mirrors res_currency. `rate` follows the convention fixed in docs/048 §4.3:
@@ -155,4 +155,4 @@ private:
     void requireSameCurrency_(const Money& o, const char* op) const;
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

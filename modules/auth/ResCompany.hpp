@@ -2,14 +2,14 @@
 #include "BaseModel.hpp"
 #include "FieldRegistry.hpp"
 
-namespace odoo::modules::auth {
+namespace cerp::modules::auth {
 
 // ================================================================
 // ResCompany — res.company
 // ================================================================
 /**
  * Minimal company model required by res.users context fields.
- * Odoo 19 adds branch support via parent_id/child_ids.
+ * the reference ERP adds branch support via parent_id/child_ids.
  */
 class ResCompany : public core::BaseModel<ResCompany> {
 public:
@@ -84,4 +84,4 @@ public:
     }
 };
 
-} // namespace odoo::modules::auth
+} // namespace cerp::modules::auth

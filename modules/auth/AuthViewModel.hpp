@@ -5,12 +5,13 @@
 #include "Errors.hpp"
 #include "Groups.hpp"
 #include <nlohmann/json.hpp>
+#include <cctype>
 #include <memory>
 #include <string>
 
-namespace odoo::modules::auth {
+namespace cerp::modules::auth {
 
-using odoo::infrastructure::AccessDeniedError;
+using cerp::infrastructure::AccessDeniedError;
 
 // ================================================================
 // AuthViewModel
@@ -28,7 +29,7 @@ using odoo::infrastructure::AccessDeniedError;
  * The "authenticate" method is on the public bypass list in
  * JsonRpcDispatcher, so it reaches here even without a valid session.
  *
- * Odoo 19 authenticate call format:
+ * the reference ERP authenticate call format:
  * @code
  * {
  *   "model": "res.users",
@@ -62,6 +63,7 @@ public:
         REGISTER_MUTATOR("unlink",           handleUnlink)
         REGISTER_METHOD("fields_get",       handleFieldsGet)
         REGISTER_METHOD("change_password",  handleChangePassword)
+        REGISTER_METHOD("action_generate_reset_link", handleGenerateResetLink)
     }
 
     std::string modelName() const override { return "res.users"; }
@@ -98,7 +100,7 @@ private:
     // authenticate — args[0]=db, args[1]=login, args[2]=password
     // ----------------------------------------------------------
     nlohmann::json handleAuthenticate(const core::CallKwArgs& call) {
-        // Support both Odoo's positional format and kwargs format
+        // Support both the reference ERP's positional format and kwargs format
         std::string db       = call.arg(0).is_string()
                                ? call.arg(0).get<std::string>() : dbName_;
         std::string login    = call.arg(1).is_string()
@@ -108,8 +110,14 @@ private:
                                ? call.arg(2).get<std::string>()
                                : call.kwargs.value("password", std::string{});
 
+        // These two are things the person at the keyboard must be TOLD, so they
+        // are thrown as user-facing errors rather than as std::runtime_error.
+        // SEC-28 masks a runtime_error to "An internal error occurred" — which
+        // is right for a genuine fault and wrong here: mistyping a password is
+        // an expected outcome, and reporting it as a server failure sends people
+        // to support instead of back to the keyboard.
         if (login.empty() || password.empty())
-            throw std::runtime_error("Login and password are required");
+            throw infrastructure::ValidationError("Login and password are required");
 
         // The session_id comes from the context injected by JsonRpcDispatcher
         const std::string sid = call.kwargs.value("context",
@@ -130,7 +138,9 @@ private:
 
         const bool ok = auth_->authenticate(login, password, db, session);
         if (!ok)
-            throw std::runtime_error("Invalid credentials");
+            // The same message whether the login is unknown or the password is
+            // wrong — telling them apart is a user-enumeration oracle.
+            throw AccessDeniedError("Invalid credentials");
 
         // Enrich session with display name, partner, company, admin flag, and group IDs
         {
@@ -466,6 +476,88 @@ private:
     }
 
     // ----------------------------------------------------------
+    // action_generate_reset_link — admin issues a password-reset link
+    //
+    // This is the ONLY way a reset token comes into existence: an administrator
+    // mints one for a chosen user and sends the returned link out of band. The
+    // self-service "email me a reset" path was removed (see AuthSignupModule),
+    // so there is no automated issuance anywhere.
+    //
+    // The token is stored on the user's PARTNER (signup_token/signup_expiration,
+    // the same columns the completion route reads), lives 24 hours, and is
+    // single-use — completeReset_() clears it once spent. Returns the token and
+    // a ready-to-send URL so the admin need never see or set the user's actual
+    // password.
+    // ----------------------------------------------------------
+    nlohmann::json handleGenerateResetLink(const core::CallKwArgs& call) {
+        requireAdmin_(call);
+        const auto ids = call.ids();
+        if (ids.empty())
+            throw std::runtime_error("action_generate_reset_link: no user id provided");
+        const int uid = ids.front();
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        auto urow = txn.exec(
+            "SELECT u.login, u.partner_id FROM res_users u WHERE u.id=$1",
+            pqxx::params{uid});
+        if (urow.empty())
+            throw std::runtime_error("action_generate_reset_link: user not found");
+        const std::string login = urow[0]["login"].c_str();
+        if (urow[0]["partner_id"].is_null())
+            throw std::runtime_error(
+                "This user has no contact record to attach a reset link to");
+        const int partnerId = urow[0]["partner_id"].as<int>();
+
+        const std::string token = AuthService::randomToken();
+        txn.exec(
+            "UPDATE res_partner "
+            "   SET signup_token=$1, signup_expiration=now() + INTERVAL '24 hours' "
+            " WHERE id=$2",
+            pqxx::params{token, partnerId});
+
+        // Base URL for the link the admin will send. Falls back to localhost so
+        // a dev instance still produces a usable (if local) link.
+        std::string base = "http://localhost:8069";
+        auto brow = txn.exec(
+            "SELECT value FROM ir_config_parameter WHERE key='web.base.url' LIMIT 1");
+        if (!brow.empty() && !brow[0][0].is_null()) {
+            std::string v = brow[0][0].c_str();
+            if (!v.empty()) base = v;
+        }
+        txn.commit();
+
+        // The link lands on the SPA (served unauthenticated → the login page),
+        // which reads these params and shows a "set a new password" panel that
+        // POSTs the completion. login is percent-encoded because it is an email.
+        const std::string url = base + "/?reset_login=" + urlEncode_(login)
+                                     + "&reset_token=" + token;
+
+        return nlohmann::json{
+            {"login",         login},
+            {"token",         token},
+            {"reset_url",     url},
+            {"expires_hours", 24},
+        };
+    }
+
+    // Minimal percent-encoder for a query-string VALUE (an email login). Encodes
+    // everything outside the unreserved set so '@', '+', '&' and friends survive
+    // the round-trip through the browser's URLSearchParams.
+    static std::string urlEncode_(const std::string& s) {
+        static const char* hexd = "0123456789ABCDEF";
+        std::string out;
+        out.reserve(s.size() * 3);
+        for (unsigned char c : s) {
+            if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~')
+                out += static_cast<char>(c);
+            else { out += '%'; out += hexd[c >> 4]; out += hexd[c & 0x0F]; }
+        }
+        return out;
+    }
+
+    // ----------------------------------------------------------
     // change_password — args[0]=old_passwd, args[1]=new_passwd
     // ----------------------------------------------------------
     nlohmann::json handleChangePassword(const core::CallKwArgs& call) {
@@ -502,4 +594,4 @@ private:
     }
 };
 
-} // namespace odoo::modules::auth
+} // namespace cerp::modules::auth

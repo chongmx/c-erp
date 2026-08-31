@@ -29,10 +29,10 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 // ================================================================
 // helpers
@@ -41,7 +41,7 @@ using namespace odoo::core;
 /**
  * Normalise a many2one value to a plain id.
  *
- * The client may send either a bare integer or Odoo's `[id, "display"]`
+ * The client may send either a bare integer or the reference ERP's `[id, "display"]`
  * pair depending on whether the value came from a form field or a
  * search_read result. Anything else — notably `false`, which is how the
  * client clears a many2one — becomes 0, meaning "not set".
@@ -518,7 +518,10 @@ public:
         fieldRegistry_.add({"recurrence_end_date",  FieldType::Date,     "Until"});
         fieldRegistry_.add({"recurrence_parent_id", FieldType::Many2one, "Generated From", false, false, true, false, "rental.expense"});
         fieldRegistry_.add({"company_id",           FieldType::Many2one, "Company", false, false, true, false, "res.company"});
-        // attachment_id exists in the DB but is deliberately NOT registered:
+        // Receipts attach through ir.attachment's polymorphic (res_model,
+        // res_id) link, not a column here — the placeholder attachment_id was
+        // dropped in migration 814 (docs/092). Historical note follows:
+        // attachment_id existed in the DB but was deliberately NOT registered:
         // there is no ir.attachment model yet, so nothing can write it, and
         // registering a field with no model behind it invites a UI that
         // pretends receipts can be uploaded (docs/054 §7).
@@ -1030,7 +1033,7 @@ void RentalModule::registerRoutes() {
         demoRoute("clear", &RentalDemo::clear), {drogon::Post});
 }
 
-void RentalModule::registerMigrations(odoo::infrastructure::MigrationRunner& runner) {
+void RentalModule::registerMigrations(cerp::infrastructure::MigrationRunner& runner) {
     registerRentalMigrations(runner);
 }
 
@@ -1122,4 +1125,4 @@ void RentalModule::seedMenus_() {
     txn.commit();
 }
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

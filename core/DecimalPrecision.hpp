@@ -28,9 +28,9 @@
 #include <utility>
 #include <vector>
 
-namespace odoo::infrastructure { class DbConnection; }
+namespace cerp::infrastructure { class DbConnection; }
 
-namespace odoo::core {
+namespace cerp::core {
 
 class DecimalPrecision {
 public:
@@ -71,4 +71,4 @@ private:
     static std::unique_ptr<DecimalPrecision> s_instance_;
 };
 
-} // namespace odoo::core
+} // namespace cerp::core

@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace odoo::modules::hr {
+namespace cerp::modules::hr {
 
 class HrModule : public core::IModule {
 public:
@@ -41,4 +41,4 @@ private:
     void seedMenus_();
 };
 
-} // namespace odoo::modules::hr
+} // namespace cerp::modules::hr

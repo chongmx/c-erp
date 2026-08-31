@@ -20,9 +20,9 @@
 #include <string>
 #include <vector>
 
-namespace odoo::infrastructure { class DbConnection; }
+namespace cerp::infrastructure { class DbConnection; }
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
 struct ExpenseGenResult {
     int generated = 0;
@@ -47,4 +47,4 @@ public:
     static void registerCron(std::shared_ptr<infrastructure::DbConnection> db);
 };
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

@@ -12,10 +12,10 @@
 #include <map>
 #include <string>
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 nlohmann::json RentalForecast::cashflow(std::shared_ptr<DbConnection> db,
                                         int months,
@@ -178,4 +178,4 @@ SELECT to_char(m.month, 'YYYY-MM')          AS month,
     return out;
 }
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

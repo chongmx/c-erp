@@ -4,9 +4,9 @@
 #include "RentalMigrations.hpp"
 #include "MigrationRunner.hpp"
 
-namespace odoo::modules::rental {
+namespace cerp::modules::rental {
 
-using odoo::infrastructure::MigrationRunner;
+using cerp::infrastructure::MigrationRunner;
 
 void registerRentalMigrations(MigrationRunner& runner) {
 
@@ -223,10 +223,10 @@ void registerRentalMigrations(MigrationRunner& runner) {
     // idempotency discipline as billing, for the same reason and with the
     // same shape of constraint.
     //
-    // attachment_id is carried nullable but nothing writes it: there is no
-    // ir.attachment model in this codebase yet, so receipt upload is out of
-    // scope for v1 (docs/054 §7). The column exists so the capability can
-    // be added later without a schema change.
+    // attachment_id was carried here as a placeholder for receipt upload. That
+    // was based on a wrong premise — ir.attachment did exist, and it is
+    // polymorphic — so migration 814 drops the column again. Receipts attach
+    // through (res_model, res_id) like everything else (docs/092).
     // --------------------------------------------------------
     runner.registerMigration({806, "rental_expense", R"SQL(
         CREATE TABLE IF NOT EXISTS rental_expense (
@@ -591,7 +591,7 @@ void registerRentalMigrations(MigrationRunner& runner) {
     // --------------------------------------------------------
     // 813 — tie the invoice to its rental origin
     //
-    // Odoo links an invoice to the sale order it came from, and this
+    // the reference ERP links an invoice to the sale order it came from, and this
     // codebase already follows that: account_move carries `invoice_origin`
     // (a registered Char field, so it flows to the API and the portal for
     // free) and `sale_id` (a raw column plus an FK, added by SaleModule
@@ -616,6 +616,24 @@ void registerRentalMigrations(MigrationRunner& runner) {
             ON account_move(rental_contract_id)
             WHERE rental_contract_id IS NOT NULL;
     )SQL"});
+
+    // --------------------------------------------------------
+    // 814 — drop rental_expense.attachment_id
+    //
+    // The column was added in 806 as a placeholder "so the capability can be
+    // added later without a schema change", on the belief that there was no
+    // ir.attachment model. There was — and it is polymorphic: attachments
+    // find their owner through (res_model, res_id), so a dedicated column on
+    // one table is not how a receipt gets attached here (docs/091, docs/092).
+    //
+    // Nothing ever wrote it and nothing reads it: a single-valued column would
+    // also have capped a receipt at one file per expense, which is not how
+    // expenses arrive. Dropping it removes a field that would otherwise keep
+    // inviting exactly the wrong implementation.
+    // --------------------------------------------------------
+    runner.registerMigration({814, "rental_expense_drop_attachment_id", R"SQL(
+        ALTER TABLE rental_expense DROP COLUMN IF EXISTS attachment_id;
+    )SQL"});
 }
 
-} // namespace odoo::modules::rental
+} // namespace cerp::modules::rental

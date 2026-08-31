@@ -8,9 +8,9 @@
 #include <string>
 #include <vector>
 
-namespace odoo::infrastructure { class DbConnection; }
+namespace cerp::infrastructure { class DbConnection; }
 
-namespace odoo::modules::report {
+namespace cerp::modules::report {
 
 class ReportModule : public core::IModule {
 public:
@@ -37,7 +37,7 @@ private:
     core::ServiceFactory&   services_;
     core::ViewModelFactory& viewModels_;
     core::ViewFactory&      views_;
-    std::shared_ptr<odoo::infrastructure::DbConnection> db_;
+    std::shared_ptr<cerp::infrastructure::DbConnection> db_;
 
     void ensureSchema_();
     void seedTemplates_();
@@ -46,4 +46,4 @@ private:
     void seedConfigParams_extra_();
 };
 
-} // namespace odoo::modules::report
+} // namespace cerp::modules::report
