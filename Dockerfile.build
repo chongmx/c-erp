@@ -1,0 +1,102 @@
+# =============================================================
+# Dockerfile.build — a build box that matches the deployment host.
+#
+# WHY THIS EXISTS. The deployment host (easylockerspace) has 2 cores and
+# 964 MiB of RAM, against a 6 GiB swapfile.
+#
+# Measured here 2026-09-01, full build at -j6:
+#     largest single translation unit   1604 MiB
+#     all cc1plus combined (peak)       6430 MiB
+#     wall clock, 8 cores               667 s
+#
+# One TU wanting 1604 MiB is the whole argument: that is more than the host's
+# entire RAM, so the server cannot compile that file at ANY parallelism — it
+# can only page its working set through swap. That is why the host shows no OOM
+# kills yet takes hours: swap saves it and destroys it at the same time.
+# (Do not trust cc1plus RSS read ON the host — it is capped by free memory, so
+# it reads ~500 MiB and understates the real demand roughly threefold.)
+#
+# So we compile here and ship the binary, which only works if this image is
+# ABI-identical to the host — hence every pin below is a measurement of the
+# real server, not a guess.
+# Re-measure with:  ssh easylockerspace 'ldd --version; gcc --version'
+#
+# THE HOST, MEASURED 2026-09-01
+#   Debian GNU/Linux 13 (trixie)  x86-64      kernel 6.12 deb13-cloud
+#   glibc 2.41         libstdc++ up to GLIBCXX_3.4.33
+#   gcc 14.2.0         cmake 3.31.6            PostgreSQL 17.11
+#
+# debian:13-slim IS trixie, so glibc and libstdc++ match exactly. Building on
+# anything newer (Ubuntu 24.10+, Debian sid) silently raises the required
+# GLIBC_x.y symbol version and the binary dies on the host with
+# "version `GLIBC_2.4x' not found" — which is precisely the failure this file
+# exists to prevent. deploy.sh re-checks that invariant before it ships.
+# =============================================================
+FROM debian:13-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# -------------------------------------------------------------
+# Toolchain. Debian 13 ships gcc 14.2.0 and cmake 3.31.6, which is what the
+# host has, so no version pinning beyond the base image is needed.
+# -------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+      cmake \
+      make \
+      git \
+      pkg-config \
+      ca-certificates \
+      ccache \
+# -------------------------------------------------------------
+# Development headers.
+#
+# CMakeLists.txt builds Drogon and libpqxx FROM SOURCE (add_subdirectory), so
+# their dependencies have to be present as -dev packages here. Each line below
+# is the package that provides a shared object the DEPLOYED binary already
+# links against — read off `ldd ~/code/c-erp/build/c-erp` on the host, so this
+# list reproduces the linkage that is known to run there rather than inventing
+# a new one.
+#
+#   libssl-dev      -> libssl.so.3, libcrypto.so.3   TLS, and AuthService's
+#                      PBKDF2-HMAC-SHA512 password hashing. Also linked
+#                      directly by the erp_tests target.
+#   libpq-dev       -> libpq.so.5      libpqxx links against it; without this
+#                      the libpqxx subdirectory fails to configure at all.
+#   libjsoncpp-dev  -> libjsoncpp.so.26   HARD requirement of Drogon.
+#   uuid-dev        -> libuuid.so.1       HARD requirement of Drogon on Linux.
+#   zlib1g-dev      -> libz.so.1          Drogon's response compression.
+#   libc-ares-dev   -> libcares.so.2      Drogon's async DNS resolver.
+#   libbrotli-dev   -> libbrotlienc/dec.so.1   Drogon's brotli compression.
+#
+# The last three are Drogon's OPTIONAL database backends. This app talks to
+# PostgreSQL through libpqxx and never uses Drogon's ORM, so they add nothing
+# functionally — but the running binary links them, every matching .so is
+# already present on the host, and omitting them changes Drogon's build
+# configuration. Reproducing the known-good linkage is the cheaper risk.
+#
+#   libsqlite3-dev  -> libsqlite3.so.0
+#   libmariadb-dev  -> libmariadb.so.3
+#   libhiredis-dev  -> libhiredis.so.1.1.0
+# -------------------------------------------------------------
+      libssl-dev \
+      libpq-dev \
+      libjsoncpp-dev \
+      uuid-dev \
+      zlib1g-dev \
+      libc-ares-dev \
+      libbrotli-dev \
+      libsqlite3-dev \
+      libmariadb-dev \
+      libhiredis-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# deploy.sh runs this container as the HOST's uid:gid so the ./build tree stays
+# owned by you rather than by root. That uid has no passwd entry and therefore
+# no home directory, and both git and cmake write dotfiles — so give them a
+# writable HOME. Without it, git fails on the vendored submodules and the build
+# stops before it starts.
+ENV HOME=/tmp
+ENV CCACHE_DIR=/tmp/ccache
+
+WORKDIR /workspace
