@@ -1,8 +1,8 @@
 // ============================================================
-// tests/test_money.cpp — unit tests for core/Money (P2)
+// tests/unit/money/test_money.cpp — unit tests for core/Money (P2)
 //
 //   g++ -std=c++20 -I core -I core/infrastructure \
-//       -o /tmp/test_money tests/test_money.cpp core/Money.cpp && /tmp/test_money
+//       -o /tmp/test_money tests/unit/money/test_money.cpp core/Money.cpp && /tmp/test_money
 //
 // Seeds the Stage 3 ERP_TEST harness (docs/040); ports with a main() swap.
 // ============================================================
@@ -63,7 +63,7 @@ ERP_TEST(Money, all) {
     ck(threw, "malformed input throws");
 
     // ---------------------------------------------------------
-    section("the exact cases double got wrong (scripts/precision_demo.cpp)");
+    section("the exact cases double got wrong (scripts/deprecated/precision_demo.cpp)");
     {
         // 10,000 resistors at 0.00042 — accumulate vs multiply MUST agree.
         const Money price = Money::parse("0.00042");

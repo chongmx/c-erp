@@ -7,7 +7,7 @@ model it opens and the tests that touch that model.
 a menu or a test:
 
 ```bash
-python3 scripts/gen_menu_doc.py
+python3 tests/tools/gen_menu_doc.py
 ```
 
 | | |

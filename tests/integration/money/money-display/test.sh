@@ -29,7 +29,7 @@ SID=$(curl -s -X POST "$BASE/web/session/authenticate" -H 'Content-Type: applica
       --data @/tmp/vd_auth.json | sed -n 's/.*"session_id":"\([a-f0-9]*\)".*/\1/p')
 [ -z "$SID" ] && { echo "cannot authenticate"; exit 1; }
 echo "sid=${SID:0:8}..."
-source scripts/seed_test_fixtures.sh; ensure_sale_fixture "$SID" >/dev/null 2>&1
+source tests/lib/sale_fixture.sh; ensure_sale_fixture "$SID" >/dev/null 2>&1
 
 echo
 echo "############ report PDF (raw SQL -> HTML -> wkhtmltopdf) ############"

@@ -131,7 +131,7 @@ bash scripts/db_snapshot.sh verify  log/mine.dump     # is the archive readable?
 
 | File | Is |
 |---|---|
-| `db/snapshots/baseline.dump` | what the suite runs against: schema, reference data, the demo parts catalogue, one company, admin. No transactions |
+| `db/snapshots/baseline.dump` | what the suite runs against: schema, reference data, one company, admin. **No transactions and no products** — `product_product` is empty, so a test that reads "the first product" must seed it (`needs=fixtures`, or its own rows) |
 | `backups/odoo/default-clean.dump` | for the **Database & Backup** screen: runnable ERP, zero products/orders/entries |
 | `backups/odoo/default-demo.dump` | clean + the demo catalogue |
 | `log/pretest.dump` | your database, as the last suite run found it. **This is the file to restore if something goes wrong** |
@@ -140,8 +140,9 @@ Rebuilding data:
 
 ```bash
 bash scripts/make_baseline.sh        # rebuild db/snapshots/baseline.dump
-bash scripts/seed_demo_parts.sh      # 163-part catalogue (--clean to remove)
-bash scripts/seed_rental_demo.sh     # rental demo data
+bash scripts/seed.sh                 # what each dataset is, and what exists now
+bash scripts/seed.sh parts           # 163-part catalogue (--clean to remove)
+bash scripts/seed.sh rental          # rental demo data (--clear to remove)
 ```
 
 > **Seed, restart, verify, then dump.** Startup normalisation fills in
@@ -167,10 +168,10 @@ before it compiles. Rule: **no database, ever.**
 ## Finding problems
 
 ```bash
-bash scripts/audit_test_leaks.sh          # which tests leave rows behind
-bash scripts/audit_test_leaks.sh bank     # just the matching ones
-bash scripts/verify_menu_ids.sh           # menu/action id collisions
-psql … -f scripts/verify_ledger_integrity.sql
+bash tests/tools/audit_test_leaks.sh          # which tests leave rows behind
+bash tests/tools/audit_test_leaks.sh bank     # just the matching ones
+bash tests/integration/core/menu-ids/test.sh  # menu/action id collisions, + next free id
+psql … -f tests/tools/verify_ledger_integrity.sql
 ```
 
 `audit_test_leaks.sh` measures row deltas per test rather than reading cleanup

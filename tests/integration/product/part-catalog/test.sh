@@ -342,7 +342,7 @@ print(len(json.load(sys.stdin)['result']['facets']))")
   MIX=$(pg "SELECT count(DISTINCT value_text) FROM part_parameter WHERE name='Resistance' AND value_text LIKE '%k%'")
   [ -n "$MIX" ] && [ "$MIX" -gt 1 ] && ok "demo data mixes notations ($MIX distinct)" || no "demo notation not mixed"
 else
-  echo "    NOTE  demo catalogue not seeded (run ./scripts/seed_demo_parts.sh) — skipping 4 checks"
+  echo "    NOTE  demo catalogue not seeded (run ./scripts/seed/parts.sh) — skipping 4 checks"
 fi
 
 [ -z "$FAILED" ] && echo "  All checks passed." || echo "  *** FAILURES ***"

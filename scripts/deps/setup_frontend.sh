@@ -2,8 +2,9 @@
 set -euo pipefail
 
 OWL_VERSION="2.7.0"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-WEB_DIR="${SCRIPT_DIR}/../web/static"
+R="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+while [ "$R" != "/" ] && [ ! -f "$R/CMakeLists.txt" ]; do R="$(dirname "$R")"; done
+WEB_DIR="${R}/web/static"
 LIB_DIR="${WEB_DIR}/lib"
 
 info()    { echo "[INFO]  $*"; }

@@ -12,7 +12,7 @@ in someone's head.
 |---|---|
 | [tooling.md](tooling.md) | **start here.** Every test tool, its flags, and the helper functions — with the traps each one hides |
 | [test-plan.md](test-plan.md) | adding coverage — the measured surface, what is covered, and what to write next (§4b is the proposal awaiting review) |
-| [menu-coverage.md](menu-coverage.md) | auditing coverage — every menu option nested as it appears, with its model and tests. **Generated:** `python3 scripts/gen_menu_doc.py` |
+| [menu-coverage.md](menu-coverage.md) | auditing coverage — every menu option nested as it appears, with its model and tests. **Generated:** `python3 tests/tools/gen_menu_doc.py` |
 | [browser-render-checks.md](browser-render-checks.md) | claiming any screen "works", or trying to drive the UI from a browser |
 
 ## The rule these documents share

@@ -1,0 +1,10 @@
+group=security
+order=20
+scenario=current
+needs=none
+provides=none
+timeout=300
+# skip: needs a real nginx binary + openssl on the box, binds 8080/8443, and
+# deliberately leaves the proxy running for nginx-forge. Run by hand:
+#   bash tests/security/hardening/nginx-proxy/test.sh
+skip=yes

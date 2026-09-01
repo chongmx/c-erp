@@ -14,7 +14,7 @@
 # it is safe to run against production at any time.
 #
 # Connection parameters come from config/system.cfg ([options] section) and can
-# be overridden by the same env vars scripts/setup_db.sh uses:
+# be overridden by the same env vars scripts/deps/setup_db.sh uses:
 #   DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD
 #
 # Exit codes:
@@ -60,7 +60,7 @@ if ! Q "SELECT 1" >/dev/null; then
     err="$(cat /tmp/.pf_err 2>/dev/null)"
     if   echo "$err" | grep -qi "does not exist"; then
         bad "database \"$DB_NAME\" does not exist"
-        echo "     → create it first:  ./scripts/setup_db.sh"
+        echo "     → create it first:  ./scripts/deps/setup_db.sh"
     elif echo "$err" | grep -qiE "password|authentication"; then
         bad "authentication failed for user \"$DB_USER\""
         echo "     → check db_user / db_password in $CFG"

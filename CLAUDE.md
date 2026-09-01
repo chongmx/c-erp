@@ -61,7 +61,8 @@ transactions, no products, no test debris.
 ./scripts/make_baseline.sh                    # rebuild the baseline
 ./scripts/db_snapshot.sh restore db/snapshots/baseline.dump   # reset to clean
 ./scripts/db_snapshot.sh take   my.dump       # capture any state
-./scripts/audit_test_leaks.sh                 # which tests leave rows behind
+./tests/tools/audit_test_leaks.sh             # which tests leave rows behind
+./scripts/seed.sh                             # optional demo data — never needed by the suite
 ```
 
 `tests/run.sh` does this on every run, in order:
@@ -113,6 +114,12 @@ as a failure — so a test that dies early can never be scored as a pass.
 - `web/static/src/app.js` — single-file OWL frontend (no build step; served statically)
 - `docs/` — progress and architecture docs
 - `3rdparty/` — vendored: drogon, libpqxx, nlohmann/json
+- `tests/` — the whole suite, one entry point (`tests/run.sh`); `tests/tools/` holds
+  the by-hand instruments (leak audit, menu doc, ledger integrity)
+- `scripts/` — operational only: `build.sh`, `deploy.sh`, `server.sh`, the database
+  snapshot scripts, `seed.sh`. Machine setup is `scripts/deps/install.sh`; dead
+  one-offs are parked in `scripts/deprecated/`. See `scripts/README.md`.
+  **Nothing test-related belongs here** — a test is a folder under `tests/`.
 
 ## Key notes
 

@@ -1,8 +1,8 @@
 // ============================================================
-// tests/test_tax.cpp — unit tests for core/TaxEngine (P3)
+// tests/unit/tax/test_tax.cpp — unit tests for core/TaxEngine (P3)
 //
 //   g++ -std=c++20 -I core -I core/infrastructure -o /tmp/test_tax \
-//       tests/test_tax.cpp core/TaxEngine.cpp core/Money.cpp && /tmp/test_tax
+//       tests/unit/tax/test_tax.cpp core/TaxEngine.cpp core/Money.cpp && /tmp/test_tax
 // ============================================================
 #include "TaxEngine.hpp"
 #include "TestHarness.hpp"

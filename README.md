@@ -107,7 +107,7 @@ git clone --recurse-submodules <repo-url>
 cd odoo-cpp
 
 # 2. Install system dependencies
-bash scripts/install_deps.sh
+bash scripts/deps/install.sh
 
 # 3. Build
 cmake -B build

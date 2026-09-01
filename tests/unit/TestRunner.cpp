@@ -1,5 +1,5 @@
 // ============================================================
-// tests/TestRunner.cpp — the single main() for erp_tests (P7)
+// tests/unit/TestRunner.cpp — the single main() for erp_tests (P7)
 //
 //   ./build/erp_tests            run everything
 //   ./build/erp_tests Money      run only cases whose name contains "Money"

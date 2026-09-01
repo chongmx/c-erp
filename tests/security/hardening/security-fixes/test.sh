@@ -50,7 +50,7 @@ printf '%s' "$(call product.category search_read '[[]]')" | grep -q '"result"' \
 
 # Guarantee a sale order exists so the PDF exec-path probes have a real record
 # to render (they used to hardcode id=2, which need not exist).
-source scripts/seed_test_fixtures.sh; ensure_sale_fixture "$SID" >/dev/null 2>&1
+source tests/lib/sale_fixture.sh; ensure_sale_fixture "$SID" >/dev/null 2>&1
 SO=$(pg "SELECT id FROM sale_order ORDER BY id LIMIT 1")
 
 # =============================================================

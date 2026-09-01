@@ -110,7 +110,8 @@ chkmenu "Groups"             res.groups
 chkmenu "Work Centers"       mrp.workcenter
 # Portal Users and Master Production Schedule both lost their ids to MRP
 # (action 35 / menu 120) — Settings ▸ Portal Users had vanished entirely.
-# Found by scripts/verify_menu_ids.sh; these two keep it fixed (docs/090).
+# Found by the menu-id check, now tests/integration/core/menu-ids/ (docs/090);
+# these two keep it fixed.
 chkmenu "Portal Users"               portal.partner
 chkmenu "Master Production Schedule" mrp.production.schedule
 chkmenu "Manufacturing Orders"       mrp.production

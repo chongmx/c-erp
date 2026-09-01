@@ -37,7 +37,7 @@ SID=$(curl -s -X POST "$BASE/web/session/authenticate" -H 'Content-Type: applica
 [ -z "$SID" ] && { echo "cannot authenticate"; exit 1; }
 
 # Guarantee a sale/invoice fixture exists (shared, idempotent).
-source scripts/seed_test_fixtures.sh; ensure_sale_fixture "$SID" >/dev/null 2>&1
+source tests/lib/sale_fixture.sh; ensure_sale_fixture "$SID" >/dev/null 2>&1
 
 call() {   # $1=model $2=method $3=args $4=kwargs-extra
     cat > /tmp/vm_call.json <<EOF

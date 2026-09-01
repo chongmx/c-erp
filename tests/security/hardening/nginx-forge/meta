@@ -1,0 +1,9 @@
+group=security
+order=21
+scenario=current
+needs=none
+provides=none
+timeout=300
+# skip: requires the proxy from ../nginx-proxy to already be running, so it
+# cannot stand alone in an automated run. Run the pair by hand.
+skip=yes

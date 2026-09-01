@@ -6,7 +6,7 @@
 //
 //   ./build/erp_tests Session
 //
-// P7: was scripts/test_sessionmanager.cpp with its own main(). Now part of
+// P7: was a standalone scripts/test_sessionmanager.cpp (since deleted) with its own main(). Now part of
 // the erp_tests target, so it builds with everything else and cannot rot
 // unnoticed.
 // =============================================================

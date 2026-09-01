@@ -12,7 +12,7 @@ source tests/lib/harness.sh
 # =============================================================
 # P3 — tax engine, end to end through the API.
 #
-# The unit tests (tests/test_tax.cpp) prove the arithmetic. This proves
+# The unit tests (tests/unit/tax/test_tax.cpp) prove the arithmetic. This proves
 # the wiring: that a line saved through the API gets the right tax, that
 # an invoice generates real tax LINES in the ledger, and that the entry
 # still balances afterwards.
@@ -31,7 +31,7 @@ EOF
 SID=$(curl -s -X POST "$BASE/web/session/authenticate" -H 'Content-Type: application/json' \
       --data @/tmp/vt_auth.json | sed -n 's/.*"session_id":"\([a-f0-9]*\)".*/\1/p')
 [ -z "$SID" ] && { echo "cannot authenticate"; exit 1; }
-source scripts/seed_test_fixtures.sh; ensure_sale_fixture "$SID" >/dev/null 2>&1
+source tests/lib/sale_fixture.sh; ensure_sale_fixture "$SID" >/dev/null 2>&1
 
 call() {
     cat > /tmp/vt.json <<EOF

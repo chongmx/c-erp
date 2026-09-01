@@ -46,7 +46,7 @@ t_eq "website.page" "$(pg "SELECT a.res_model FROM ir_ui_menu m JOIN ir_act_wind
 # your website's home page" on a public site.
 #
 # Keyed on the placeholder's own title rather than on the slug 'home' — once a
-# real site is seeded over it (scripts/seed_easylocker_site.py) that slug is
+# real site is seeded over it (scripts/seed/website.py) that slug is
 # legitimately published, and an assertion on the slug would then be failing
 # for the right reason at the wrong time.
 t_eq "0" "$(pg "SELECT count(*) FROM website_page

@@ -49,7 +49,7 @@ sec "1. the catalogue we are going to design against"
 DEMO=$(pg "SELECT count(*) FROM product_product WHERE default_code LIKE 'DP-%'")
 t_ge "${DEMO:-0}" 50 "there is a catalogue to design against"
 if [ "${DEMO:-0}" -lt 50 ]; then
-    echo "    the demo catalogue is not loaded — rebuild it with scripts/seed_demo_parts.sh"
+    echo "    the demo catalogue is not loaded — rebuild it with scripts/seed/parts.sh"
     verdict; exit 1
 fi
 

@@ -28,7 +28,7 @@ EOF
 SID=$(curl -s -X POST "$BASE/web/session/authenticate" -H 'Content-Type: application/json' \
       --data @/tmp/vr_auth.json | sed -n 's/.*"session_id":"\([a-f0-9]*\)".*/\1/p')
 [ -z "$SID" ] && { echo "cannot authenticate"; exit 1; }
-source scripts/seed_test_fixtures.sh; ensure_sale_fixture "$SID" >/dev/null 2>&1
+source tests/lib/sale_fixture.sh; ensure_sale_fixture "$SID" >/dev/null 2>&1
 
 LID=$(pg "SELECT id FROM sale_order_line ORDER BY id LIMIT 1")
 OID=$(pg "SELECT order_id FROM sale_order_line WHERE id=$LID")

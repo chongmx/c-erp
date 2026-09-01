@@ -33,7 +33,14 @@ tests/
     api.sh          auth, call, call_as, http_get
     db.sh           pg / pgid, scenario_load, scenario_save
     fixtures.sh     fx_create / fx_drop / fx_report — the canonical set
+    sale_fixture.sh ensure_sale_fixture — one sale order, for tests that need
+                    only that and do not want the whole canonical set
+    render.mjs      the browser driver (see docs/browser-render-checks.md)
     testlib/        vendored python helpers (segno, qrcheck) for QR checks
+  tools/          run by hand, not by the runner — they measure the suite
+    audit_test_leaks.sh         row deltas per test: who leaves rows behind
+    gen_menu_doc.py             regenerates docs/menu-coverage.md
+    verify_ledger_integrity.sql exact ledger equalities, no epsilon
   unit/           C++ only. No database, ever. Milliseconds.
     money/ tax/ session/
   setup/          creates the canonical fixtures, and asserts the creation
@@ -137,7 +144,7 @@ test therefore resolves from the repository root.
   test that looks up "the first product" and assumes one exists is not testing
   what it claims to; either declare `needs=fixtures` or create your own.
 - **Clean up what you create.** Use a distinctive prefix and delete it on the
-  way out (`trap cleanup EXIT`). `scripts/audit_test_leaks.sh` reports who
+  way out (`trap cleanup EXIT`). `tests/tools/audit_test_leaks.sh` reports who
   leaves rows behind.
 - **Never read another test's debris.** The restore stops it accumulating, but
   a test that depends on it is broken regardless.

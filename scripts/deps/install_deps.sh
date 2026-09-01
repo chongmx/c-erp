@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
+# =============================================================
+# scripts/deps/install_deps.sh — build toolchain, system libraries and the
+# bundled libpqxx. Run once on a fresh machine, or after a submodule bump.
+#
+#   ./scripts/deps/install.sh          # this, plus wkhtmltopdf and OWL
+#   ./scripts/deps/install_deps.sh     # just this
+#
+# Paths below are repo-relative (3rdparty/, build/), so resolve the root first
+# rather than trusting the caller's working directory.
+# =============================================================
 set -euo pipefail
+R="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+while [ "$R" != "/" ] && [ ! -f "$R/CMakeLists.txt" ]; do R="$(dirname "$R")"; done
+cd "$R" || exit 1
 
 LIBPQXX_TAG="7.9.2"
 LIBPQXX_URL="https://github.com/jtv/libpqxx.git"
