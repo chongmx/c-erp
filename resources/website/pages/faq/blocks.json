@@ -1,0 +1,56 @@
+[
+    {
+        "text": "Questions",
+        "type": "heading",
+        "level": "1"
+    },
+    {
+        "type": "faq",
+        "items": [
+            {
+                "a": "The 50 takes about a one-bedroom flat — roughly 40 medium boxes, or 25 boxes with a sofa. The 90 takes a two to three-bedroom home. If you are between the two, tell us what you have and we will say which one, including if that is the smaller.",
+                "q": "Which size do I need?"
+            },
+            {
+                "a": "Yes. Access is seven days a week. Office hours are shorter, so if you need to speak to somebody, come on a weekday.",
+                "q": "Can I get in at the weekend?"
+            },
+            {
+                "a": "No deposit. The first month is payable when you move in, and that is the whole of it.",
+                "q": "Is there a deposit?"
+            },
+            {
+                "a": "It is monthly and rolling. One month's notice on either side. There is no minimum term and no penalty for leaving.",
+                "q": "How long do I have to commit to?"
+            },
+            {
+                "a": "You do, and only you. You fit your own padlock and we do not keep a copy. Staff cannot open your unit.",
+                "q": "Who has a key?"
+            },
+            {
+                "a": "Yes, and many do. The 90 takes about twelve stacked pallets. Tell us if you will be coming and going daily so we can put you near the door.",
+                "q": "Can I store business stock?"
+            },
+            {
+                "a": "Nothing perishable, living, flammable, explosive, or illegal. If you are unsure about something, ask before you bring it.",
+                "q": "What can I not store?"
+            },
+            {
+                "a": "We have trolleys and a loading bay, and we will point you at a mover we trust. We do not move things ourselves.",
+                "q": "Do you help with moving?"
+            }
+        ]
+    },
+    {
+        "type": "divider"
+    },
+    {
+        "text": "Something not answered here? Ask us — we would rather answer it before you sign than after.",
+        "type": "text"
+    },
+    {
+        "href": "/site/contact",
+        "text": "Ask a question",
+        "type": "button"
+    }
+]

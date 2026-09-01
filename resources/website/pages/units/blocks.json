@@ -1,0 +1,72 @@
+[
+    {
+        "text": "Sizes and prices",
+        "type": "heading",
+        "level": "1"
+    },
+    {
+        "text": "Two sizes, priced per calendar month. The price you are quoted is the price you pay — there is no admin fee and no compulsory insurance.",
+        "type": "text"
+    },
+    {
+        "type": "pricing",
+        "items": [
+            {
+                "name": "The 50",
+                "size": "50 sq ft · about 2.3 m × 2.0 m × 2.4 m high",
+                "badge": "Most popular",
+                "price": "RM 330",
+                "period": "/month",
+                "cta_href": "/site/contact",
+                "cta_text": "Enquire about a 50",
+                "featured": true,
+                "features": [
+                    "A one-bedroom flat, packed sensibly",
+                    "About 40 medium boxes",
+                    "Or 25 boxes plus a sofa and a mattress",
+                    "Business use: about 6 pallets stacked"
+                ]
+            },
+            {
+                "name": "The 90",
+                "size": "90 sq ft · about 3.0 m × 2.8 m × 2.4 m high",
+                "price": "RM 550",
+                "period": "/month",
+                "cta_href": "/site/contact",
+                "cta_text": "Enquire about a 90",
+                "features": [
+                    "A two to three-bedroom home",
+                    "About 75 medium boxes",
+                    "Full bedroom set, dining table and boxes",
+                    "Business use: about 12 pallets stacked"
+                ]
+            }
+        ]
+    },
+    {
+        "text": "What is included",
+        "type": "heading",
+        "level": "2"
+    },
+    {
+        "type": "columns",
+        "items": [
+            {
+                "text": "The unit, 7-day access, lighting, ventilation, CCTV, individual alarm, and use of our trolleys.",
+                "title": "In the price"
+            },
+            {
+                "text": "Your own padlock, which you keep. We sell one at cost if you would rather not bring one.",
+                "title": "Not in the price"
+            },
+            {
+                "text": "Monthly rolling. One month's notice either way. First month payable on move-in.",
+                "title": "Terms"
+            }
+        ]
+    },
+    {
+        "text": "Prices shown are the current monthly rate and exclude SST where it applies. Availability changes — ask us before you plan a move.",
+        "type": "text"
+    }
+]

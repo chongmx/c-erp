@@ -1,0 +1,49 @@
+[
+    {
+        "text": "How it works",
+        "type": "heading",
+        "level": "1"
+    },
+    {
+        "type": "steps",
+        "items": [
+            {
+                "text": "Send a short message with roughly what you have — \"a one-bedroom flat\" or \"twenty boxes and a bicycle\" is plenty. We will tell you which size fits.",
+                "title": "Tell us what you are storing"
+            },
+            {
+                "text": "We would rather you saw the actual room than a photograph. Come during office hours; no appointment needed.",
+                "title": "Come and see the unit"
+            },
+            {
+                "text": "Monthly rolling, one month's notice. We will explain anything you want explained before you sign.",
+                "title": "Sign a one-page agreement"
+            },
+            {
+                "text": "You buy or bring the padlock and you keep the only key. We do not hold a copy.",
+                "title": "Fit your own padlock"
+            },
+            {
+                "text": "Access seven days a week. Bring what you need, take what you want, no notice required.",
+                "title": "Come and go"
+            }
+        ]
+    },
+    {
+        "type": "divider"
+    },
+    {
+        "text": "Leaving",
+        "type": "heading",
+        "level": "2"
+    },
+    {
+        "text": "Give us a month's notice, empty the unit, take your padlock off, and that is it. We do not charge a cleaning fee for a unit left swept.",
+        "type": "text"
+    },
+    {
+        "href": "/site/contact",
+        "text": "Ask about availability",
+        "type": "button"
+    }
+]

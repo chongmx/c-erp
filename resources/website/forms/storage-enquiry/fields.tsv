@@ -1,0 +1,6 @@
+name	Your name	text	yes	10	
+phone	Phone	tel	yes	20	
+email	Email	email	no	30	
+size	Which size interests you	select	no	40	The 50 (50 sq ft)\nThe 90 (90 sq ft)\nNot sure yet
+moving	When do you need it	text	no	50	
+items	What are you storing	textarea	no	60	

@@ -1,0 +1,30 @@
+[
+    {
+        "text": "Ask us anything",
+        "type": "heading",
+        "level": "1"
+    },
+    {
+        "text": "Tell us roughly what you are storing and we will come back to you the same working day with the size you need and whether one is free.",
+        "type": "text"
+    },
+    {
+        "slug": "storage-enquiry",
+        "type": "form"
+    },
+    {
+        "type": "divider"
+    },
+    {
+        "text": "Find us",
+        "type": "heading",
+        "level": "2"
+    },
+    {
+        "lat": "3.1175958",
+        "lon": "101.7098814",
+        "type": "map",
+        "label": "Open in maps",
+        "query": "Easy Locker Space, Kuala Lumpur"
+    }
+]
