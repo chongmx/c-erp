@@ -2817,3 +2817,61 @@ body.ct-resizing { cursor:col-resize; user-select:none; }
 /* Line the checkbox up with the other controls in the grid instead of letting
    it float against the top of a taller cell. */
 .ai-field input[type="checkbox"] { width: 16px; height: 16px; margin: 6px 0 0; }
+
+/* ── Website Pages (docs/128) ─────────────────────────────────────
+   Two views of one record: the rendered page and its source. */
+.wp-wrap { display: grid; grid-template-columns: 260px 1fr; gap: 0;
+           height: calc(100vh - var(--nav-h)); }
+.wp-list { border-right: 1px solid var(--border); overflow-y: auto;
+           background: var(--surface); }
+.wp-list-head { display: flex; align-items: center; justify-content: space-between;
+                padding: 12px 14px; font-size: 12px; letter-spacing: .08em;
+                text-transform: uppercase; color: var(--muted); font-weight: 700;
+                border-bottom: 1px solid var(--border); }
+.wp-item { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.wp-item:hover { background: var(--bg); }
+.wp-item.sel { background: var(--bg); box-shadow: inset 3px 0 0 var(--accent); }
+.wp-item-t { font-weight: 600; font-size: 14px; }
+.wp-item-s { display: flex; gap: 6px; align-items: center; margin-top: 3px; }
+.wp-slug { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
+.wp-tag { font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+          padding: 1px 6px; border-radius: 99px; background: var(--border);
+          color: var(--text); font-weight: 700; }
+.wp-tag.wp-draft { background: #6b4b12; color: #ffd88a; }
+.wp-main { display: flex; flex-direction: column; min-width: 0; }
+.wp-head { display: flex; align-items: flex-start; justify-content: space-between;
+           gap: 16px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.wp-head h2 { margin: 0; font-size: 18px; }
+.wp-sub { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+.wp-actions { display: flex; gap: 8px; align-items: center; }
+.wp-mini { font: inherit; font-size: 12px; padding: 6px 11px; border-radius: 6px;
+           border: 1px solid var(--border); background: var(--bg); color: var(--text);
+           cursor: pointer; text-decoration: none; }
+.wp-mini:hover { border-color: var(--accent); }
+.wp-save { font: inherit; font-weight: 600; font-size: 13px; padding: 6px 16px;
+           border-radius: 6px; border: 0; background: var(--accent); color: #fff;
+           cursor: pointer; }
+.wp-save:disabled { opacity: .45; cursor: default; }
+.wp-tabs { display: flex; align-items: center; gap: 4px; padding: 0 18px;
+           border-bottom: 1px solid var(--border); }
+.wp-tab { font: inherit; font-size: 13px; font-weight: 600; padding: 10px 14px;
+          background: none; border: 0; border-bottom: 2px solid transparent;
+          color: var(--muted); cursor: pointer; }
+.wp-tab:hover { color: var(--text); }
+.wp-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.wp-sp { flex: 1; }
+.wp-err  { color: #ff8f9a; font-size: 12px; font-family: ui-monospace, monospace; }
+.wp-warn { color: #ffd88a; font-size: 12px; }
+.wp-ok   { color: var(--ok); font-size: 12px; }
+.wp-pane { flex: 1; min-height: 0; padding: 14px 18px 18px; }
+.wp-frame { width: 100%; height: 100%; border: 1px solid var(--border);
+            border-radius: 8px; background: #fff; }
+.wp-src { width: 100%; height: 100%; resize: none; font-family: ui-monospace,
+          SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.55;
+          padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px;
+          background: var(--bg); color: var(--text); }
+.wp-src:focus { outline: none; border-color: var(--accent); }
+.wp-note { padding: 14px 18px; color: var(--muted); font-size: 13px; }
+.wp-note-err { color: #ff8f9a; }
+.wp-empty { display: flex; align-items: center; justify-content: center;
+            height: 100%; color: var(--muted); }

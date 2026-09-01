@@ -11595,6 +11595,7 @@ const CUSTOM_VIEWS = {
     'bank.reconcile':     BankReconcile,
     'company.admin':      CompanyAdmin,
     'db.backups':         DbBackups,
+    'website.page':       WebsitePages,
     'db.studio':          DbStudio,
     'part.lookup':        PartLookup,
     'part.catalog':       PartCatalog,
@@ -11632,24 +11633,24 @@ class ActionView extends Component {
                 <div class="view-switch-bar">
                     <span class="rv-switch">
                         <button t-foreach="altViews" t-as="v" t-key="v.id"
-                                t-attf-class="{{ state.altView === v.id ? 'active' : '' }}"
+                                t-attf-class="{{ effectiveAltView === v.id ? 'active' : '' }}"
                                 t-att-title="v.title"
                                 t-on-click="() => this.setAltView(v.id)" t-esc="v.label"/>
                     </span>
                 </div>
-                <t t-if="state.altView === 'grouped'">
+                <t t-if="effectiveAltView === 'grouped'">
                     <GroupedListView action="currentAction" onOpenForm.bind="openForm"/>
                 </t>
-                <t t-elif="state.altView === 'kanban'">
+                <t t-elif="effectiveAltView === 'kanban'">
                     <KanbanView action="currentAction" onOpenForm.bind="openForm"/>
                 </t>
-                <t t-elif="state.altView === 'pivot'">
+                <t t-elif="effectiveAltView === 'pivot'">
                     <PivotView action="currentAction"/>
                 </t>
-                <t t-elif="state.altView === 'graph'">
+                <t t-elif="effectiveAltView === 'graph'">
                     <GraphView action="currentAction"/>
                 </t>
-                <t t-elif="state.altView === 'calendar'">
+                <t t-elif="effectiveAltView === 'calendar'">
                     <CalendarView action="currentAction" onOpenForm.bind="openForm"/>
                 </t>
                 <t t-elif="isCategoryModel">
@@ -11774,16 +11775,56 @@ class ActionView extends Component {
         // docs/095 — generic views, loaded from components/RecordViews.js
         GroupedListView, KanbanView, PivotView, GraphView, CalendarView };
 
-    // docs/095 — the alternate views offered on every list.
+    // docs/095, revised in docs/128 — the alternate views a model can actually
+    // support.
+    //
+    // These used to be offered unconditionally on every list. Three of them
+    // cannot work without a particular kind of field, so on a model like
+    // website.page or res.groups the buttons were there, were clickable, and
+    // led to an empty screen:
+    //
+    //   Pivot and Graph need something to MEASURE — an integer, float or
+    //   monetary field. With none, there is nothing to put in the cells.
+    //   Calendar needs a date or datetime to place a record on.
+    //
+    // Offering a control that cannot do anything is worse than not offering
+    // it: it reads as broken rather than as inapplicable. List, Grouped and
+    // Kanban work on any model, so they are always there.
     get altViews() {
-        return [
-            { id: 'list',     label: 'List',     title: 'The plain list' },
-            { id: 'grouped',  label: 'Grouped',  title: 'Group rows and subtotal them' },
-            { id: 'kanban',   label: 'Kanban',   title: 'A card per record, a column per group' },
-            { id: 'pivot',    label: 'Pivot',    title: 'Cross-tabulate two fields' },
-            { id: 'graph',    label: 'Graph',    title: 'Bar, line or pie' },
-            { id: 'calendar', label: 'Calendar', title: 'Place records on a month grid' },
+        // viewDef.fields is a MAP keyed by field name — {name: {string, type}} —
+        // not a list. Treating it as one made this getter throw, OWL swallowed
+        // it, and every generic list in the product rendered blank with no
+        // console error to say why. Both shapes are accepted now because the
+        // cost is two lines and the failure mode is a silent white screen.
+        const raw = this.state.listView?.fields;
+        const defs = !raw ? []
+                   : (Array.isArray(raw) ? raw : Object.values(raw));
+        const has = (types) => defs.some(f => f && types.includes(f.type));
+        const measurable = has(['integer', 'float', 'monetary']);
+        const datable    = has(['date', 'datetime']);
+
+        const views = [
+            { id: 'list',    label: 'List',    title: 'The plain list' },
+            { id: 'grouped', label: 'Grouped', title: 'Group rows and subtotal them' },
+            { id: 'kanban',  label: 'Kanban',  title: 'A card per record, a column per group' },
         ];
+        if (measurable) {
+            views.push({ id: 'pivot', label: 'Pivot', title: 'Cross-tabulate two fields' });
+            views.push({ id: 'graph', label: 'Graph', title: 'Bar, line or pie' });
+        }
+        if (datable) {
+            views.push({ id: 'calendar', label: 'Calendar',
+                         title: 'Place records on a month grid' });
+        }
+        return views;
+    }
+
+    // If the current view is no longer on offer — the model changed, or the
+    // list has no measurable field — fall back to the list rather than
+    // rendering a view nothing can populate.
+    get effectiveAltView() {
+        const ids = this.altViews.map(v => v.id);
+        return ids.includes(this.state.altView) ? this.state.altView : 'list';
     }
     setAltView(v) { this.state.altView = v; }
 
