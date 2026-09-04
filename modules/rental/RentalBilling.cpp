@@ -41,6 +41,8 @@ struct DueLine {
     std::string taxIdsJson  = "[]";
     int         anchorDay   = 1;
     int         months      = 1;
+    int         interval    = 1;          ///< the X in "every X <unit>"
+    std::string unit        = "month";    ///< day | week | month | year
 };
 
 struct DueGroup {
@@ -102,6 +104,11 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             "SELECT l.id, l.partner_id, l.unit_id, l.contract_id, "
             "       l.unit_price, l.discount_pct, l.tax_ids_json, "
             "       l.billing_anchor_day, l.billing_months, l.company_id, "
+            // The line's own period wins; NULL means it follows the contract
+            // (migration 816). Resolving it here rather than in C++ keeps
+            // "what cadence is this line on" answerable in one SQL query.
+            "       COALESCE(l.billing_interval, c.billing_interval, 1) AS billing_interval, "
+            "       COALESCE(l.billing_unit,     c.billing_unit, 'month') AS billing_unit, "
             "       to_char(l.next_period_start, 'YYYY-MM-DD') AS period_start, "
             "       COALESCE(u.code, '')  AS unit_code, "
             "       COALESCE(u.name, '')  AS unit_name, "
@@ -116,6 +123,11 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             // A line that has been ended stops billing even if its
             // next_period_start is still in the past.
             "   AND (l.date_end IS NULL OR l.next_period_start <= l.date_end) "
+            // A one-off or on-demand CONTRACT is never scheduled, whatever its
+            // lines say. Without this the COALESCE above would quietly fall
+            // back to monthly and invoice a contract the user marked as billed
+            // only when asked.
+            "   AND (c.id IS NULL OR c.billing_period NOT IN ('oneoff','ondemand')) "
             " ORDER BY l.partner_id, l.next_period_start, l.id "
             " LIMIT 1000",                       // PERF-F
             pqxx::params{asOf});
@@ -148,6 +160,9 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             dl.taxIdsJson  = r["tax_ids_json"].is_null() ? "[]" : r["tax_ids_json"].c_str();
             dl.anchorDay   = r["billing_anchor_day"].as<int>(1);
             dl.months      = r["billing_months"].as<int>(1);
+            dl.interval     = r["billing_interval"].as<int>(1);
+            dl.unit         = r["billing_unit"].is_null() ? std::string("month")
+                                                          : r["billing_unit"].c_str();
             g.lines.push_back(std::move(dl));
         }
         txn.commit();
@@ -196,8 +211,9 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             // the same anchor arithmetic the advance below uses — so the
             // printed period and the next due date can never disagree.
             auto pe = txn.exec(
-                "SELECT to_char(rental_next_period($1::date, $2, $3) - 1, 'YYYY-MM-DD')",
-                pqxx::params{g.periodStart, g.lines[0].anchorDay, g.lines[0].months});
+                "SELECT to_char(rental_next_period($1::date, $2, $3, $4) - 1, 'YYYY-MM-DD')",
+                pqxx::params{g.periodStart, g.lines[0].anchorDay,
+                             g.lines[0].interval, g.lines[0].unit});
             const std::string periodEnd = pe[0][0].c_str();
 
             // Invoice number from ir.sequence inside this transaction —
@@ -327,11 +343,14 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
                 // produced period_end.
                 txn.exec(
                     "UPDATE rental_contract_line "
-                    "   SET next_period_start = rental_next_period(next_period_start, $2, $3), "
-                    "       invoiced_through  = $4::date, "
+                    // The 4-argument form advances by (interval, unit) so a
+                    // weekly or daily tenancy moves by the right amount; the
+                    // 3-argument form it replaces could only step whole months.
+                    "   SET next_period_start = rental_next_period(next_period_start, $2, $3, $4), "
+                    "       invoiced_through  = $5::date, "
                     "       write_date = now() "
                     " WHERE id = $1",
-                    pqxx::params{dl.id, dl.anchorDay, dl.months, periodEnd});
+                    pqxx::params{dl.id, dl.anchorDay, dl.interval, dl.unit, periodEnd});
             }
 
             // One tax line per tax, accumulated across the units on this

@@ -28,6 +28,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <set>
 
 namespace cerp::modules::rental {
 
@@ -243,6 +244,11 @@ public:
 
     std::string name, state = "draft", dateStart, dateCancelled,
                 billingPeriod = "monthly", depositState = "none", notes;
+    // Derived from billingPeriod by trigger (migration 816), except for the
+    // 'custom' preset where these two ARE the user's choice. 0 / "" mean the
+    // period has no interval at all — one-off and on-demand.
+    int         billingInterval = 1;
+    std::string billingUnit     = "month";
     int    partnerId = 0, paymentTermId = 0, currencyId = 0,
            journalId = 0, companyId = 1, billingLeadDays = 7;
     double depositAmount = 0.0;
@@ -256,7 +262,36 @@ public:
         fieldRegistry_.add({"state",             FieldType::Char,     "Status"});
         fieldRegistry_.add({"date_start",        FieldType::Date,     "Start Date"});
         fieldRegistry_.add({"date_cancelled",    FieldType::Date,     "Cancelled On"});
-        fieldRegistry_.add({"billing_period",    FieldType::Char,     "Billing Period"});
+        // A selection, not free text: these nine values are the whole vocabulary
+        // of the CHECK constraint in migration 816, and the client renders a
+        // real combobox for a selection field instead of a text box the user
+        // has to guess the spelling into.
+        {
+            core::FieldDef bp{"billing_period", FieldType::Selection, "Billing Period"};
+            bp.selection = {
+                {"daily",     "Daily"},
+                {"weekly",    "Weekly"},
+                {"monthly",   "Monthly"},
+                {"quarterly", "Quarterly (3 months)"},
+                {"biannual",  "Every 6 months"},
+                {"yearly",    "Yearly"},
+                {"custom",    "Custom — every X…"},
+                {"oneoff",    "One off"},
+                {"ondemand",  "On demand"},
+            };
+            fieldRegistry_.add(bp);
+        }
+        fieldRegistry_.add({"billing_interval",  FieldType::Integer,  "Every"});
+        {
+            core::FieldDef bu{"billing_unit", FieldType::Selection, "Period Unit"};
+            bu.selection = {
+                {"day",   "Day(s)"},
+                {"week",  "Week(s)"},
+                {"month", "Month(s)"},
+                {"year",  "Year(s)"},
+            };
+            fieldRegistry_.add(bu);
+        }
         fieldRegistry_.add({"billing_lead_days", FieldType::Integer,  "Invoice Lead Days"});
         fieldRegistry_.add({"payment_term_id",   FieldType::Many2one, "Payment Terms", false, false, true, false, "account.payment.term"});
         fieldRegistry_.add({"deposit_amount",    FieldType::Monetary, "Deposit"});
@@ -276,6 +311,12 @@ public:
         j["date_start"]        = dateStart.empty()     ? nlohmann::json(nullptr) : nlohmann::json(dateStart);
         j["date_cancelled"]    = dateCancelled.empty() ? nlohmann::json(nullptr) : nlohmann::json(dateCancelled);
         j["billing_period"]    = billingPeriod;
+        // NULL, not 0/"" — one-off and on-demand have no interval, and a 0 in
+        // an interval column would look like a period of "every zero months".
+        j["billing_interval"]  = billingInterval > 0 ? nlohmann::json(billingInterval)
+                                                     : nlohmann::json(nullptr);
+        j["billing_unit"]      = billingUnit.empty() ? nlohmann::json(nullptr)
+                                                     : nlohmann::json(billingUnit);
         j["billing_lead_days"] = billingLeadDays;
         j["payment_term_id"]   = paymentTermId > 0 ? nlohmann::json(paymentTermId) : nlohmann::json(false);
         j["deposit_amount"]    = depositAmount;
@@ -294,6 +335,13 @@ public:
         if (j.contains("date_start")     && j["date_start"].is_string())     dateStart     = j["date_start"].get<std::string>();
         if (j.contains("date_cancelled") && j["date_cancelled"].is_string()) dateCancelled = j["date_cancelled"].get<std::string>();
         if (j.contains("billing_period") && j["billing_period"].is_string()) billingPeriod = j["billing_period"].get<std::string>();
+        if (j.contains("billing_interval") && j["billing_interval"].is_number())
+            billingInterval = j["billing_interval"].get<int>();
+        if (j.contains("billing_unit")   && j["billing_unit"].is_string())   billingUnit   = j["billing_unit"].get<std::string>();
+        // Mirror the trigger so a caller that reads the record straight back
+        // sees the same period it would get from the database. The trigger is
+        // still the authority — this only keeps the in-memory object honest.
+        applyPeriodPreset_();
         if (j.contains("billing_lead_days") && j["billing_lead_days"].is_number())
             billingLeadDays = j["billing_lead_days"].get<int>();
         if (j.contains("payment_term_id"))                                   paymentTermId = m2oToId_(j["payment_term_id"]);
@@ -319,7 +367,36 @@ public:
         if (partnerId <= 0) e.push_back("Customer is required");
         if (billingLeadDays < 0 || billingLeadDays > 90)
             e.push_back("Invoice lead days must be between 0 and 90");
+        static const std::set<std::string> kPeriods = {
+            "daily", "weekly", "monthly", "quarterly", "biannual",
+            "yearly", "custom", "oneoff", "ondemand"};
+        if (!kPeriods.count(billingPeriod))
+            e.push_back("Billing period must be one of daily, weekly, monthly, "
+                        "quarterly, biannual, yearly, custom, oneoff, ondemand");
+        // Only 'custom' lets the user choose the numbers, so only 'custom' can
+        // get them wrong. A rejected value here is a 400 with this sentence
+        // rather than a raw CHECK-constraint violation from PostgreSQL.
+        if (billingPeriod == "custom") {
+            if (billingInterval < 1 || billingInterval > 366)
+                e.push_back("Every X must be between 1 and 366");
+            static const std::set<std::string> kUnits = {"day", "week", "month", "year"};
+            if (!kUnits.count(billingUnit))
+                e.push_back("Period unit must be day, week, month or year");
+        }
         return e;
+    }
+
+private:
+    /// The preset -> (interval, unit) table, mirroring migration 816's trigger.
+    void applyPeriodPreset_() {
+        if (billingPeriod == "daily")          { billingInterval = 1; billingUnit = "day";   }
+        else if (billingPeriod == "weekly")    { billingInterval = 1; billingUnit = "week";  }
+        else if (billingPeriod == "monthly")   { billingInterval = 1; billingUnit = "month"; }
+        else if (billingPeriod == "quarterly") { billingInterval = 3; billingUnit = "month"; }
+        else if (billingPeriod == "biannual")  { billingInterval = 6; billingUnit = "month"; }
+        else if (billingPeriod == "yearly")    { billingInterval = 1; billingUnit = "year";  }
+        else if (billingPeriod == "custom")    { /* the user's own numbers stand */ }
+        else                                   { billingInterval = 0; billingUnit.clear(); }
     }
 };
 
@@ -335,6 +412,11 @@ public:
                 billingMode = "manual";
     int    contractId = 0, partnerId = 0, unitId = 0, billingAnchorDay = 1,
            billingMonths = 1, billingLeadDays = 7, companyId = 1;
+    // 0 / "" mean "inherit the contract's period" and store as NULL
+    // (migration 816). A line only carries these when it deliberately bills at
+    // a different cadence from its contract.
+    int         billingInterval = 0;
+    std::string billingUnit;
     double unitPrice = 0.0, discountPct = 0.0;
 
     explicit RentalContractLine(std::shared_ptr<DbConnection> db) : BaseModel(std::move(db)) {}
@@ -357,6 +439,11 @@ public:
         // same commit that adds it.
         fieldRegistry_.add({"billing_mode",       FieldType::Char,     "Billing"});
         fieldRegistry_.add({"billing_months",     FieldType::Integer,  "Every (months)"});
+        // docs/architecture/modules.md "The billing period": (interval, unit) expresses every period in one shape —
+        // daily/weekly/monthly/quarterly/biannual/yearly are just presets over
+        // it, and "every X <unit>" is the same field pair with an arbitrary X.
+        fieldRegistry_.add({"billing_interval",   FieldType::Integer,  "Every"});
+        fieldRegistry_.add({"billing_unit",       FieldType::Char,     "Period"});
         fieldRegistry_.add({"billing_lead_days",  FieldType::Integer,  "Invoice Lead Days"});
         fieldRegistry_.add({"next_period_start",  FieldType::Date,     "Next Period"});
         fieldRegistry_.add({"invoiced_through",   FieldType::Date,     "Invoiced Through"});
@@ -382,6 +469,13 @@ public:
         j["billing_anchor_day"] = billingAnchorDay;
         j["billing_mode"]       = billingMode;
         j["billing_months"]     = billingMonths;
+        // NULL = follow the contract. Writing 'month' here instead would make
+        // every line an explicit monthly override and the contract's own
+        // billing period could never take effect (migration 816).
+        j["billing_interval"]   = billingInterval > 0 ? nlohmann::json(billingInterval)
+                                                      : nlohmann::json(nullptr);
+        j["billing_unit"]       = billingUnit.empty() ? nlohmann::json(nullptr)
+                                                      : nlohmann::json(billingUnit);
         j["billing_lead_days"]  = billingLeadDays;
         j["next_period_start"]  = nextPeriodStart.empty() ? nlohmann::json(nullptr) : nlohmann::json(nextPeriodStart);
         j["invoiced_through"]   = invoicedThrough.empty() ? nlohmann::json(nullptr) : nlohmann::json(invoicedThrough);
@@ -405,6 +499,17 @@ public:
         if (j.contains("billing_anchor_day") && j["billing_anchor_day"].is_number()) billingAnchorDay = j["billing_anchor_day"].get<int>();
         if (j.contains("billing_mode")      && j["billing_mode"].is_string())      billingMode     = j["billing_mode"].get<std::string>();
         if (j.contains("billing_months")    && j["billing_months"].is_number())    billingMonths   = j["billing_months"].get<int>();
+        if (j.contains("billing_interval")  && j["billing_interval"].is_number())  billingInterval = j["billing_interval"].get<int>();
+        if (j.contains("billing_unit")      && j["billing_unit"].is_string())      billingUnit     = j["billing_unit"].get<std::string>();
+        // Keep billing_months in step for month-based periods: the billing run
+        // and every report still read it, and two fields disagreeing about the
+        // same period is how a tenancy silently bills at the wrong cadence.
+        // Only when this line HAS its own period — an inheriting line (unit
+        // empty) must not have its billing_months rewritten to zero.
+        if (billingInterval > 0) {
+            if (billingUnit == "month")      billingMonths = billingInterval;
+            else if (billingUnit == "year")  billingMonths = billingInterval * 12;
+        }
         if (j.contains("billing_lead_days") && j["billing_lead_days"].is_number()) billingLeadDays = j["billing_lead_days"].get<int>();
         if (j.contains("next_period_start") && j["next_period_start"].is_string()) nextPeriodStart = j["next_period_start"].get<std::string>();
         if (j.contains("invoiced_through")  && j["invoiced_through"].is_string())  invoicedThrough = j["invoiced_through"].get<std::string>();
@@ -430,8 +535,26 @@ public:
         if (dateStart.empty()) e.push_back("Start date is required");
         if (billingAnchorDay < 1 || billingAnchorDay > 31)
             e.push_back("Billing day must be between 1 and 31");
-        if (billingMode != "manual" && billingMode != "recurring")
-            e.push_back("Billing must be 'manual' or 'recurring'");
+        if (billingMode != "manual" && billingMode != "recurring"
+            && billingMode != "oneoff" && billingMode != "ondemand")
+            e.push_back("Billing must be one of: manual, recurring, oneoff, ondemand");
+        if (!billingUnit.empty() && billingUnit != "day" && billingUnit != "week"
+            && billingUnit != "month" && billingUnit != "year")
+            e.push_back("Billing period must be day, week, month or year");
+        // 366 is the CHECK's ceiling; a friendly message beats a constraint
+        // violation the user cannot act on.
+        //
+        // 0 is not out of range — it is the line saying "I have no period of my
+        // own, use the contract's" (migration 816). Rejecting it here made a
+        // line that inherits impossible to create at all, which is the normal
+        // case: most lines follow their contract.
+        if (billingInterval != 0 && (billingInterval < 1 || billingInterval > 366))
+            e.push_back("Billing interval must be between 1 and 366");
+        // Half a period is not a period: an interval without a unit, or a unit
+        // without an interval, resolves differently on the line and in the
+        // billing query.
+        if ((billingInterval == 0) != billingUnit.empty())
+            e.push_back("Set both 'every' and its unit, or neither to follow the contract");
         if (billingMonths < 1 || billingMonths > 12)
             e.push_back("Billing interval must be between 1 and 12 months");
         return e;
@@ -1116,7 +1239,7 @@ void RentalModule::seedMenus_() {
     // the operator's daily navigation is asking for it to be pressed.
     txn.exec(R"SQL(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-            (330, 'Demo Data', 101, 30, 46)
+            (330, 'Demo Data', 415, 30, 46)
         ON CONFLICT (id) DO UPDATE SET action_id = EXCLUDED.action_id,
                                        parent_id = EXCLUDED.parent_id
     )SQL");

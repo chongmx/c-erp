@@ -634,6 +634,230 @@ void registerRentalMigrations(MigrationRunner& runner) {
     runner.registerMigration({814, "rental_expense_drop_attachment_id", R"SQL(
         ALTER TABLE rental_expense DROP COLUMN IF EXISTS attachment_id;
     )SQL"});
+    // --------------------------------------------------------
+    // 815 — a billing period that can express what people actually bill
+    //
+    // The schedule was months-only: billing_mode 'manual'|'recurring' plus
+    // billing_months, and rental_next_period() advanced by whole months. So
+    // weekly storage, a 10-day locker or a one-off cleaning fee had nowhere to
+    // live — you either lied with months=1 or billed by hand forever.
+    //
+    // Generalised to (interval, unit), which covers every period in one shape:
+    //
+    //     daily      1 day        quarterly  3 month
+    //     weekly     1 week       biannual   6 month
+    //     monthly    1 month      yearly     1 year
+    //     custom     X <unit>     <- every X days/weeks/months/years
+    //
+    // and two modes that do not recur at all:
+    //
+    //     oneoff     bill once, then stop
+    //     ondemand   never scheduled; someone raises it when it happens
+    //
+    // billing_months is KEPT and kept in sync for month-based periods so the
+    // existing billing run and any report reading it stay correct.
+    // --------------------------------------------------------
+    runner.registerMigration({815, "rental_billing_period_units", R"SQL(
+        ALTER TABLE rental_contract_line
+            ADD COLUMN IF NOT EXISTS billing_interval INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE rental_contract_line
+            ADD COLUMN IF NOT EXISTS billing_unit VARCHAR NOT NULL DEFAULT 'month';
+
+        DO $mig$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                            WHERE conname = 'rental_line_billing_unit_chk') THEN
+                ALTER TABLE rental_contract_line ADD CONSTRAINT rental_line_billing_unit_chk
+                    CHECK (billing_unit IN ('day','week','month','year'));
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                            WHERE conname = 'rental_line_billing_interval_chk') THEN
+                ALTER TABLE rental_contract_line ADD CONSTRAINT rental_line_billing_interval_chk
+                    CHECK (billing_interval >= 1 AND billing_interval <= 366);
+            END IF;
+        END $mig$;
+
+        -- billing_mode gains the two non-recurring modes.
+        ALTER TABLE rental_contract_line DROP CONSTRAINT IF EXISTS rental_line_billing_mode_chk;
+        ALTER TABLE rental_contract_line
+            ADD CONSTRAINT rental_line_billing_mode_chk
+            CHECK (billing_mode IN ('manual','recurring','oneoff','ondemand'));
+
+        -- Existing rows were months-only; carry them over exactly.
+        UPDATE rental_contract_line
+           SET billing_unit     = 'month',
+               billing_interval = GREATEST(1, COALESCE(billing_months, 1))
+         WHERE billing_unit IS NULL OR billing_unit = 'month';
+
+        -- Unit-aware advance. The old 3-argument form is kept so anything still
+        -- calling it keeps working; it now delegates.
+        CREATE OR REPLACE FUNCTION rental_next_period(
+            p_from     DATE,
+            p_anchor   INTEGER,
+            p_interval INTEGER,
+            p_unit     VARCHAR
+        ) RETURNS DATE AS $fn$
+        DECLARE
+            v_n      INTEGER := GREATEST(1, COALESCE(p_interval, 1));
+            v_anchor INTEGER;
+            v_start  DATE;
+            v_last   DATE;
+        BEGIN
+            IF p_unit = 'day'  THEN RETURN p_from + (v_n || ' days')::interval;  END IF;
+            IF p_unit = 'week' THEN RETURN p_from + (v_n * 7 || ' days')::interval; END IF;
+
+            -- Month and year keep the anchor-day behaviour: bill on the 31st in a
+            -- 30-day month and you get the 30th, not a skipped period.
+            IF p_unit = 'year' THEN v_n := v_n * 12; END IF;
+            v_anchor := GREATEST(1, LEAST(31, COALESCE(p_anchor, 1)));
+            v_start  := (date_trunc('month', p_from) + (v_n || ' months')::interval)::date;
+            v_last   := (v_start + interval '1 month' - interval '1 day')::date;
+            RETURN LEAST(v_start + (v_anchor - 1), v_last);
+        END $fn$ LANGUAGE plpgsql IMMUTABLE;
+
+        CREATE OR REPLACE FUNCTION rental_next_period(
+            p_from DATE, p_anchor INTEGER, p_months INTEGER
+        ) RETURNS DATE AS $fn$
+            SELECT rental_next_period($1, $2, $3, 'month');
+        $fn$ LANGUAGE sql IMMUTABLE;
+    )SQL"});
+
+    // --------------------------------------------------------
+    // 816 — the CONTRACT carries the billing period
+    // (docs/architecture/modules.md, "The billing period")
+    //
+    // Until now rental_contract.billing_period was decorative: a TEXT column
+    // limited to monthly/quarterly/yearly that nothing read. The schedule that
+    // actually billed lived on the line. So a user who set a contract to
+    // "quarterly" still got monthly invoices, and there was no way at all to
+    // ask for weekly, daily, six-monthly, one-off or on-demand.
+    //
+    // After this migration:
+    //
+    //   contract.billing_period   the preset the user picks; the nine values
+    //                             below cover every cadence asked for
+    //   contract.billing_interval \  derived from the preset by trigger, except
+    //   contract.billing_unit     /  for 'custom' where the user supplies them
+    //
+    //   line.billing_interval     NULL now MEANS "inherit from the contract".
+    //   line.billing_unit         A line that wants its own cadence still sets
+    //                             them; one that says nothing follows the
+    //                             contract. That is why the NOT NULL and the
+    //                             defaults from 815 are dropped here — with a
+    //                             default of 1/'month' there was no way to
+    //                             distinguish "monthly, deliberately" from
+    //                             "nobody said", and the contract's setting
+    //                             could never win.
+    //
+    // oneoff / ondemand have no interval at all, so they store NULL and the
+    // billing run skips them — a period of "never" is not 1 of anything.
+    // --------------------------------------------------------
+    runner.registerMigration({816, "rental_contract_billing_period", R"SQL(
+        ALTER TABLE rental_contract
+            ADD COLUMN IF NOT EXISTS billing_interval INTEGER;
+        ALTER TABLE rental_contract
+            ADD COLUMN IF NOT EXISTS billing_unit VARCHAR;
+
+        -- The preset list. 'custom' is what makes "every X <unit>" reachable:
+        -- the preset names the shape, the interval/unit pair carries the X.
+        --
+        -- rental_contract_period_chk is the ORIGINAL constraint from migration
+        -- 802 and only allows monthly/quarterly/yearly. Dropping it by the name
+        -- one would guess (…_billing_period_chk) silently drops nothing, and
+        -- then every new preset fails on a constraint that is still there.
+        ALTER TABLE rental_contract DROP CONSTRAINT IF EXISTS rental_contract_period_chk;
+        ALTER TABLE rental_contract DROP CONSTRAINT IF EXISTS rental_contract_billing_period_check;
+        ALTER TABLE rental_contract DROP CONSTRAINT IF EXISTS rental_contract_billing_period_chk;
+        UPDATE rental_contract
+           SET billing_period = 'monthly'
+         WHERE billing_period IS NULL
+            OR billing_period NOT IN ('daily','weekly','monthly','quarterly',
+                                      'biannual','yearly','custom','oneoff','ondemand');
+        ALTER TABLE rental_contract
+            ADD CONSTRAINT rental_contract_billing_period_chk
+            CHECK (billing_period IN ('daily','weekly','monthly','quarterly',
+                                      'biannual','yearly','custom','oneoff','ondemand'));
+
+        DO $mig$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                            WHERE conname = 'rental_contract_billing_unit_chk') THEN
+                ALTER TABLE rental_contract ADD CONSTRAINT rental_contract_billing_unit_chk
+                    CHECK (billing_unit IS NULL OR billing_unit IN ('day','week','month','year'));
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                            WHERE conname = 'rental_contract_billing_interval_chk') THEN
+                ALTER TABLE rental_contract ADD CONSTRAINT rental_contract_billing_interval_chk
+                    CHECK (billing_interval IS NULL OR
+                           (billing_interval >= 1 AND billing_interval <= 366));
+            END IF;
+        END $mig$;
+
+        -- One place decides what a preset means, so the UI, an import and a
+        -- direct SQL insert cannot disagree about how often "quarterly" bills.
+        CREATE OR REPLACE FUNCTION rental_contract_derive_period()
+        RETURNS TRIGGER AS $fn$
+        BEGIN
+            CASE NEW.billing_period
+                WHEN 'daily'     THEN NEW.billing_interval := 1; NEW.billing_unit := 'day';
+                WHEN 'weekly'    THEN NEW.billing_interval := 1; NEW.billing_unit := 'week';
+                WHEN 'monthly'   THEN NEW.billing_interval := 1; NEW.billing_unit := 'month';
+                WHEN 'quarterly' THEN NEW.billing_interval := 3; NEW.billing_unit := 'month';
+                WHEN 'biannual'  THEN NEW.billing_interval := 6; NEW.billing_unit := 'month';
+                WHEN 'yearly'    THEN NEW.billing_interval := 1; NEW.billing_unit := 'year';
+                WHEN 'custom'    THEN
+                    -- The only preset where the user's numbers survive.
+                    NEW.billing_interval := GREATEST(1, LEAST(366, COALESCE(NEW.billing_interval, 1)));
+                    NEW.billing_unit     := COALESCE(NEW.billing_unit, 'month');
+                ELSE
+                    -- oneoff / ondemand: never scheduled.
+                    NEW.billing_interval := NULL;
+                    NEW.billing_unit     := NULL;
+            END CASE;
+            RETURN NEW;
+        END $fn$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS rental_contract_period_trg ON rental_contract;
+        CREATE TRIGGER rental_contract_period_trg
+            BEFORE INSERT OR UPDATE ON rental_contract
+            FOR EACH ROW EXECUTE FUNCTION rental_contract_derive_period();
+
+        -- Backfill: re-state every row so the trigger fills in the pair.
+        UPDATE rental_contract SET billing_period = billing_period;
+
+        -- NULL on a line now means "inherit". Existing lines keep the values
+        -- they have, so nothing that was billing at a set cadence changes.
+        ALTER TABLE rental_contract_line ALTER COLUMN billing_interval DROP NOT NULL;
+        ALTER TABLE rental_contract_line ALTER COLUMN billing_interval DROP DEFAULT;
+        ALTER TABLE rental_contract_line ALTER COLUMN billing_unit     DROP NOT NULL;
+        ALTER TABLE rental_contract_line ALTER COLUMN billing_unit     DROP DEFAULT;
+    )SQL"});
+
+    // --------------------------------------------------------
+    // 817 — retire the line's OLD billing_mode constraint
+    //
+    // 815 added rental_line_billing_mode_chk allowing oneoff and ondemand, and
+    // dropped "rental_line_billing_mode_chk" first — a name that did not exist
+    // yet. The original constraint is called rental_cl_billing_mode_chk, so it
+    // survived, and a row must satisfy EVERY check: the effective set stayed
+    // ('manual','recurring') and a one-off line was rejected by a constraint
+    // nobody had noticed was still there.
+    //
+    // This is the second time a rename-by-guess has left a stale CHECK in
+    // place (see 816 and rental_contract_period_chk). Drop by the name the
+    // database reports, never by the name the new constraint will have.
+    // --------------------------------------------------------
+    runner.registerMigration({817, "rental_line_drop_legacy_billing_mode_chk", R"SQL(
+        ALTER TABLE rental_contract_line DROP CONSTRAINT IF EXISTS rental_cl_billing_mode_chk;
+
+        -- 815's interval check predates NULL meaning "inherit the contract's
+        -- period" (816). NULL passes a CHECK, so nothing was rejected, but the
+        -- constraint should say what it means.
+        ALTER TABLE rental_contract_line DROP CONSTRAINT IF EXISTS rental_line_billing_interval_chk;
+        ALTER TABLE rental_contract_line
+            ADD CONSTRAINT rental_line_billing_interval_chk
+            CHECK (billing_interval IS NULL OR
+                   (billing_interval >= 1 AND billing_interval <= 366));
+    )SQL"});
+
 }
 
 } // namespace cerp::modules::rental
