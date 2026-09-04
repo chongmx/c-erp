@@ -858,6 +858,80 @@ void registerRentalMigrations(MigrationRunner& runner) {
                    (billing_interval >= 1 AND billing_interval <= 366));
     )SQL"});
 
+    // --------------------------------------------------------
+    // 818 — a line under a contract inherits that contract's customer
+    //
+    // The contract form now edits its lines directly, and the line grid does
+    // not show a Customer column: the contract already says who the tenant is,
+    // and asking again invites the two to disagree. But partner_id is required
+    // on the line — migration 812 moved the customer there so a walk-in can
+    // rent with no contract at all — so a line added from the contract form
+    // would arrive with no customer and be rejected.
+    //
+    // Filled here rather than in the client, so an import and a hand-written
+    // INSERT get it too. Only when the line does not carry one: a walk-in line
+    // has no contract_id and keeps the customer it was given.
+    // --------------------------------------------------------
+    runner.registerMigration({818, "rental_line_inherit_contract_partner", R"SQL(
+        CREATE OR REPLACE FUNCTION rental_line_inherit_partner()
+        RETURNS TRIGGER AS $fn$
+        BEGIN
+            IF NEW.partner_id IS NULL AND NEW.contract_id IS NOT NULL THEN
+                SELECT partner_id INTO NEW.partner_id
+                  FROM rental_contract WHERE id = NEW.contract_id;
+            END IF;
+            RETURN NEW;
+        END $fn$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS rental_line_partner_trg ON rental_contract_line;
+        CREATE TRIGGER rental_line_partner_trg
+            BEFORE INSERT OR UPDATE ON rental_contract_line
+            FOR EACH ROW EXECUTE FUNCTION rental_line_inherit_partner();
+
+        -- Existing rows that somehow lack one.
+        UPDATE rental_contract_line l
+           SET partner_id = c.partner_id
+          FROM rental_contract c
+         WHERE l.contract_id = c.id AND l.partner_id IS NULL;
+    )SQL"});
+
+    // --------------------------------------------------------
+    // 819 — a recurring line starts billing from its own start date
+    //
+    // The billing run selects lines with next_period_start IS NOT NULL. Nothing
+    // set it: the tests that existed wrote it by hand, so it was always
+    // populated in a test and never populated in real use. A line added on the
+    // contract form was therefore active, recurring, priced -- and silently
+    // never invoiced. Found by driving the screen; an API test that sets the
+    // column itself cannot see it.
+    // --------------------------------------------------------
+    runner.registerMigration({819, "rental_line_default_next_period", R"SQL(
+        CREATE OR REPLACE FUNCTION rental_line_default_next_period()
+        RETURNS TRIGGER AS $fn$
+        BEGIN
+            -- Only for a schedule that HAS periods. manual, oneoff and ondemand
+            -- are billed when someone decides, so a next period would be a lie.
+            IF NEW.next_period_start IS NULL
+               AND NEW.billing_mode = 'recurring'
+               AND NEW.date_start IS NOT NULL THEN
+                NEW.next_period_start := NEW.date_start;
+            END IF;
+            RETURN NEW;
+        END $fn$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS rental_line_next_period_trg ON rental_contract_line;
+        CREATE TRIGGER rental_line_next_period_trg
+            BEFORE INSERT ON rental_contract_line
+            FOR EACH ROW EXECUTE FUNCTION rental_line_default_next_period();
+
+        UPDATE rental_contract_line
+           SET next_period_start = date_start
+         WHERE next_period_start IS NULL
+           AND billing_mode = 'recurring'
+           AND date_start IS NOT NULL
+           AND invoiced_through IS NULL;
+    )SQL"});
+
 }
 
 } // namespace cerp::modules::rental

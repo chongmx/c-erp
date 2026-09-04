@@ -259,7 +259,12 @@ public:
     void registerFields() {
         fieldRegistry_.add({"name",              FieldType::Char,     "Reference"});
         fieldRegistry_.add({"partner_id",        FieldType::Many2one, "Customer", true, false, true, false, "res.partner"});
-        fieldRegistry_.add({"state",             FieldType::Char,     "Status"});
+        {
+            core::FieldDef st{"state", FieldType::Selection, "Status"};
+            st.selection = { {"draft", "Draft"}, {"active", "Active"},
+                             {"cancelled", "Cancelled"}, {"closed", "Closed"} };
+            fieldRegistry_.add(st);
+        }
         fieldRegistry_.add({"date_start",        FieldType::Date,     "Start Date"});
         fieldRegistry_.add({"date_cancelled",    FieldType::Date,     "Cancelled On"});
         // A selection, not free text: these nine values are the whole vocabulary
@@ -295,12 +300,33 @@ public:
         fieldRegistry_.add({"billing_lead_days", FieldType::Integer,  "Invoice Lead Days"});
         fieldRegistry_.add({"payment_term_id",   FieldType::Many2one, "Payment Terms", false, false, true, false, "account.payment.term"});
         fieldRegistry_.add({"deposit_amount",    FieldType::Monetary, "Deposit"});
-        fieldRegistry_.add({"deposit_state",     FieldType::Char,     "Deposit Status"});
+        // Both of these are CHECK-constrained to a fixed list, so they are
+        // selections: as Char the form drew a text box and the user had to
+        // type "forfeited" correctly to change a deposit's state.
+        {
+            core::FieldDef ds{"deposit_state", FieldType::Selection, "Deposit Status"};
+            ds.selection = { {"none", "Not held"}, {"held", "Held"},
+                             {"refunded", "Refunded"}, {"forfeited", "Forfeited"} };
+            fieldRegistry_.add(ds);
+        }
         fieldRegistry_.add({"currency_id",       FieldType::Many2one, "Currency", false, false, true, false, "res.currency"});
         fieldRegistry_.add({"journal_id",        FieldType::Many2one, "Journal", false, false, true, false, "account.journal"});
         fieldRegistry_.add({"notes",             FieldType::Text,     "Notes"});
         fieldRegistry_.add({"company_id",        FieldType::Many2one, "Company", false, false, true, false, "res.company"});
         fieldRegistry_.add({"active",            FieldType::Boolean,  "Active"});
+        // The units let under this contract.
+        //
+        // Without this the contract was a header with nothing to rent: the form
+        // showed a customer, dates and a deposit, and there was no way at all —
+        // no menu, no action, no lines section — to say WHICH unit the tenant
+        // has. The generic form renders a one2many as an editable line table,
+        // so declaring it here is the whole feature.
+        //
+        // store=false, searchable=false: it is not a column. The inverse is
+        // rental_contract_line.contract_id.
+        fieldRegistry_.add({"line_ids", FieldType::One2many, "Units",
+                            false, false, false, false,
+                            "rental.contract.line", "contract_id"});
         fieldRegistry_.markScaled({"deposit_amount"});
     }
 
@@ -531,7 +557,12 @@ public:
         // The CUSTOMER is required; the contract is not. That inversion is
         // the whole point of migration 812 — a walk-in rents a unit with
         // no contract in sight.
-        if (partnerId <= 0)   e.push_back("Customer is required");
+        // A line under a contract takes the contract's customer (migration
+        // 818's trigger fills it), which is why the contract form's line grid
+        // has no Customer column. A walk-in line has no contract, so there the
+        // customer really is required.
+        if (partnerId <= 0 && contractId <= 0)
+            e.push_back("Customer is required");
         if (dateStart.empty()) e.push_back("Start date is required");
         if (billingAnchorDay < 1 || billingAnchorDay > 31)
             e.push_back("Billing day must be between 1 and 31");
@@ -898,6 +929,88 @@ void RentalModule::registerViews() {
                 {"code",           {{"type","char"},     {"string","Code"}}},
                 {"default_rate",   {{"type","monetary"}, {"string","Default Rate"}}},
                 {"default_period", {{"type","char"},     {"string","Period"}}},
+            });
+    });
+    // The contract form.
+    //
+    // Without a registered form view the arch is literally "<form/>", so the
+    // client had no declared order and fell back to whatever order the fields
+    // JSON happened to arrive in — alphabetical. The screen opened with
+    // "Active", buried the Customer below a full-width Notes box, and showed
+    // "Company" (the multi-company OWNER of the row) directly above
+    // "Customer", which reads as though a contract has two companies.
+    //
+    // So: identity first, then the billing terms, then money, then the notes,
+    // and the unit lines last. company_id is NOT here — it is stamped from the
+    // session on create (docs/094) and is not the user's to choose.
+    views_.registerCreator("rental.contract.form", []{
+        return std::make_shared<SimpleView>("rental.contract.form", "rental.contract", "form",
+            "<form string=\"Contract\">"
+            // Who and when
+            "<field name=\"name\"/><field name=\"partner_id\"/>"
+            "<field name=\"date_start\"/><field name=\"state\"/>"
+            // How often it bills
+            "<field name=\"billing_period\"/>"
+            "<field name=\"billing_interval\"/><field name=\"billing_unit\"/>"
+            "<field name=\"billing_lead_days\"/>"
+            // Money
+            "<field name=\"payment_term_id\"/><field name=\"journal_id\"/>"
+            "<field name=\"currency_id\"/>"
+            "<field name=\"deposit_amount\"/><field name=\"deposit_state\"/>"
+            // Ending, then the free text, then the units
+            "<field name=\"date_cancelled\"/><field name=\"active\"/>"
+            "<field name=\"notes\"/>"
+            "<field name=\"line_ids\"/>"
+            "</form>",
+            nlohmann::json{
+                {"name",           {{"type","char"},     {"string","Reference"}}},
+                {"partner_id",     {{"type","many2one"}, {"string","Customer"},
+                                    {"relation","res.partner"}}},
+                {"date_start",     {{"type","date"},     {"string","Start Date"}}},
+                {"state",          {{"type","selection"},{"string","Status"},
+                                    {"selection", nlohmann::json::array({
+                                        nlohmann::json::array({"draft","Draft"}),
+                                        nlohmann::json::array({"active","Active"}),
+                                        nlohmann::json::array({"cancelled","Cancelled"}),
+                                        nlohmann::json::array({"closed","Closed"})})}}},
+                {"billing_period", {{"type","selection"},{"string","Billing Period"},
+                                    {"selection", nlohmann::json::array({
+                                        nlohmann::json::array({"daily","Daily"}),
+                                        nlohmann::json::array({"weekly","Weekly"}),
+                                        nlohmann::json::array({"monthly","Monthly"}),
+                                        nlohmann::json::array({"quarterly","Quarterly (3 months)"}),
+                                        nlohmann::json::array({"biannual","Every 6 months"}),
+                                        nlohmann::json::array({"yearly","Yearly"}),
+                                        nlohmann::json::array({"custom","Custom — every X…"}),
+                                        nlohmann::json::array({"oneoff","One off"}),
+                                        nlohmann::json::array({"ondemand","On demand"})})}}},
+                {"billing_interval",{{"type","integer"}, {"string","Every"}}},
+                {"billing_unit",   {{"type","selection"},{"string","Period Unit"},
+                                    {"selection", nlohmann::json::array({
+                                        nlohmann::json::array({"day","Day(s)"}),
+                                        nlohmann::json::array({"week","Week(s)"}),
+                                        nlohmann::json::array({"month","Month(s)"}),
+                                        nlohmann::json::array({"year","Year(s)"})})}}},
+                {"billing_lead_days",{{"type","integer"},{"string","Invoice Lead Days"}}},
+                {"payment_term_id",{{"type","many2one"}, {"string","Payment Terms"},
+                                    {"relation","account.payment.term"}}},
+                {"journal_id",     {{"type","many2one"}, {"string","Journal"},
+                                    {"relation","account.journal"}}},
+                {"currency_id",    {{"type","many2one"}, {"string","Currency"},
+                                    {"relation","res.currency"}}},
+                {"deposit_amount", {{"type","monetary"}, {"string","Deposit"}}},
+                {"deposit_state",  {{"type","selection"},{"string","Deposit Status"},
+                                    {"selection", nlohmann::json::array({
+                                        nlohmann::json::array({"none","Not held"}),
+                                        nlohmann::json::array({"held","Held"}),
+                                        nlohmann::json::array({"refunded","Refunded"}),
+                                        nlohmann::json::array({"forfeited","Forfeited"})})}}},
+                {"date_cancelled", {{"type","date"},     {"string","Cancelled On"}}},
+                {"active",         {{"type","boolean"},  {"string","Active"}}},
+                {"notes",          {{"type","text"},     {"string","Notes"}}},
+                {"line_ids",       {{"type","one2many"}, {"string","Units"},
+                                    {"relation","rental.contract.line"},
+                                    {"relation_field","contract_id"}}},
             });
     });
     views_.registerCreator("rental.contract.list", []{

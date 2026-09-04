@@ -190,9 +190,23 @@ class M2OSelect extends owl.Component {
         return Array.isArray(d) ? JSON.parse(JSON.stringify(d)) : [];
     }
 
+    /**
+     * The domain for a typed term.
+     *
+     * By default only `name` is searched. `searchFields` widens that, because
+     * some records are known by something else entirely: a rental unit is
+     * "A-101", its code, and its name is "Unit A1" — typing the code found
+     * nothing at all, which made the unit picker useless for units.
+     */
     searchDomain(term) {
         const dom = this.baseDomain();
-        if (term && term.trim()) dom.push(['name', 'ilike', term.trim()]);
+        const t = (term || '').trim();
+        if (!t) return dom;
+        const extra = Array.isArray(this.props.searchFields) ? this.props.searchFields : [];
+        const cols = ['name', ...extra.filter(c => c !== 'name')];
+        // Prefix notation: N-1 ORs in front of N leaves.
+        for (let i = 0; i < cols.length - 1; i++) dom.push('|');
+        for (const c of cols) dom.push([c, 'ilike', t]);
         return dom;
     }
 
@@ -348,6 +362,7 @@ M2OSelect.props = {
     label:       { type: String, optional: true },
     domain:      { type: Array,  optional: true },
     fields:      { type: Array,  optional: true },   // extra columns to read
+    searchFields:{ type: Array,  optional: true },   // columns a typed term also matches
     format:      { type: Function, optional: true }, // record -> label
     placeholder: { type: String, optional: true },
     readonly:    { type: Boolean, optional: true },

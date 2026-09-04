@@ -19,8 +19,18 @@
 class UserMenu extends owl.Component {
     static template = owl.xml`
         <div class="user-menu">
-            <div t-if="hasSwitcher" class="company-switcher">
-                <button class="ghost company-current" t-on-click="toggle"
+            <!-- The active company is ALWAYS shown, switcher or not.
+                 It used to appear only when there was somewhere to switch TO,
+                 so on a single-company database nothing anywhere told you which
+                 company you were working in — and every record silently carries
+                 that company. With one company this is a plain label; with more
+                 it becomes the switcher. -->
+            <div class="company-switcher">
+                <span t-if="!hasSwitcher" class="company-current company-static">
+                    <span class="company-icon">🏢</span>
+                    <span t-esc="currentName()"/>
+                </span>
+                <button t-if="hasSwitcher" class="ghost company-current" t-on-click="toggle"
                         t-att-aria-expanded="state.open ? 'true' : 'false'">
                     <span class="company-icon">🏢</span>
                     <span t-esc="currentName()"/>

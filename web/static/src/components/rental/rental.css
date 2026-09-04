@@ -535,3 +535,7 @@
 .demo-note { font-size: 13px; padding: 9px 14px; border-radius: 5px; margin-bottom: 14px; }
 .demo-ok  { background: rgba(78,201,176,.12); border: 1px solid var(--ok, #4ec9b0); }
 .demo-err { background: rgba(244,71,71,.12);  border: 1px solid var(--err, #f44747); }
+
+/* Rental dashboard: the on-demand billing run beside the horizon filter. */
+.rental-filters input[type="date"] { padding: 3px 6px; }
+.dash-bill-msg { font-size: .75rem; color: var(--muted); margin-left: 4px; }

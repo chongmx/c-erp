@@ -249,3 +249,12 @@
 .set-links { display:flex; flex-wrap:wrap; gap:8px; }
 .set-link { font-size:12.5px; padding:4px 10px; border-radius:999px;
             border:1px solid var(--border, #33334d); color: var(--muted, #9aa0aa); }
+
+/* The active company as a plain label when there is nothing to switch to.
+   It must still read as information, not as a disabled button. */
+.company-current.company-static {
+    color: var(--muted);
+    font-size: .8125rem;
+    padding: 4px 8px;
+    cursor: default;
+}

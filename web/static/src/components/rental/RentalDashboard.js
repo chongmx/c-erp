@@ -34,6 +34,16 @@ class RentalDashboard extends owl.Component {
                     <option value="24">24 months</option>
                 </select>
                 <span class="spacer"/>
+                <!-- Billing runs on a cron. This is the same run, on demand:
+                     without it the only way to raise this month's invoices
+                     early — or to catch up after the server was down — was to
+                     wait, or to call the route by hand. -->
+                <label class="dash-label">Bill up to</label>
+                <input type="date" t-att-value="state.billDate"
+                       t-on-change="ev => this.state.billDate = ev.target.value"/>
+                <button t-on-click="runBilling" t-att-disabled="state.billing ? true : undefined"
+                        t-esc="state.billing ? 'Running…' : 'Run billing now'"/>
+                <span t-if="state.billMsg" class="dash-bill-msg" t-esc="state.billMsg"/>
                 <button t-on-click="() => this.load(true)">Refresh</button>
             </div>
 
@@ -335,8 +345,38 @@ class RentalDashboard extends owl.Component {
             data: null, loading: true, error: '',
             months: '12', cfView: 'monthly',
             tip: { show: false, x: 0, y: 0, title: '', rows: [] },
+            // Defaults to today: "bill everything due by now" is the common case.
+            billDate: new Date().toISOString().slice(0, 10),
+            billing: false, billMsg: '',
         });
         owl.onWillStart(() => this.load());
+    }
+
+    /**
+     * Run the recurring billing up to the chosen date.
+     *
+     * The same route IrCron calls, so this cannot bill differently from the
+     * scheduled run — and it is idempotent: a period already invoiced is not
+     * invoiced again, which is what makes a button safe to press twice.
+     */
+    async runBilling() {
+        if (this.state.billing) return;
+        this.state.billing = true;
+        this.state.billMsg = '';
+        try {
+            const res = await fetch(
+                `/rental/billing/run?date=${encodeURIComponent(this.state.billDate)}`,
+                { method: 'POST', credentials: 'same-origin' });
+            const body = await res.json().catch(() => null);
+            if (!res.ok) throw new Error((body && body.error) || `HTTP ${res.status}`);
+            const n = body && (body.invoices ?? body.count ?? body.created);
+            this.state.billMsg = (n === 0 || n) ? `${n} invoice(s) raised` : 'billing run complete';
+            await this.load(true);          // the KPIs have just changed
+        } catch (e) {
+            this.state.billMsg = 'Billing failed: ' + (e.message || e);
+        } finally {
+            this.state.billing = false;
+        }
     }
 
     async load(fresh) {

@@ -145,9 +145,38 @@ protected:
         proto.setUserContext(extractContext_(call));
         return proto.searchCount(call.domain());
     }
-    // default_get — returns {} by default; override in derived class for pre-filled forms
-    nlohmann::json handleDefaultGet(const CallKwArgs& /*call*/) {
-        return nlohmann::json::object();
+    /**
+     * default_get — the values a NEW record starts with.
+     *
+     * These are the model's own member defaults, which are the same values the
+     * column defaults would supply on insert. Returning {} instead, as this
+     * did, meant a new form contradicted what saving it would produce: a rental
+     * contract showed Active unticked and Billing Period "—" and then saved as
+     * active and monthly. The user reads the form, not the DDL.
+     *
+     * id is excluded — a new record has none — and so is company_id, which is
+     * stamped from the session on create (docs/094) and is not a default the
+     * client should see or send back.
+     */
+    nlohmann::json handleDefaultGet(const CallKwArgs& call) {
+        TModel proto(db_);
+        proto.setUserContext(extractContext_(call));
+        nlohmann::json vals = proto.toJson();
+        vals.erase("id");
+        vals.erase("company_id");
+        vals.erase("display_name");
+
+        // args[0], when given, is the field list the form asked about.
+        if (!call.args.empty() && call.args[0].is_array() && !call.args[0].empty()) {
+            nlohmann::json only = nlohmann::json::object();
+            for (const auto& f : call.args[0]) {
+                if (!f.is_string()) continue;
+                const auto key = f.get<std::string>();
+                if (vals.contains(key)) only[key] = vals[key];
+            }
+            return only;
+        }
+        return vals;
     }
     nlohmann::json handleSearch(const CallKwArgs& call) {
         TModel proto(db_);

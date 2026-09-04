@@ -52,10 +52,49 @@ class RentalUnitGrid extends owl.Component {
                 <input placeholder="code contains…" t-model="state.fCode"
                        t-on-input="applyFilters"/>
                 <span class="spacer"/>
+                <button t-on-click="openNewUnit">+ New unit</button>
                 <button t-on-click="toggleView">
                     <t t-esc="state.view === 'grid' ? 'Table view' : 'Grid view'"/>
                 </button>
                 <button t-on-click="load">Refresh</button>
+            </div>
+
+            <!-- Adding a unit had no UI at all: this screen replaces the list
+                 view for rental.unit, so there was no New button anywhere and a
+                 lettings business could not add the thing it lets. -->
+            <div t-if="state.newUnit" class="m2o-modal-back" t-on-click="closeNewUnit">
+                <div class="m2o-modal" t-on-click.stop="() => {}">
+                    <div class="m2o-modal-head">
+                        <span>New unit</span>
+                        <button class="m2o-x" t-on-click="closeNewUnit">×</button>
+                    </div>
+                    <div style="padding:14px 16px;display:grid;gap:10px">
+                        <label>Code
+                            <input class="form-input" data-nu="code" style="width:100%"
+                                   t-att-value="state.newUnit.code"
+                                   t-on-input="ev => this.state.newUnit.code = ev.target.value"
+                                   placeholder="e.g. A-101"/></label>
+                        <label>Name
+                            <input class="form-input" data-nu="name" style="width:100%"
+                                   t-att-value="state.newUnit.name"
+                                   t-on-input="ev => this.state.newUnit.name = ev.target.value"/></label>
+                        <label>Type
+                            <select class="form-input" data-nu="type_id" style="width:100%"
+                                    t-on-change="ev => this.state.newUnit.type_id = ev.target.value">
+                                <option value="">—</option>
+                                <t t-foreach="state.types" t-as="ty" t-key="ty.id">
+                                    <option t-att-value="ty.id"><t t-esc="ty.name"/></option>
+                                </t>
+                            </select></label>
+                        <div t-if="state.newUnit.error" class="error" t-esc="state.newUnit.error"/>
+                    </div>
+                    <div class="m2o-modal-foot">
+                        <button t-on-click="closeNewUnit">Cancel</button>
+                        <span/>
+                        <button class="btn btn-primary" t-on-click="createUnit"
+                                t-att-disabled="state.newUnit.saving ? true : undefined">Create</button>
+                    </div>
+                </div>
             </div>
 
             <t t-if="state.loading">
@@ -168,6 +207,7 @@ class RentalUnitGrid extends owl.Component {
             view: 'grid',
             fZone: '', fType: '', fState: '', fCode: '',
             tip: { show: false, x: 0, y: 0, code: '', rows: [] },
+            newUnit: null,   // the "New unit" dialog, or null when closed
         });
         owl.onWillStart(() => this.load());
     }
@@ -304,6 +344,30 @@ class RentalUnitGrid extends owl.Component {
         this.state.tip.y = Math.max(4, y);
     }
     hideTip() { this.state.tip.show = false; }
+
+    openNewUnit() {
+        this.state.newUnit = { code: '', name: '', type_id: '', error: '', saving: false };
+    }
+    closeNewUnit() { this.state.newUnit = null; }
+
+    /** Create the unit, then reload so it appears in the grid immediately. */
+    async createUnit() {
+        const nu = this.state.newUnit;
+        if (!nu || nu.saving) return;
+        const code = (nu.code || '').trim();
+        if (!code) { nu.error = 'A code is required.'; return; }
+        nu.saving = true; nu.error = '';
+        try {
+            const vals = { code, name: (nu.name || '').trim() || code };
+            if (nu.type_id) vals.type_id = parseInt(nu.type_id, 10);
+            await RpcService.call('rental.unit', 'create', [vals], {});
+            this.state.newUnit = null;
+            await this.load();
+        } catch (e) {
+            nu.error = (e && e.message) || String(e);
+            nu.saving = false;
+        }
+    }
 
     openUnit(u) {
         // Phase 4 opens the contract. Until contracts have a form, the

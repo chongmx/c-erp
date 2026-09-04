@@ -14,6 +14,30 @@ const APP_COLORS = [
     '#3498DB', '#F39C12', '#9B59B6', '#2ECC71',
 ];
 
+/**
+ * Field order as the VIEW declares it, not as the JSON happened to arrive.
+ *
+ * `fields` comes back as a JSON object, and iterating it gives whatever order
+ * the server serialised — in practice alphabetical. So the Contacts list led
+ * with "Active" and buried "Name" in the fourth column, and the rental
+ * contract form showed Active, Billing Period, Currency, Start Date… in no
+ * order a person would choose. The `<list>` / `<form>` arch already states the
+ * intended order; this reads it.
+ *
+ * Anything in `fields` but not named in the arch keeps its original position,
+ * appended after the declared ones, so a field added to the model but not yet
+ * to the arch still shows up.
+ */
+function archOrder(arch, names) {
+    const declared = [];
+    if (typeof arch === 'string') {
+        for (const m of arch.matchAll(/<field\s+name="([^"]+)"/g)) {
+            if (names.includes(m[1]) && !declared.includes(m[1])) declared.push(m[1]);
+        }
+    }
+    return [...declared, ...names.filter(n => !declared.includes(n))];
+}
+
 // ----------------------------------------------------------------
 // ListView — renders a list from get_views + search_read
 // ----------------------------------------------------------------
@@ -85,9 +109,9 @@ class ListView extends Component {
     get columns() {
         const viewDef = this.props.viewDef || {};
         const fields  = viewDef.fields || {};
-        return Object.entries(fields).map(([name, meta]) => ({
+        return archOrder(viewDef.arch, Object.keys(fields)).map(name => ({
             name,
-            label: meta.string || name,
+            label: (fields[name] || {}).string || name,
         }));
     }
 
@@ -202,6 +226,31 @@ const CONDITIONAL_FIELDS = {
     },
 };
 
+/**
+ * Which columns a one2many line table shows, and in what order.
+ *
+ * Without an entry a line table shows every field the child model has, which
+ * for a rental line is sixteen columns wide and includes next_period_start,
+ * invoiced_through and proration_policy — machinery the billing run owns and
+ * nobody types. Naming the useful ones is the difference between a grid you
+ * can let a unit from and a spreadsheet nobody can read.
+ *
+ * A column left out is not sent on save, so anything REQUIRED must either be
+ * listed here or filled by the server. rental.contract.line has no Customer
+ * column because the contract already names the tenant, and migration 818's
+ * trigger copies it down.
+ */
+const O2M_COLUMNS = {
+    'rental.contract.line': [
+        // A unit is known by its CODE ("A-101"); its name is "Unit A1". Searching
+        // and showing only the name made this picker useless for the one model
+        // whose records nobody identifies by name.
+        { name: 'unit_id', fields: ['code'], searchFields: ['code'],
+          format: r => (r.code ? r.code + ' — ' : '') + (r.name || '') },
+        'date_start', 'date_end', 'unit_price', 'billing_mode', 'state',
+    ],
+};
+
 // ----------------------------------------------------------------
 // FormView — renders a form from get_views + read
 // ----------------------------------------------------------------
@@ -310,6 +359,9 @@ class FormView extends Component {
                                                                        value="line[col.name]"
                                                                        label="col.label"
                                                                        domain="col.domain"
+                                                                       fields="col.fields or undefined"
+                                                                       searchFields="col.searchFields or undefined"
+                                                                       format="col.format or undefined"
                                                                        readonly="col.readonly"
                                                                        onSelect="(id) => this.updateO2mLine(f.name, line._key, col.name, id)"/>
                                                             <button class="gf-addnew"
@@ -428,7 +480,10 @@ class FormView extends Component {
 
     get formFields() {
         const fields = (this.props.viewDef || {}).fields || {};
-        return Object.entries(fields).map(([name, meta]) => ({
+        // Declared order, not JSON order — see archOrder(). Without it a form
+        // reads Active, Billing Period, Currency, Start Date… alphabetically.
+        const ordered = archOrder((this.props.viewDef || {}).arch, Object.keys(fields));
+        return ordered.map(name => [name, fields[name]]).map(([name, meta]) => ({
             name,
             label:         meta.string        || name,
             type:          meta.type          || 'char',
@@ -469,7 +524,14 @@ class FormView extends Component {
     get scalarFields() {
         // Hide the plumbing columns — they are never user-editable and only
         // clutter the form (the id is still kept on the record for write()).
-        const HIDE = new Set(['id', 'create_date', 'write_date', '__last_update', 'display_name']);
+        //
+        // company_id is here because it is the multi-company OWNER of the row,
+        // stamped from the session on create (docs/094) and not the user's to
+        // choose. Shown, it sat directly above "Customer" labelled "Company",
+        // which reads as though a contract has two companies. The active
+        // company is in the top bar, where switching it belongs.
+        const HIDE = new Set(['id', 'create_date', 'write_date', '__last_update',
+                              'display_name', 'company_id']);
         return this.formFields.filter(f =>
             f.type !== 'one2many' && f.type !== 'many2many' && !HIDE.has(f.name));
     }
@@ -481,6 +543,29 @@ class FormView extends Component {
     o2mColumns(fieldName) {
         const meta = this.state.o2mMeta[fieldName];
         if (!meta) return [];
+        // A curated list wins, in the order it names — otherwise the table is
+        // every column the child model has, in whatever order fields_get
+        // returned them.
+        const f = this.o2mFields.find(x => x.name === fieldName);
+        const want = f && O2M_COLUMNS[f.relation];
+        if (want) {
+            // An entry is either a field name or { name, fields, searchFields,
+            // format } when that column needs more than the default label.
+            return want
+                .map(c => (typeof c === 'string' ? { name: c } : c))
+                .filter(c => meta[c.name])
+                .map(c => ({
+                    name:     c.name,
+                    label:    meta[c.name].string   || c.name,
+                    type:     meta[c.name].type     || 'char',
+                    relation: meta[c.name].relation || null,
+                    readonly: !!meta[c.name].readonly,
+                    domain:   Array.isArray(meta[c.name].domain) ? meta[c.name].domain : [],
+                    fields:       c.fields       || null,
+                    searchFields: c.searchFields || null,
+                    format:       c.format       || null,
+                }));
+        }
         return Object.entries(meta).map(([name, m]) => ({
             name,
             label:    m.string   || name,
@@ -1165,7 +1250,7 @@ class InvoiceFormView extends Component {
                             <label class="so-field-lbl">Journal</label>
                             <select class="form-input"
                                     t-att-value="state.payJournalId"
-                                    t-on-change="ev => state.payJournalId = parseInt(ev.target.value) || null">
+                                    t-on-change="onPayJournalChange">
                                 <option value="">— select —</option>
                                 <t t-foreach="state.payJournals" t-as="j" t-key="j.id">
                                     <option t-att-value="j.id"
@@ -1178,7 +1263,7 @@ class InvoiceFormView extends Component {
                             <label class="so-field-lbl">Amount</label>
                             <input class="form-input" type="number" step="0.01" min="0.01"
                                    t-att-value="state.payAmount"
-                                   t-on-input="ev => state.payAmount = ev.target.value"/>
+                                   t-on-input="onPayAmountInput"/>
                         </div>
                         <!-- P1/FX: only for a foreign-currency invoice.
                              The bank converts on receipt, so we ask for the
@@ -1193,7 +1278,7 @@ class InvoiceFormView extends Component {
                                 <input class="form-input" type="number" step="0.01" min="0"
                                        t-att-value="state.payReceivedBase"
                                        t-att-placeholder="state.payExpectedBase"
-                                       t-on-input="ev => state.payReceivedBase = ev.target.value"/>
+                                       t-on-input="onPayReceivedBaseInput"/>
                             </div>
                             <div class="so-field-row" style="margin-bottom:4px;">
                                 <label class="so-field-lbl">Effective rate</label>
@@ -1212,7 +1297,7 @@ class InvoiceFormView extends Component {
                             <label class="so-field-lbl">Memo</label>
                             <input class="form-input" type="text"
                                    t-att-value="state.payMemo"
-                                   t-on-input="ev => state.payMemo = ev.target.value"/>
+                                   t-on-input="onPayMemoInput"/>
                         </div>
                         <t t-if="state.payError">
                             <div class="pay-dialog-error" t-esc="state.payError"/>
@@ -1887,6 +1972,21 @@ class InvoiceFormView extends Component {
     onPrint() { window.open('/report/pdf/account.move/' + this.state.record.id, '_blank'); }
 
     // ---- Register Payment ----
+    //
+    // These four are METHODS, not inline arrows in the template. OWL's
+    // expression compiler cannot compile an ASSIGNMENT inside a t-on-* handler
+    // — `t-on-change="ev => { this.state.x = ev.target.value; }"` throws
+    // "v2 is not a function" when the event fires, and mainEventHandler
+    // reports it to the console and carries on, so the field simply never
+    // updates and nothing looks broken until you check the value.
+    //
+    // It stayed hidden here because the dialog could not be reached at all:
+    // its journal list was loaded by a helper that does not exist.
+    onPayJournalChange(ev)     { this.state.payJournalId    = parseInt(ev.target.value) || null; }
+    onPayAmountInput(ev)       { this.state.payAmount       = ev.target.value; }
+    onPayReceivedBaseInput(ev) { this.state.payReceivedBase = ev.target.value; }
+    onPayMemoInput(ev)         { this.state.payMemo         = ev.target.value; }
+
     async onOpenPayDialog() {
         const today = new Date().toISOString().slice(0, 10);
         this.state.payDate      = today;
@@ -1905,19 +2005,35 @@ class InvoiceFormView extends Component {
         this.state.payExpectedBase  = '';
         this.state.payBookedRate    = 1;
 
+        // RpcService has no searchRead(); it exposes call(). The old code
+        // called a function that does not exist, the empty catch below
+        // swallowed the TypeError, and the journal list stayed empty — so the
+        // dialog answered "Please select a journal" forever and an invoice
+        // could not be paid from this screen at all. The API path
+        // (action_register_payment) was fine, which is why no test saw it.
         try {
-            const journals = await RpcService.searchRead(
-                'account.journal',
-                [['type', 'in', ['bank', 'cash']]],
-                ['id', 'name'], 0, 50);
-            this.state.payJournals  = journals;
-            if (journals.length) this.state.payJournalId = journals[0].id;
-        } catch (_) {}
+            const journals = await RpcService.call('account.journal', 'search_read',
+                [[['type', 'in', ['bank', 'cash']]]],
+                { fields: ['id', 'name'], limit: 50 });
+            this.state.payJournals = Array.isArray(journals) ? journals : [];
+            if (this.state.payJournals.length)
+                this.state.payJournalId = this.state.payJournals[0].id;
+            else
+                this.state.payError = 'No bank or cash journal is configured.';
+        } catch (e) {
+            // Say so. A silent failure here is indistinguishable from "there
+            // are no journals", and it hid this bug.
+            this.state.payError = 'Could not load payment journals: ' + (e.message || e);
+        }
 
         try {
+            // Same missing helper as above — this block was dead too, so the
+            // foreign-currency fields never appeared on a foreign invoice.
             const [companies, currencies] = await Promise.all([
-                RpcService.searchRead('res.company', [], ['id', 'currency_id'], 0, 1),
-                RpcService.searchRead('res.currency', [], ['id', 'name', 'rate'], 0, 50),
+                RpcService.call('res.company', 'search_read', [[]],
+                    { fields: ['id', 'currency_id'], limit: 1 }),
+                RpcService.call('res.currency', 'search_read', [[]],
+                    { fields: ['id', 'name', 'rate'], limit: 50 }),
             ]);
             const baseRaw = companies?.[0]?.currency_id;
             const baseId  = Array.isArray(baseRaw) ? baseRaw[0] : baseRaw;
@@ -4339,7 +4455,7 @@ class ProductFormView extends Component {
                         </table>
                         <div t-if="state.adjust.error" class="gf-modal-err" t-esc="state.adjust.error"/>
                         <div class="gf-modal-actions">
-                            <button class="btn" t-on-click="() => this.state.adjust.open = false">Cancel</button>
+                            <button class="btn" t-on-click="() => { this.state.adjust.open = false; }">Cancel</button>
                             <button class="btn btn-primary" t-on-click="onApplyAdjust"
                                     t-att-disabled="state.adjust.saving">
                                 <t t-if="state.adjust.saving">Applying…</t><t t-else="">Apply</t>
@@ -6536,7 +6652,7 @@ class ERPSettingsView extends Component {
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Accent Color</label>
                                     <input class="erp-field-input" type="color" t-att-value="state.cfg['report.design.accent_color']"
-                                           t-on-input="ev=>this.state.cfg['report.design.accent_color']=ev.target.value"/>
+                                           t-on-input="ev=>{ this.state.cfg['report.design.accent_color']=ev.target.value; }"/>
                                 </div>
                             </div>
                         </div>
@@ -6657,7 +6773,7 @@ class ERPSettingsView extends Component {
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">SSL</label>
                                     <input type="checkbox" t-att-checked="state.cfg['mail.smtp_ssl']==='1'||state.cfg['mail.smtp_ssl']==='true'"
-                                           t-on-change="ev=>this.state.cfg['mail.smtp_ssl']=ev.target.checked?'1':'0'"/>
+                                           t-on-change="ev=>{ this.state.cfg['mail.smtp_ssl']=ev.target.checked?'1':'0'; }"/>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">From Address</label>
@@ -7675,7 +7791,7 @@ class DocumentLayoutEditor extends Component {
                             Your customisations to this template will be lost.
                         </p>
                         <div class="gf-modal-actions">
-                            <button class="btn" t-on-click="() => this.state.confirmReset = false">Cancel</button>
+                            <button class="btn" t-on-click="() => { this.state.confirmReset = false; }">Cancel</button>
                             <button class="btn btn-primary" t-on-click="onResetDefault"
                                     t-att-disabled="state.resetting">
                                 <t t-if="state.resetting">Resetting&#8230;</t><t t-else="">Reset</t>
@@ -7694,7 +7810,7 @@ class DocumentLayoutEditor extends Component {
                                 <t t-esc="currentDocLabel"/> &#8212; yours vs. shipped
                             </h3>
                             <span class="dle-diff-stat" t-esc="diffSummary"/>
-                            <button class="btn" t-on-click="() => this.state.showDiff = false">Close</button>
+                            <button class="btn" t-on-click="() => { this.state.showDiff = false; }">Close</button>
                         </div>
                         <div class="dle-diff-body">
                             <div t-if="!state.diffRows.length" class="dle-diff-same">
@@ -8057,7 +8173,7 @@ class DocumentLayoutEditor extends Component {
                                         <label>Record ID</label>
                                         <input type="text" class="dle-prop-input" placeholder="optional — opens in new tab"
                                                t-att-value="state.previewRecordId"
-                                               t-on-input="ev=>this.state.previewRecordId=ev.target.value"/>
+                                               t-on-input="ev=>{ this.state.previewRecordId=ev.target.value; }"/>
                                     </div>
                                 </t>
                             </t>
@@ -9590,9 +9706,9 @@ class UserFormView extends Component {
             <!-- Tabs -->
             <div class="form-tabs" style="padding:0 16px;border-bottom:1px solid #e2e8f0;display:flex;gap:4px;margin-top:12px">
                 <button t-attf-class="form-tab-btn{{state.tab==='info'?' active':''}}"
-                        t-on-click="()=>this.state.tab='info'">General Information</button>
+                        t-on-click="()=>{ this.state.tab='info'; }">General Information</button>
                 <button t-attf-class="form-tab-btn{{state.tab==='access'?' active':''}}"
-                        t-on-click="()=>this.state.tab='access'">Access Rights</button>
+                        t-on-click="()=>{ this.state.tab='access'; }">Access Rights</button>
             </div>
             <!-- General tab -->
             <t t-if="state.tab === 'info'">
@@ -9601,13 +9717,13 @@ class UserFormView extends Component {
                         <label>Login (Email)</label>
                         <input class="field-input" type="email"
                                t-att-value="state.record.login || ''"
-                               t-on-input="e => this.state.record.login = e.target.value"/>
+                               t-on-input="e => { this.state.record.login = e.target.value; }"/>
                     </div>
                     <div class="field-row">
                         <label>Password <t t-if="props.recordId">(leave blank to keep current)</t></label>
                         <input class="field-input" type="password" autocomplete="new-password"
                                t-att-value="state.record.password || ''"
-                               t-on-input="e => this.state.record.password = e.target.value"/>
+                               t-on-input="e => { this.state.record.password = e.target.value; }"/>
                     </div>
                     <div class="field-row">
                         <label>Display Name (Partner)</label>
@@ -9624,7 +9740,7 @@ class UserFormView extends Component {
                     <div class="field-row" style="display:flex;align-items:center;gap:10px">
                         <input type="checkbox" id="uf-active"
                                t-att-checked="state.record.active !== false"
-                               t-on-change="e => this.state.record.active = e.target.checked"/>
+                               t-on-change="e => { this.state.record.active = e.target.checked; }"/>
                         <label for="uf-active" style="margin:0;font-weight:400">Active</label>
                     </div>
                 </div>
@@ -10215,7 +10331,7 @@ class ProductCategoryListView extends Component {
                     <div class="field-row" style="margin-bottom:12px">
                         <label>Name</label>
                         <input class="field-input" t-att-value="state.form.name"
-                               t-on-input="e => state.form.name = e.target.value" placeholder="Category name"/>
+                               t-on-input="e => { this.state.form.name = e.target.value; }" placeholder="Category name"/>
                     </div>
                     <div class="field-row" style="margin-bottom:12px">
                         <label>Parent Category</label>
@@ -10235,7 +10351,7 @@ class ProductCategoryListView extends Component {
                         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
                             <input type="checkbox"
                                    t-att-checked="state.form.active"
-                                   t-on-change="e => state.form.active = e.target.checked"/>
+                                   t-on-change="e => { this.state.form.active = e.target.checked; }"/>
                             Active
                         </label>
                     </div>
