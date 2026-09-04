@@ -387,16 +387,23 @@ void WebsiteForm::seedMenus(pqxx::transaction_base& txn) {
         ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
             view_mode=EXCLUDED.view_mode
     )");
-    auto parent = txn.exec("SELECT id FROM ir_ui_menu WHERE name='Settings' AND parent_id IS NULL LIMIT 1");
-    if (parent.empty()) return;
+    // Same 'Website' grouping the page menus use (docs/127), by name, with the
+    // Settings root as a fallback for databases seeded before it existed.
+    auto parent = txn.exec(
+        "SELECT COALESCE("
+        "  (SELECT g.id FROM ir_ui_menu g"
+        "     JOIN ir_ui_menu s ON s.id = g.parent_id"
+        "    WHERE g.name = 'Website' AND s.name = 'Settings' AND s.parent_id IS NULL LIMIT 1),"
+        "  (SELECT id FROM ir_ui_menu WHERE name='Settings' AND parent_id IS NULL LIMIT 1))");
+    if (parent.empty() || parent[0][0].is_null()) return;
     const int pid = parent[0][0].as<int>();
     txn.exec("INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) "
-             "VALUES (411, 'Website Forms', $1, 72, 125) "
+             "VALUES (411, 'Website Forms', $1, 30, 125) "
              "ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id, "
              "  sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id",
              pqxx::params{pid});
     txn.exec("INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) "
-             "VALUES (412, 'Form Submissions', $1, 73, 126) "
+             "VALUES (412, 'Form Submissions', $1, 40, 126) "
              "ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id, "
              "  sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id",
              pqxx::params{pid});

@@ -2574,8 +2574,8 @@ void ReportModule::seedMenuEntries_() {
     // Section under unified Settings (id=101): Technical — parent_id=30
     txn.exec(
         "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
-        "(101, 'Technical', 30, 30, NULL) "
-        "ON CONFLICT (id) DO UPDATE SET parent_id=30, sequence=30");
+        "(101, 'Technical', 30, 60, NULL) "
+        "ON CONFLICT (id) DO UPDATE SET parent_id=30, sequence=60");
 
     // Document Templates item (id=102) under Technical (id=101)
     txn.exec(
@@ -2598,8 +2598,8 @@ void ReportModule::seedMenuEntries_() {
     // (id=104 is owned by MrpModule for Bills of Materials under Inventory)
     txn.exec(
         "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
-        "(105, 'Groups', 101, 20, 95) "
-        "ON CONFLICT (id) DO UPDATE SET name='Groups', parent_id=101, sequence=20, action_id=95");
+        "(105, 'Groups', 413, 20, 95) "
+        "ON CONFLICT (id) DO UPDATE SET name='Groups', parent_id=413, sequence=20, action_id=95");
 
     // Action id=96: ERP Settings.
     // id 31 belonged to StockModule ('Putaway Rules'), which seeds it with
@@ -2613,8 +2613,8 @@ void ReportModule::seedMenuEntries_() {
     // Menu id=103: ERP Settings directly under unified Settings (id=30)
     txn.exec(
         "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
-        "(103, 'ERP Settings', 30, 25, 96) "
-        "ON CONFLICT (id) DO UPDATE SET parent_id=30, sequence=25, action_id=96");
+        "(103, 'ERP Settings', 30, 5, 96) "
+        "ON CONFLICT (id) DO UPDATE SET parent_id=30, sequence=5, action_id=96");
 
     // Multi-company (docs/072): control-plane admin under Settings (id=30).
     // Renders the CompanyAdmin custom view; admin-gated server-side.
@@ -2626,13 +2626,13 @@ void ReportModule::seedMenuEntries_() {
     txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
     txn.exec(
         "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
-        "(131, 'Companies & Access', 30, 40, 71) "
+        "(131, 'Companies & Access', 413, 50, 71) "
         // name is restored too. Leaving it out meant that when another module
         // briefly seeded this id (docs/101), its label stuck permanently and
         // this menu read "Projects" while opening Companies & Access. A seed
         // that owns the row should own its name.
-        "ON CONFLICT (id) DO UPDATE SET name='Companies & Access', parent_id=30, "
-        "  sequence=40, action_id=71");
+        "ON CONFLICT (id) DO UPDATE SET name='Companies & Access', parent_id=413, "
+        "  sequence=50, action_id=71");
 
     // Database & backups (docs/075) under Settings (id=30). Renders the DbBackups
     // custom view; every endpoint is admin-gated + per-tenant server-side.
@@ -2644,9 +2644,9 @@ void ReportModule::seedMenuEntries_() {
     txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
     txn.exec(
         "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
-        "(132, 'Database & Backups', 30, 45, 72) "
-        "ON CONFLICT (id) DO UPDATE SET name='Database & Backups', parent_id=30, "
-        "  sequence=45, action_id=72");
+        "(132, 'Database & Backups', 415, 10, 72) "
+        "ON CONFLICT (id) DO UPDATE SET name='Database & Backups', parent_id=415, "
+        "  sequence=10, action_id=72");
 
     // Database Tools (docs/093) — the read-only browser / SQL console / schema
     // map, next to Database & Backups because they answer adjacent questions
@@ -2660,9 +2660,9 @@ void ReportModule::seedMenuEntries_() {
     txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
     txn.exec(
         "INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES "
-        "(74, 'Database Tools', 30, 46, 101) "
-        "ON CONFLICT (id) DO UPDATE SET name='Database Tools', parent_id=30, "
-        "sequence=46, action_id=101");
+        "(74, 'Database Tools', 415, 20, 101) "
+        "ON CONFLICT (id) DO UPDATE SET name='Database Tools', parent_id=415, "
+        "sequence=20, action_id=101");
     txn.exec("SELECT setval('ir_ui_menu_id_seq', (SELECT MAX(id) FROM ir_ui_menu), true)");
 
     txn.commit();

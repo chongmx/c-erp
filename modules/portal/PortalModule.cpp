@@ -3504,7 +3504,7 @@ void PortalModule::seedMenu_() {
     // Portal Users under Settings (id=30)
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, action_id, sequence, web_icon)
-        VALUES (73, 'Portal Users', 30, 100, 35, 'settings')
+        VALUES (73, 'Portal Users', 413, 100, 30, 'settings')
         ON CONFLICT (id) DO UPDATE
             SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
                 action_id=EXCLUDED.action_id, sequence=EXCLUDED.sequence

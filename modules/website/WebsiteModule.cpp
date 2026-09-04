@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <map>
+#include <set>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -194,6 +195,23 @@ public:
 // PAGE RENDERING — chrome around the blocks
 // ================================================================
 namespace {
+
+// Every block type the renderer understands, in ONE place.
+//
+// The save endpoint and the preview endpoint both gate on this. Kept as a
+// single list because two copies of an allowlist drift, and the way they drift
+// is that one of them starts accepting something the other refuses — a preview
+// that renders a block the save path rejects is a promise the product cannot
+// keep.
+const std::set<std::string>& kKnownBlockTypes() {
+    static const std::set<std::string> k = {
+        "heading","text","image","button","divider","columns",
+        "video","gallery","quote","stats","cta","table","spacer",
+        "references","map","form","html",
+        "hero","pricing","steps","faq"
+    };
+    return k;
+}
 
 struct SiteSettings {
     std::string name, footer, baseUrl;
@@ -1085,12 +1103,7 @@ void WebsiteModule::registerRoutes() {
             // 3. Every block must be one the renderer knows. An unknown type
             //    is REFUSED rather than stored: stored, it would render as
             //    nothing and read as data loss.
-            static const std::set<std::string> kKnown = {
-                "heading","text","image","button","divider","columns",
-                "video","gallery","quote","stats","cta","table","spacer",
-                "references","map","form","html",
-                "hero","pricing","steps","faq"
-            };
+            const auto& kKnown = kKnownBlockTypes();
             for (const auto& b : *it) {
                 if (!b.is_object()) {
                     fail(drogon::k400BadRequest, "Each block must be an object."); return; }
@@ -1363,6 +1376,102 @@ void WebsiteModule::registerRoutes() {
             }
         },
         {drogon::Get, drogon::Post});
+
+    // ----------------------------------------------------------
+    // POST /site/api/preview — render blocks WITHOUT saving them (docs/128)
+    //
+    // The backend page form showed blocks_json as a wall of JSON. This renders
+    // whatever is in the editor right now, unsaved, so "Source" and "Preview"
+    // are two views of the same thing rather than "edit blind, save, go look".
+    //
+    // It returns a WHOLE DOCUMENT — the same shell the public page uses, with
+    // the same palette — because a preview that does not include the site's
+    // own stylesheet is a preview of something else. The caller drops it into
+    // a sandboxed iframe.
+    // ----------------------------------------------------------
+    drogon::app().registerHandlerViaRegex("^/site/api/preview$",
+        [db, devMode, capsOf](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb)
+        {
+            auto res = drogon::HttpResponse::newHttpResponse();
+            res->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+            res->addHeader("X-Content-Type-Options", "nosniff");
+            auto fail = [&](drogon::HttpStatusCode code, const std::string& m) {
+                res->setStatusCode(code);
+                res->setBody(nlohmann::json{{"error", m}}.dump());
+                cb(res);
+            };
+
+            // Same gate as saving. A preview renders unpublished content and
+            // reflects the site's configuration, so it is not a public act.
+            const auto caps = capsOf(req);
+            if (!caps.staff) { fail(drogon::k401Unauthorized, "Not authenticated"); return; }
+            if (!caps.edit)  { fail(drogon::k403Forbidden,
+                                    "You do not have permission to edit the website."); return; }
+
+            if (req->body().size() > 256 * 1024) {
+                fail(drogon::k400BadRequest, "That page is too large to preview."); return; }
+
+            nlohmann::json body;
+            try { body = nlohmann::json::parse(req->body()); }
+            catch (const std::exception& e) {
+                // A parse error is the COMMON case here — somebody is editing
+                // JSON by hand — so it is reported as content, not as a fault.
+                fail(drogon::k400BadRequest,
+                     std::string("That is not valid JSON: ") + e.what());
+                return;
+            }
+            auto it = body.find("blocks");
+            if (it == body.end() || !it->is_array()) {
+                fail(drogon::k400BadRequest,
+                     "Expected an object with a \"blocks\" array."); return; }
+
+            // The same block-type allowlist the save endpoint enforces, so a
+            // preview cannot render something that could never be stored — and
+            // the admin-only rule on raw HTML holds here too.
+            for (const auto& b : *it) {
+                if (!b.is_object()) {
+                    fail(drogon::k400BadRequest, "Each block must be an object."); return; }
+                auto ty = b.find("type");
+                if (ty == b.end() || !ty->is_string()) {
+                    fail(drogon::k400BadRequest, "Each block needs a type."); return; }
+                const std::string t = ty->get<std::string>();
+                if (!kKnownBlockTypes().count(t)) {
+                    fail(drogon::k400BadRequest, "Unknown block type: " + t); return; }
+                if (t == "html" && !caps.admin) {
+                    fail(drogon::k403Forbidden,
+                         "Only an administrator may preview a raw HTML block."); return; }
+            }
+
+            try {
+                auto conn = db->acquire();
+                pqxx::work txn{conn.get()};
+                const SiteSettings s = loadSettings(txn);
+                auto formResolver = [&txn](const std::string& slug) {
+                    return WebsiteForm::renderForm(txn, slug);
+                };
+                const std::string title = body.value("title", std::string("Preview"));
+                const std::string html = pageShell(
+                    s, title, "", "", "/", /*indexed=*/false,
+                    renderMenu(txn),
+                    WebsiteRender::blocks(*it, formResolver));
+                txn.commit();
+
+                res->setStatusCode(drogon::k200OK);
+                res->setBody(nlohmann::json{{"html", html},
+                                            {"blocks", it->size()}}.dump());
+                cb(res);
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[website/preview] pool: " << e.what();
+                fail(drogon::k503ServiceUnavailable, "The server is busy. Please retry.");
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[website/preview] " << e.what();
+                fail(drogon::k500InternalServerError,
+                     devMode ? e.what() : "An internal error occurred");
+            }
+        },
+        {drogon::Post});
 
     // ----------------------------------------------------------
     // The media library (docs/124)
@@ -2058,16 +2167,25 @@ void WebsiteModule::seedMenus_() {
         ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, res_model=EXCLUDED.res_model,
             view_mode=EXCLUDED.view_mode
     )");
-    auto parent = txn.exec("SELECT id FROM ir_ui_menu WHERE name='Settings' AND parent_id IS NULL LIMIT 1");
-    if (!parent.empty()) {
+    // The 'Website' grouping under Settings (docs/127), resolved by name so
+    // this does not depend on IrModule's id staying what it is. Falling back
+    // to the Settings root keeps the menus reachable on a database seeded
+    // before the groupings existed.
+    auto parent = txn.exec(
+        "SELECT COALESCE("
+        "  (SELECT g.id FROM ir_ui_menu g"
+        "     JOIN ir_ui_menu s ON s.id = g.parent_id"
+        "    WHERE g.name = 'Website' AND s.name = 'Settings' AND s.parent_id IS NULL LIMIT 1),"
+        "  (SELECT id FROM ir_ui_menu WHERE name='Settings' AND parent_id IS NULL LIMIT 1))");
+    if (!parent.empty() && !parent[0][0].is_null()) {
         const int pid = parent[0][0].as<int>();
         txn.exec("INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) "
-                 "VALUES (409, 'Website Pages', $1, 70, 123) "
+                 "VALUES (409, 'Website Pages', $1, 10, 123) "
                  "ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id, "
                  "  sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id",
                  pqxx::params{pid});
         txn.exec("INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) "
-                 "VALUES (410, 'Website Menu', $1, 71, 124) "
+                 "VALUES (410, 'Website Menu', $1, 20, 124) "
                  "ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id, "
                  "  sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id",
                  pqxx::params{pid});

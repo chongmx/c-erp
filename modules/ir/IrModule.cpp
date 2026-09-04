@@ -3491,7 +3491,7 @@ void IrModule::seedMenus_() {
     txn.exec("SELECT setval('ir_act_window_id_seq', (SELECT MAX(id) FROM ir_act_window), true)");
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-            (403, 'AI Agent', 30, 45, 117)
+            (403, 'AI Agent', 101, 20, 117)
         ON CONFLICT (id) DO UPDATE
             SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
                 sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
@@ -3524,12 +3524,36 @@ void IrModule::seedMenus_() {
                 sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
     )");
 
+    // ── Settings groupings (docs/127) ────────────────────────────
+    //
+    // Settings had thirteen entries sitting flat on the menu bar — Users,
+    // Companies, Portal Users, Groups, four Website entries, two Database
+    // entries and the rest — which is more than anybody scans. These are the
+    // headings they fold under.
+    //
+    // They live HERE, in the module that creates ir_ui_menu and seeds the
+    // Settings root, because parent_id carries a foreign key: a child cannot
+    // be seeded before its parent exists, and every other module's menu seed
+    // runs after this one. Putting them anywhere else makes the tree depend on
+    // module load order.
+    //
+    // No action_id: a heading opens nothing, it only holds children.
+    txn.exec(R"(
+        INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
+            (413, 'Users & Access', 30, 10, NULL),
+            (414, 'Website',        30, 40, NULL),
+            (415, 'Database',       30, 50, NULL)
+        ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
+                sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
+    )");
+
     // Same reasoning as the app roots above: restore these if something else
     // claimed the id (id 32 was overwritten by a Budgetary Positions menu).
     txn.exec(R"(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
-            (31, 'Users',        30, 10, 2),
-            (32, 'Companies',    30, 20, 3)
+            (31, 'Users',        413, 10, 2),
+            (32, 'Companies',    413, 40, 3)
         ON CONFLICT (id) DO UPDATE
             SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
                 sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id
