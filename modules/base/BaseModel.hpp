@@ -95,6 +95,7 @@ public:
     // ----------------------------------------------------------
     int create(const nlohmann::json& values) override {
         nlohmann::json vals = values;
+        rejectUnknownFields_(vals);
         coerceNumericStrings_(vals);   // "330" -> 330 before the member round-trip
         const int stampedCompany = stampCompany_(vals);   // docs/094
         fromJson(vals);
@@ -209,6 +210,8 @@ public:
                 expectedWd = vals["__expected_write_date"].get<std::string>();
             vals.erase("__expected_write_date");
         }
+
+        rejectUnknownFields_(vals);
 
         if (ids.empty() || vals.empty()) return true;
 
@@ -885,6 +888,32 @@ private:
     // actually exists in this model's field registry.  "id" is always valid.
     // Throws std::invalid_argument for unknown columns, preventing information
     // leakage via sort order on fields not exposed in the SELECT list.
+    /// A write the model cannot honour must FAIL, not succeed quietly.
+    ///
+    /// Both paths used to drop unknown keys without a word: write() skipped
+    /// anything `fieldRegistry_.has()` did not recognise, and create() only ever
+    /// read the keys deserializeFields asked for. Either way the caller got back
+    /// a fresh id and a success it had not earned, with the field discarded.
+    ///
+    /// That is how "create a contact with parent_id" appeared to work for months
+    /// while linking nothing — res.partner had no such column, the key was
+    /// dropped, and the API answered {"result": 768}. A typo in a field name
+    /// behaved the same way: silent data loss reported as success. An error here
+    /// costs a minute; the silence cost an afternoon.
+    ///
+    /// Exempt: `id`, and anything `__`-prefixed — the OCC sentinel
+    /// `__expected_write_date` and its kin are protocol, not model fields.
+    void rejectUnknownFields_(const nlohmann::json& vals) const {
+        if (!vals.is_object()) return;
+        for (auto it = vals.begin(); it != vals.end(); ++it) {
+            const std::string& k = it.key();
+            if (k == "id" || k.rfind("__", 0) == 0) continue;
+            if (fieldRegistry_.has(k)) continue;
+            throw cerp::infrastructure::ValidationError(
+                "Unknown field '" + k + "' on " + std::string(TDerived::MODEL_NAME));
+        }
+    }
+
     void validateOrder_(const std::string& order) const {
         if (order.empty()) return;
         std::istringstream ss(order);

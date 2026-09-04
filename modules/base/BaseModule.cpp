@@ -2,6 +2,7 @@
 // modules/base/BaseModule.cpp
 // =============================================================
 #include "BaseModule.hpp"
+#include "PartnerMigrations.hpp"
 #include "BaseModel.hpp"
 #include "DecimalPrecision.hpp"
 #include "BaseService.hpp"
@@ -268,11 +269,21 @@ public:
     bool        isCompany    = false;
     bool        isIndividual = false;
     bool        isContractor = false;
-    int         companyId    = 0;
+    int         parentId     = 0;    // the COMPANY this contact belongs to
+    int         companyId    = 0;    // NOT that: the multi-company owner of the row
+    int         commercialPartnerId = 0;  // docs/130: the company at the top of the chain
+    std::string street2;
+    std::string commercialCompanyName;   // docs/130: what the list shows
+    std::string addrType    = "contact";  // contact | invoice | delivery | other
     int         countryId    = 0;
     int         stateId      = 0;
     int         customerRank = 0;
     int         vendorRank   = 0;
+    // Archiving is the answer for a contact that has history and so cannot be
+    // deleted. The COLUMN existed all along; the field did not, so `active`
+    // was rejected as unknown and a contact could be neither archived nor
+    // filtered out of a picker.
+    bool        active       = true;
 
     explicit ResPartner(std::shared_ptr<infrastructure::DbConnection> db)
         : core::BaseModel<ResPartner>(std::move(db)) {}
@@ -287,14 +298,36 @@ public:
         fieldRegistry_.add({"zip",        core::FieldType::Char,    "ZIP"});
         fieldRegistry_.add({"lang",       core::FieldType::Char,    "Language"});
         fieldRegistry_.add({"is_company", core::FieldType::Boolean, "Is Company"});
-        fieldRegistry_.add({"company_id", core::FieldType::Many2one,"Company",
+        // The company this contact works for — a real partner, so "who works at
+        // Acme" is a query and renaming Acme reaches everyone. company_name is
+        // kept for imported data that never had a company record.
+        fieldRegistry_.add({"parent_id",  core::FieldType::Many2one,"Company",
+                             false, false, true, false, "res.partner"});
+        // Deliberately NOT called "Company": this is the multi-company owner of
+        // the row (docs/094), and labelling both fields the same is how a
+        // customer's employer ends up filed as a tenant.
+        fieldRegistry_.add({"company_id", core::FieldType::Many2one,"Owner Company",
                              false, false, true, false, "res.company"});
+        // docs/130 §4. Maintained by trigger, never written from here — listing
+        // it makes it readable and filterable, which is the entire point:
+        // "everything for this customer" becomes one indexed equality.
+        fieldRegistry_.add({"commercial_partner_id", core::FieldType::Many2one, "Commercial Entity",
+                             false, false, true, false, "res.partner"});
+        // docs/130 §6. sale_order.partner_invoice_id / partner_shipping_id have
+        // been waiting for this since SaleModule.cpp:98.
+        // What the CONTACT LIST shows in its Company column. Derived: the
+        // commercial partner's name when that is a company, else the free-text
+        // company_name. Trigger-maintained; never written by a client.
+        fieldRegistry_.add({"commercial_company_name", core::FieldType::Char, "Company"});
+        fieldRegistry_.add({"type",    core::FieldType::Char, "Address Type"});
+        fieldRegistry_.add({"street2", core::FieldType::Char, "Street 2"});
         fieldRegistry_.add({"country_id", core::FieldType::Many2one,"Country",
                              false, false, true, false, "res.country"});
         fieldRegistry_.add({"state_id",    core::FieldType::Many2one,"State",
                              false, false, true, false, "res.country.state"});
         fieldRegistry_.add({"customer_rank",core::FieldType::Integer, "Customer Rank"});
         fieldRegistry_.add({"vendor_rank",  core::FieldType::Integer, "Vendor Rank"});
+        fieldRegistry_.add({"active",       core::FieldType::Boolean, "Active"});
         fieldRegistry_.add({"is_contractor", core::FieldType::Boolean, "Is Contractor"});
         fieldRegistry_.add({"is_individual", core::FieldType::Boolean, "Is Individual"});
         fieldRegistry_.add({"mobile",        core::FieldType::Char,    "Mobile"});
@@ -321,8 +354,19 @@ public:
         j["is_contractor"] = isContractor;
         j["customer_rank"] = customerRank;
         j["vendor_rank"]   = vendorRank;
+        j["active"]        = active;
+        j["parent_id"]     = parentId > 0
+                             ? nlohmann::json(parentId)
+                             : nlohmann::json(false);
+        j["commercial_partner_id"] = commercialPartnerId > 0
+                             ? nlohmann::json(commercialPartnerId)
+                             : nlohmann::json(false);
+        j["commercial_company_name"] = commercialCompanyName.empty()
+                             ? nlohmann::json(false) : nlohmann::json(commercialCompanyName);
+        j["type"]          = addrType.empty() ? nlohmann::json("contact") : nlohmann::json(addrType);
+        j["street2"]       = street2.empty() ? nlohmann::json(false) : nlohmann::json(street2);
         j["company_id"]    = companyId > 0
-                             ? nlohmann::json{companyId, "Company"}
+                             ? nlohmann::json{companyId, "Owner Company"}
                              : nlohmann::json(false);
         j["country_id"]    = countryId > 0
                              ? nlohmann::json{countryId, "Country"}
@@ -359,6 +403,13 @@ public:
         if (j.contains("is_contractor")&& j["is_contractor"].is_boolean()) isContractor = j["is_contractor"].get<bool>();
         if (j.contains("customer_rank")&& j["customer_rank"].is_number_integer()) customerRank = j["customer_rank"].get<int>();
         if (j.contains("vendor_rank")  && j["vendor_rank"].is_number_integer())   vendorRank   = j["vendor_rank"].get<int>();
+        if (j.contains("active")       && j["active"].is_boolean())              active       = j["active"].get<bool>();
+        if (j.contains("parent_id"))   parentId   = m2o(j["parent_id"]);
+        if (j.contains("street2"))     street2    = str(j["street2"]);
+        if (j.contains("type"))        addrType   = str(j["type"]);
+        // commercial_partner_id is intentionally NOT deserialised: the database
+        // owns it. Accepting it from a client would let the caller claim any
+        // customer's revenue belongs to them.
         if (j.contains("company_id"))  companyId  = m2o(j["company_id"]);
         if (j.contains("country_id"))  countryId  = m2o(j["country_id"]);
         if (j.contains("state_id"))    stateId    = m2o(j["state_id"]);
@@ -367,6 +418,15 @@ public:
     std::vector<std::string> validate() const override {
         std::vector<std::string> errors;
         if (name.empty()) errors.push_back("Name is required");
+        if (!addrType.empty() && addrType != "contact" && addrType != "invoice"
+            && addrType != "delivery" && addrType != "other")
+            errors.push_back("Address Type must be contact, invoice, delivery or other");
+        // Self-parenting and deeper cycles are NOT checked here on purpose.
+        // validate() runs only on create, where the row has no id yet, so it
+        // could never see `parent_id == id`; and write() does not call it at
+        // all. The guarantee therefore lives in the schema — a CHECK for the
+        // self case and a BEFORE trigger for longer cycles — where it also
+        // holds for SQL that never goes through this model.
         return errors;
     }
 };
@@ -383,26 +443,238 @@ public:
 
     std::string serviceName() const override { return "partner"; }
 
+    /**
+     * Archived contacts are hidden unless the caller asks for them.
+     *
+     * Without this, "Archive" would change a flag and nothing else: the
+     * contact would still fill the list and every picker, which is the one
+     * thing archiving exists to stop. A domain that mentions `active` is left
+     * exactly as it came, so a caller can still see archived rows by saying so
+     * — that is how the list's "Show archived" works.
+     */
+    static nlohmann::json hideArchived_(const nlohmann::json& domain) {
+        const std::string s = domain.is_null() ? "" : domain.dump();
+        if (s.find("\"active\"") != std::string::npos) return domain;
+        nlohmann::json d = domain.is_array() ? domain : nlohmann::json::array();
+        d.push_back({"active", "=", true});
+        return d;
+    }
+
     nlohmann::json searchRead(const nlohmann::json& domain,
                                const std::vector<std::string>& fields = {},
                                int limit = 80, int offset = 0,
                                const std::string& order = "id ASC") {
-        ResPartner p(db_); return p.searchRead(domain, fields, limit, offset, order);
+        ResPartner p(db_);
+        return p.searchRead(hideArchived_(domain), fields, limit, offset, order);
     }
     nlohmann::json read(const std::vector<int>& ids,
                         const std::vector<std::string>& fields = {}) {
         ResPartner p(db_); return p.read(ids, fields);
     }
-    int  create(const nlohmann::json& v) { ResPartner p(db_); return p.create(v); }
-    bool write(const std::vector<int>& ids, const nlohmann::json& v) {
-        ResPartner p(db_); return p.write(ids, v);
+    // docs/130 §7 and §8. Two adjustments the model itself cannot make, because
+    // both need to look at ANOTHER row (the parent) before the write happens.
+    int  create(const nlohmann::json& v) {
+        nlohmann::json vals = v;
+        applyParentDefaults_(vals);
+        ResPartner p(db_); return p.create(vals);
     }
-    bool unlink(const std::vector<int>& ids) { ResPartner p(db_); return p.unlink(ids); }
+    bool write(const std::vector<int>& ids, const nlohmann::json& v) {
+        nlohmann::json vals = v;
+        applyParentDefaults_(vals);
+        ResPartner p(db_); return p.write(ids, vals);
+    }
+    /**
+     * What would be destroyed or orphaned by deleting these contacts?
+     *
+     * Returns { blockers: [{model, label, count}], detach: [...] }.
+     *
+     * Deleting a contact is not a schema question. Five tables that carry a
+     * partner_id have no FOREIGN KEY at all — rental_contract,
+     * rental_contract_line, rental_event, rental_expense and
+     * account_payment_unallocated — so PostgreSQL would let the row go and
+     * leave a rental contract pointing at a customer that no longer exists.
+     * And where an FK does exist it either raises a constraint violation the
+     * user cannot act on, or silently SET NULLs a document's customer away.
+     * So the check is explicit and lives here.
+     */
+    nlohmann::json dependencies(const std::vector<int>& ids) {
+        nlohmann::json out;
+        out["blockers"] = nlohmann::json::array();
+        out["detach"]   = nlohmann::json::array();
+        if (ids.empty()) return out;
+
+        // A document records something that happened. Losing its customer —
+        // whether by a refused DELETE or a silent SET NULL — is not something
+        // to do behind the user's back, so these refuse the delete outright.
+        static const std::vector<std::tuple<const char*, const char*, const char*>> kBlocking = {
+            {"account_move",                "partner_id",          "invoices and journal entries"},
+            {"account_move_line",           "partner_id",          "journal items"},
+            {"account_payment",             "partner_id",          "payments"},
+            {"account_payment_unallocated", "partner_id",          "unallocated payments"},
+            {"sale_order",                  "partner_id",          "sales orders"},
+            {"sale_order",                  "partner_invoice_id",  "sales orders (invoice address)"},
+            {"sale_order",                  "partner_shipping_id", "sales orders (delivery address)"},
+            {"purchase_order",              "partner_id",          "purchase orders"},
+            {"stock_picking",               "partner_id",          "transfers"},
+            {"rental_contract",             "partner_id",          "rental contracts"},
+            {"rental_contract_line",        "partner_id",          "rental lines"},
+            {"rental_expense",              "partner_id",          "rental expenses"},
+            {"rental_event",                "partner_id",          "rental events"},
+            {"partner_rental_price",        "partner_id",          "customer rental prices"},
+            {"payment_proof",               "partner_id",          "payment proofs"},
+            {"project_project",             "partner_id",          "projects"},
+            {"project_task",                "partner_id",          "tasks"},
+            {"hr_employee",                 "address_id",          "employee records"},
+            {"res_users",                   "partner_id",          "user logins"},
+            {"res_company",                 "partner_id",          "companies"},
+        };
+        // These are links, not records of events. They are cleared, and the
+        // user is told which — an unexpected detachment is still a surprise.
+        static const std::vector<std::tuple<const char*, const char*, const char*>> kDetach = {
+            {"res_partner",                 "parent_id",       "contacts working at this company"},
+            {"mrp_bom",                     "subcontractor_id","bills of materials"},
+            {"stock_warehouse_orderpoint",  "supplier_id",     "reordering rules"},
+            {"account_analytic_account",    "partner_id",      "analytic accounts"},
+            {"account_bank_statement_line", "partner_id",      "bank statement lines"},
+        };
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+
+        // The id list is built from ints, so it cannot carry injection; table
+        // and column names are literals from the tables above, never input.
+        std::string idList;
+        for (size_t i = 0; i < ids.size(); ++i)
+            idList += (i ? "," : "") + std::to_string(ids[i]);
+
+        auto tally = [&](const auto& spec, const char* key) {
+            for (const auto& [table, column, label] : spec) {
+                // A module may not be installed in every deployment.
+                const auto exists = txn.exec(
+                    "SELECT 1 FROM information_schema.columns "
+                    " WHERE table_schema='public' AND table_name=$1 AND column_name=$2",
+                    pqxx::params{table, column});
+                if (exists.empty()) continue;
+                const auto r = txn.exec(
+                    "SELECT count(*) FROM " + std::string(table) +
+                    " WHERE " + std::string(column) + " IN (" + idList + ")");
+                const long n = r.empty() ? 0 : r[0][0].as<long>(0);
+                if (n > 0)
+                    out[key].push_back({{"model", table}, {"label", label}, {"count", n}});
+            }
+        };
+        tally(kBlocking, "blockers");
+        tally(kDetach,   "detach");
+        txn.commit();
+        return out;
+    }
+
+    bool unlink(const std::vector<int>& ids) {
+        const auto dep = dependencies(ids);
+        if (!dep["blockers"].empty()) {
+            // Name what is in the way and how much of it. "Cannot delete" on
+            // its own sends the user hunting; this tells them where to look.
+            //
+            // "label (count)" rather than "count label" so the sentence reads
+            // correctly whether there is one or many — the alternative is a
+            // singular form for every one of the twenty labels above.
+            std::string msg = "This contact cannot be deleted — it is still used by ";
+            const auto& b = dep["blockers"];
+            for (size_t i = 0; i < b.size(); ++i) {
+                if (i) msg += (i + 1 == b.size()) ? " and " : ", ";
+                msg += b[i]["label"].get<std::string>() + " (" +
+                       std::to_string(b[i]["count"].get<long>()) + ")";
+            }
+            msg += ". Archive it instead — it will stop appearing in lists "
+                   "while its history stays intact.";
+            throw infrastructure::ValidationError(msg);
+        }
+        ResPartner p(db_); return p.unlink(ids);
+    }
+
     nlohmann::json fieldsGet(const std::vector<std::string>& f = {},
                               const std::vector<std::string>& a = {}) {
         ResPartner p(db_); return p.fieldsGet(f, a);
     }
-    int searchCount(const nlohmann::json& d) { ResPartner p(db_); return p.searchCount(d); }
+    int searchCount(const nlohmann::json& d) {
+        // Same rule as searchRead, or the picker's "N more…" would count rows
+        // it will never show.
+        ResPartner p(db_); return p.searchCount(hideArchived_(d));
+    }
+
+private:
+    /// Fill in what belongs to a contact by virtue of having a company.
+    ///
+    /// ADDRESS (docs/130 §7, Odoo res_partner.py:344-349). A contact at Acme
+    /// gets Acme's address, but only for fields the caller left EMPTY and only
+    /// when the parent actually has one. Deliberately a create/write-time
+    /// default, not a live sync: Odoo warns that re-homing a contact should be
+    /// rare, and a background sync that overwrites a hand-typed address is worse
+    /// than retyping it.
+    ///
+    /// company_name (docs/130 §8, Odoo :529). Once parent_id is set, the free
+    /// text is redundant and can only drift out of agreement with the relation.
+    /// Odoo clears it; so do we.
+    void applyParentDefaults_(nlohmann::json& vals) {
+        if (!vals.is_object() || !vals.contains("parent_id")) return;
+        int pid = 0;
+        const auto& pv = vals["parent_id"];
+        if (pv.is_number_integer())                       pid = pv.get<int>();
+        else if (pv.is_array() && !pv.empty() && pv[0].is_number_integer())
+                                                          pid = pv[0].get<int>();
+        if (pid <= 0) return;
+
+        vals["company_name"] = false;   // the relation is now the source of truth
+
+        static const char* kAddr[] = {"street","street2","city","zip","state_id","country_id"};
+        bool anyMissing = false;
+        for (const char* f : kAddr) {
+            const bool given = vals.contains(f) && !vals[f].is_null()
+                            && !(vals[f].is_boolean() && !vals[f].get<bool>())
+                            && !(vals[f].is_string()  && vals[f].get<std::string>().empty());
+            if (!given) { anyMissing = true; break; }
+        }
+        if (!anyMissing) return;
+
+        try {
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            auto r = txn.exec("SELECT COALESCE(street,''), COALESCE(street2,''), "
+                              "COALESCE(city,''), COALESCE(zip,''), "
+                              "COALESCE(state_id,0), COALESCE(country_id,0) "
+                              "FROM res_partner WHERE id = $1",
+                              pqxx::params{pid});
+            txn.commit();
+            if (r.empty()) return;
+            const std::string ps  = r[0][0].c_str(), ps2 = r[0][1].c_str();
+            const std::string pc  = r[0][2].c_str(), pz  = r[0][3].c_str();
+            const int pstate = r[0][4].as<int>(), pcountry = r[0][5].as<int>();
+            // Only inherit when the parent HAS an address; otherwise blanking
+            // the child would be a change, not a default.
+            if (ps.empty() && ps2.empty() && pc.empty() && pz.empty()
+                && pstate == 0 && pcountry == 0) return;
+
+            auto fill = [&](const char* key, const std::string& val) {
+                if (val.empty()) return;
+                const bool given = vals.contains(key) && !vals[key].is_null()
+                                && !(vals[key].is_boolean() && !vals[key].get<bool>())
+                                && !(vals[key].is_string() && vals[key].get<std::string>().empty());
+                if (!given) vals[key] = val;
+            };
+            auto fillId = [&](const char* key, int val) {
+                if (val <= 0) return;
+                const bool given = vals.contains(key) && vals[key].is_number_integer()
+                                && vals[key].get<int>() > 0;
+                if (!given) vals[key] = val;
+            };
+            fill("street",  ps);  fill("street2", ps2);
+            fill("city",    pc);  fill("zip",     pz);
+            fillId("state_id", pstate); fillId("country_id", pcountry);
+        } catch (const std::exception&) {
+            // Inheriting an address is a convenience. If the lookup fails the
+            // contact must still save — with its own (possibly empty) address.
+        }
+    }
 };
 
 
@@ -417,18 +689,23 @@ public:
     std::string arch() const override {
         return "<list>"
                "<field name=\"name\"/>"
-               "<field name=\"company_name\"/>"
+               "<field name=\"commercial_company_name\"/>"
                "<field name=\"email\"/>"
                "<field name=\"phone\"/>"
+               "<field name=\"active\"/>"
                "</list>";
     }
 
     nlohmann::json fields() const override {
         return {
             {"name",         {{"type","char"}, {"string","Name"},         {"required",true}}},
-            {"company_name", {{"type","char"}, {"string","Company Name"}}},
+            {"commercial_company_name", {{"type","char"}, {"string","Company"}}},
             {"email",        {{"type","char"}, {"string","Email"}}},
             {"phone",        {{"type","char"}, {"string","Phone"}}},
+            // Declared so the list can offer "Show archived" — the list only
+            // offers it for models that actually have the flag — and so an
+            // archived row is visibly archived once shown.
+            {"active",       {{"type","boolean"}, {"string","Active"}}},
         };
     }
 
@@ -451,6 +728,11 @@ public:
                "<field name=\"zip\"/>"
                "<field name=\"country_id\"/>"
                "<field name=\"is_company\"/>"
+               "<field name=\"parent_id\"/>"
+               "<field name=\"type\"/>"
+               "<field name=\"street2\"/>"
+               "<field name=\"company_name\"/>"
+               "<field name=\"job_position\"/>"
                "</form>";
     }
 
@@ -463,7 +745,20 @@ public:
             {"city",       {{"type","char"},    {"string","City"}}},
             {"zip",        {{"type","char"},    {"string","ZIP"}}},
             {"is_company", {{"type","boolean"}, {"string","Is Company"}}},
-            {"company_id", {{"type","many2one"},{"string","Company"}, {"relation","res.company"}}},
+            {"parent_id",  {{"type","many2one"},{"string","Company"}, {"relation","res.partner"},
+                            {"domain", nlohmann::json::array({nlohmann::json::array({"is_company","=",true})})}}},
+            {"company_name",{{"type","char"},   {"string","Company Name (free text)"}}},
+            {"street2",     {{"type","char"},   {"string","Street 2"}}},
+            {"type",        {{"type","selection"}, {"string","Address Type"},
+                             {"selection", nlohmann::json::array({
+                                 nlohmann::json::array({"contact",  "Contact"}),
+                                 nlohmann::json::array({"invoice",  "Invoice Address"}),
+                                 nlohmann::json::array({"delivery", "Delivery Address"}),
+                                 nlohmann::json::array({"other",    "Other"})})}}},
+            {"commercial_partner_id", {{"type","many2one"},{"string","Commercial Entity"},
+                             {"relation","res.partner"}, {"readonly", true}}},
+            {"job_position",{{"type","char"},   {"string","Job Position"}}},
+            {"company_id", {{"type","many2one"},{"string","Owner Company"}, {"relation","res.company"}}},
             {"country_id", {{"type","many2one"},{"string","Country"}, {"relation","res.country"}}},
             {"state_id",   {{"type","many2one"},{"string","State"},   {"relation","res.country.state"}}},
         };
@@ -567,6 +862,10 @@ public:
         REGISTER_MUTATOR("create",       handleCreate)
         REGISTER_MUTATOR("write",        handleWrite)
         REGISTER_MUTATOR("unlink",       handleUnlink)
+        // Read-only: what WOULD happen if this contact were deleted. The form
+        // asks before it offers the button, so the user learns why a contact
+        // cannot go before pressing Delete rather than after.
+        REGISTER_METHOD("check_unlink", handleCheckUnlink)
         REGISTER_METHOD("fields_get",   handleFieldsGet)
         REGISTER_METHOD("search_count", handleSearchCount)
     }
@@ -602,6 +901,9 @@ private:
         const auto ids    = call.ids();
         const auto result = service_->unlink(ids);
         return result;
+    }
+    nlohmann::json handleCheckUnlink(const core::CallKwArgs& call) {
+        return service_->dependencies(call.ids());
     }
     nlohmann::json handleFieldsGet(const core::CallKwArgs& call) {
         const auto attrs = call.kwargs.contains("attributes") &&
@@ -729,6 +1031,11 @@ void BaseModule::registerMigrations(cerp::infrastructure::MigrationRunner& runne
     // Take a pg_dump before first run. MigrationRunner applies each migration
     // in its own transaction and halts startup on failure.
     cerp::core::registerMoneyMigrations(runner);
+
+    // docs/130 — the partner hierarchy: commercial_partner_id, the tenant
+    // descending to contacts, and address types. These BACKFILL data, which is
+    // why they are migrations and not ensureSchema_ ALTERs.
+    registerPartnerMigrations(runner);
 }
 
 void BaseModule::initialize() {
@@ -846,6 +1153,55 @@ void BaseModule::ensureSchema_() {
     txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS is_contractor BOOLEAN NOT NULL DEFAULT FALSE");
     txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS is_individual BOOLEAN NOT NULL DEFAULT FALSE");
     txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS company_name  VARCHAR");
+
+    // ------------------------------------------------------------------
+    // parent_id — the company a contact belongs to.
+    //
+    // Until this existed there was no partner->partner relation at all, so
+    // "link this person to that company" had nowhere to go: the API accepted
+    // parent_id, dropped it, and reported success. company_name (free text)
+    // was the only company on a contact, which meant two spellings were two
+    // companies and renaming one updated nobody.
+    //
+    // ON DELETE SET NULL, deliberately. Deleting a company must not delete the
+    // people in it — they are still real customers with invoices attached.
+    // CASCADE here would quietly remove them.
+    // ------------------------------------------------------------------
+    txn.exec("ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS parent_id INTEGER");
+    txn.exec(R"(DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'res_partner_parent_fk') THEN
+            ALTER TABLE res_partner ADD CONSTRAINT res_partner_parent_fk
+                FOREIGN KEY (parent_id) REFERENCES res_partner(id) ON DELETE SET NULL;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'res_partner_parent_not_self') THEN
+            ALTER TABLE res_partner ADD CONSTRAINT res_partner_parent_not_self
+                CHECK (parent_id IS NULL OR parent_id <> id);
+        END IF;
+    END $$;)");
+    txn.exec("CREATE INDEX IF NOT EXISTS res_partner_parent_idx ON res_partner(parent_id)");
+
+    // A cycle (Acme -> Jane -> Acme) makes any walk up the tree hang, and a
+    // CHECK constraint cannot see beyond its own row. This is enforced in the
+    // database rather than the model so it holds for SQL written by hand, by a
+    // migration, or by a module that never goes through ResPartner.
+    txn.exec(R"(CREATE OR REPLACE FUNCTION res_partner_no_cycle() RETURNS trigger AS $fn$
+        DECLARE hop INTEGER := NEW.parent_id; depth INTEGER := 0;
+        BEGIN
+            WHILE hop IS NOT NULL AND depth < 64 LOOP
+                IF hop = NEW.id THEN
+                    RAISE EXCEPTION 'contact hierarchy would form a cycle at partner %', NEW.id
+                        USING ERRCODE = 'check_violation';
+                END IF;
+                SELECT parent_id INTO hop FROM res_partner WHERE id = hop;
+                depth := depth + 1;
+            END LOOP;
+            RETURN NEW;
+        END $fn$ LANGUAGE plpgsql)");
+    txn.exec("DROP TRIGGER IF EXISTS res_partner_no_cycle_trg ON res_partner");
+    txn.exec(R"(CREATE TRIGGER res_partner_no_cycle_trg
+        BEFORE INSERT OR UPDATE OF parent_id ON res_partner
+        FOR EACH ROW WHEN (NEW.parent_id IS NOT NULL)
+        EXECUTE FUNCTION res_partner_no_cycle())");
 
     txn.commit();
 }
