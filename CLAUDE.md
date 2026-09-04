@@ -13,7 +13,7 @@ cmake --build ./build
 rm -rf ./build
 ```
 
-## Test commands (docs/109)
+## Test commands
 
 The whole suite lives in `tests/`, with one entry point.
 
@@ -50,7 +50,7 @@ stays the fast path. `tests/run.sh` builds it explicitly. Its source list is a
 glob over `tests/unit/*/`, evaluated at **configure** time, so a newly added
 unit file needs `cmake -B ./build` re-run once before it compiles.
 
-## Database snapshots — the testing workflow (docs/104)
+## Database snapshots — the testing workflow
 
 **A clean database means one thing: `db/snapshots/baseline.dump`.** It holds the
 schema plus the reference data every module seeds (chart of accounts, journals,
@@ -108,14 +108,27 @@ as a failure — so a test that dies early can never be scored as a pass.
 
 ## Project structure
 
-- `main.cpp` — entry point, server bootstrap
-- `core/` — infrastructure: HTTP server, JSON-RPC dispatcher, session manager, DB connection, container
-- `modules/` — feature modules (account, auth, base, hr, ir, mail, mrp, portal, product, purchase, report, sale, stock, uom)
-- `web/static/src/app.js` — single-file OWL frontend (no build step; served statically)
-- `docs/` — progress and architecture docs
-- `3rdparty/` — vendored: drogon, libpqxx, nlohmann/json
+- `main.cpp` — entry point, module registration (in dependency order), boot
+- `core/` — infrastructure (HTTP server, JSON-RPC dispatcher, session manager,
+  DB pool, DI container, migration runner) plus the cross-cutting engines:
+  `Money`, `TaxEngine`, `RuleEngine`, `StockQuant`, `IrCron`, `IrSequence`,
+  `ControlPlane`, `Filestore`, `DbExplorer`, `DbBackup`, `AuditService`
+- `modules/` — 20 feature modules: account, auth, base, bom, help, hr, ir, mail,
+  mrp, portal, product, project, purchase, rental, report, sale, stock, uom,
+  website (`auth` supplies two: `AuthModule` and `AuthSignupModule`)
+- `web/static/` — the browser code, no build step. `src/app.js` is the ERP shell
+  and its custom forms; `src/components/` one screen each; `portal.html`,
+  `kiosk.html` and `website-editor.js` are separate front ends
+- `docs/` — **the system as it is**, in `architecture/`, `reference/`,
+  `development/`, `security/`, `operations/`, `guides/`. `docs/deprecated/` is
+  the frozen historical log — nothing in it describes the current system.
+  `docs/temp/` is for work in progress only, and is emptied as it lands
+- `tools/` — tenant provisioning, cross-tenant migration, the admin console
+- `deploy/` — nginx config and the production runbook
+- `3rdparty/` — vendored: drogon, libpqxx, nlohmann/json, qrcodegen
 - `tests/` — the whole suite, one entry point (`tests/run.sh`); `tests/tools/` holds
-  the by-hand instruments (leak audit, menu doc, ledger integrity)
+  the by-hand instruments (leak audit, menu doc, ledger integrity, and the two
+  doc audits that check `database-schema.md` and every doc link)
 - `scripts/` — operational only: `build.sh`, `deploy.sh`, `server.sh`, the database
   snapshot scripts, `seed.sh`. Machine setup is `scripts/deps/install.sh`; dead
   one-offs are parked in `scripts/deprecated/`. See `scripts/README.md`.
@@ -126,7 +139,31 @@ as a failure — so a test that dies early can never be scored as a pass.
 - C++20, **split translation units** (PERF-E): each module has a slim `.hpp` (declaration only) and a `.cpp` (implementation + inner classes). `CMakeLists.txt` picks up `*.cpp` from `main.cpp`, `core/`, `modules/`, and `factories/`.
 - Frontend is plain JS/OWL — edit `web/static/src/app.js` directly, no npm/webpack needed
 - Database: PostgreSQL; schema is created/migrated automatically on startup via `ensureSchema_()` in each module
-- Config: `config.json` at project root (DB credentials, HTTP port, devMode flag)
+- Config: `config/system.cfg` — an INI file (DB credentials, HTTP bind, `dev_mode`,
+  `secure_cookies`, `trusted_proxies`, logging, SMTP). Override the path with
+  `--config`. Tenants are separate, in `config/tenants.json`.
+- Namespace is `cerp` throughout — `cerp::core`, `cerp::infrastructure`,
+  `cerp::modules::<module>`.
+
+## Where to read more
+
+`docs/README.md` is the index. The pages you are most likely to need:
+
+| | |
+|---|---|
+| `docs/architecture/overview.md` | layers, request path, boot order |
+| `docs/architecture/modules.md` | what each module owns |
+| `docs/development/conventions.md` | the long form of the rules below |
+| `docs/reference/database-schema.md` | every table, by module |
+| `docs/reference/http-api.md` | JSON-RPC, the access model, every route |
+| `docs/reference/id-registry.md` | menu / action / group ids |
+| `docs/security/README.md` | what is enforced and where |
+| `docs/operations/` | build, configure, deploy, test, database |
+| `tests/docs/tooling.md` | every test tool and the trap each one hides |
+
+**Never pick a menu, action or group id by reading a document.** Run
+`bash tests/integration/core/menu-ids/test.sh` — it fails on a collision and
+prints the next free id in each space.
 
 ## Security rules (mandatory — apply to every new file)
 
@@ -148,7 +185,8 @@ bool devMode = services_.devMode();
 ```
 
 `ex.what()` from pqxx contains full SQL text, table names, and schema details.
-Exposing it enables information-disclosure attacks. See `docs/security-error-handling.md`.
+Exposing it enables information-disclosure attacks. See
+`docs/security/error-handling.md`; `tests/security/disclosure/error-masking` asserts it.
 
 `AccessDeniedError` is the **only** exception that is always passed through (user must know why access was denied).
 
@@ -180,7 +218,7 @@ domainFromJson(merged).toSql(&filterableColumns_());   // rejects unregistered c
 ```
 
 Values are bound (`$N`); it is the column *name* that needs the allowlist. See
-`verify_domain_field_allowlist.sh` and `docs/062`.
+`tests/security/injection/domain-field-allowlist` and `docs/security/README.md`.
 
 ## Coding conventions (PERF-E — mandatory for every new module)
 
@@ -197,7 +235,7 @@ Every module **must** follow this layout:
 #include <string>
 #include <vector>
 
-namespace odoo::modules::xxx {
+namespace cerp::modules::xxx {
 
 class XxxModule : public core::IModule {
 public:
@@ -222,7 +260,7 @@ private:
     void seedMenus_();
 };
 
-} // namespace odoo::modules::xxx
+} // namespace cerp::modules::xxx
 ```
 
 **`modules/xxx/XxxModule.cpp`** — ALL inner classes and ALL method bodies:
@@ -236,9 +274,9 @@ private:
 #include <pqxx/pqxx>
 // ... etc.
 
-namespace odoo::modules::xxx {
-using namespace odoo::infrastructure;
-using namespace odoo::core;
+namespace cerp::modules::xxx {
+using namespace cerp::infrastructure;
+using namespace cerp::core;
 
 // Inner model/viewmodel classes defined here
 class XxxFoo : public BaseModel<XxxFoo> { ... };
@@ -247,7 +285,7 @@ class XxxFoo : public BaseModel<XxxFoo> { ... };
 XxxModule::XxxModule(...) : ... {}
 void XxxModule::registerModels() { ... }
 // ...
-} // namespace odoo::modules::xxx
+} // namespace cerp::modules::xxx
 ```
 
 **Why**: enables incremental compilation — changing a module's `.cpp` only recompiles that one TU, not the entire codebase. The heavy headers (`pqxx`, `BaseModel`, `nlohmann/json`) are isolated to `.cpp` files so `main.cpp` compiles quickly.
