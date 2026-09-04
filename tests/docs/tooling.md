@@ -131,7 +131,7 @@ bash scripts/db_snapshot.sh verify  log/mine.dump     # is the archive readable?
 
 | File | Is |
 |---|---|
-| `db/snapshots/baseline.dump` | what the suite runs against: schema, reference data, one company, admin. **No transactions and no products** — `product_product` is empty, so a test that reads "the first product" must seed it (`needs=fixtures`, or its own rows) |
+| `db/snapshots/baseline.dump` | what the suite runs against: schema, reference data, **the demo parts catalogue (163 products)**, 13 partners, one company, admin. No transactions — zero orders, invoices or pickings. Measured 2026-09-02 by restoring it and counting; `pg_restore --data-only -t <table>` reports 0 rows for a custom-format dump and must not be trusted for this |
 | `backups/odoo/default-clean.dump` | for the **Database & Backup** screen: runnable ERP, zero products/orders/entries |
 | `backups/odoo/default-demo.dump` | clean + the demo catalogue |
 | `log/pretest.dump` | your database, as the last suite run found it. **This is the file to restore if something goes wrong** |

@@ -187,8 +187,14 @@ fi
 echo "############ the menu reaches the screen ############"
 [ "$(pg "SELECT res_model FROM ir_act_window WHERE id=101")" = "db.studio" ] \
     && ok "action 101 opens db.studio" || no "action 101 wrong"
-[ "$(pg "SELECT parent_id FROM ir_ui_menu WHERE id=74")" = "30" ] \
-    && ok "menu 74 sits under Settings" || no "menu 74 not under Settings"
+# Settings groups its entries now (docs/127): Database Tools sits in the
+# "Database" dropdown rather than flat on the bar. Assert the PATH by name, so
+# this keeps testing "reachable from Settings" rather than an id.
+[ "$(pg "SELECT g.name FROM ir_ui_menu m
+           JOIN ir_ui_menu g ON g.id = m.parent_id
+           JOIN ir_ui_menu s ON s.id = g.parent_id
+          WHERE m.id = 74 AND s.name = 'Settings'" | tr -d ' ')" = "Database" ] \
+    && ok "menu 74 sits under Settings -> Database" || no "menu 74 not under Settings -> Database"
 [ "$(pg "SELECT action_id FROM ir_ui_menu WHERE id=74")" = "101" ] \
     && ok "and points at action 101" || no "menu 74 points elsewhere"
 curl -s "$BASE/src/components/DbStudio.js" | grep -q 'class DbStudio' \

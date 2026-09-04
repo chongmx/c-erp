@@ -84,7 +84,15 @@ pg "DELETE FROM res_users WHERE login='p6probe'" >/dev/null
 
 echo "############ exactly one audit row per operation ############"
 echo "--- hand-written ViewModels ---"
-probe "res.users"        '{"login":"p6probe","name":"P6 Probe","password":"Sup3rSecret!x"}' '"name":"P6 Probe 2"'
+# The write field must be one res.users ACTUALLY HAS. Its columns are
+# login/partner_id/company_id/lang/tz/active/share — a user's name lives on
+# res_partner. This probe used to write "name", which the old BaseModel::write
+# silently dropped: the row was untouched, yet write_date was stamped and an
+# audit row appeared, so the probe passed while asserting nothing. Once write()
+# started rejecting unknown fields the write 400'd and the audit count went to
+# zero, which is what exposed it. "lang" is a real column, so the write now
+# changes something and the audit assertion means what it says.
+probe "res.users"        '{"login":"p6probe","name":"P6 Probe","password":"Sup3rSecret!x"}' '"lang":"en_US"'
 probe "stock.picking"    "{\"name\":\"P6PROBE\",\"picking_type_id\":$PTYPE}"                 '"name":"P6PROBE2"'
 probe "mrp.bom"          "{\"product_id\":$PROD,\"product_qty\":1}"                          '"product_qty":2'
 

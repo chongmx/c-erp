@@ -41,6 +41,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 JOBS="$(nproc 2>/dev/null || echo 4)"
+
+# Which build tree to use. Defaults to ./build; deploy.sh sets
+# BUILD_DIR=build-docker so the Docker cross-build gets its own cmake cache.
+#
+# They used to share ./build, and whichever ran last left its cache there. The
+# other then failed with "The current CMakeCache.txt directory ... is different
+# than /workspace/build", which tests/run.sh reported as `erp_tests (build)` —
+# a test failure with no failing test. It cost three suite runs to stop guessing.
+BUILD_DIR="${BUILD_DIR:-build}"
 CLEAN=
 ACTION=build           # build | run-admin | stop-admin | admin-url
 TARGETS=both           # both | server | admin
@@ -121,8 +130,8 @@ esac
 
 # ---- build --------------------------------------------------------------
 if [ -n "$CLEAN" ]; then
-    echo "[build] --clean: removing ./build"
-    rm -rf ./build
+    echo "[build] --clean: removing ./$BUILD_DIR"
+    rm -rf "./$BUILD_DIR"
 fi
 
 # Configure only when there is no cache to reuse. `cmake --build` re-runs the
@@ -130,16 +139,16 @@ fi
 # `cmake -B` bought nothing and cost ~65s of configure on every invocation —
 # painful for `--run-admin`, whose whole point is getting to the console fast.
 # --clean removes ./build, so this still reconfigures when it should.
-if [ -f build/CMakeCache.txt ]; then
-    echo "[build] reusing existing cmake cache (delete ./build or use --clean to reconfigure)"
+if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
+    echo "[build] reusing existing cmake cache (delete ./$BUILD_DIR or use --clean to reconfigure)"
 else
-    echo "[build] configuring (cmake -B ./build) ..."
-    cmake -B ./build
+    echo "[build] configuring (cmake -B ./$BUILD_DIR) ..."
+    cmake -B "./$BUILD_DIR"
 fi
 
 build_one() {
     echo "[build] building $1 (-j $JOBS) ..."
-    cmake --build ./build --target "$1" -j "$JOBS"
+    cmake --build "./$BUILD_DIR" --target "$1" -j "$JOBS"
 }
 
 # --run-admin only needs the console; building the server too would make the
@@ -186,7 +195,7 @@ if [ "$ACTION" = run-admin ]; then
     echo "[admin] starting on 127.0.0.1:${ADMIN_PORT} (log: $ADMIN_LOG) ..."
     # setsid + detached: the console must outlive this script, and its stdout
     # is the only place the token is ever written.
-    ( setsid ./build/erp-admin --port "$ADMIN_PORT" > "$ADMIN_LOG" 2>&1 < /dev/null & )
+    ( setsid "./$BUILD_DIR/erp-admin" --port "$ADMIN_PORT" > "$ADMIN_LOG" 2>&1 < /dev/null & )
 
     # Poll for the port rather than sleeping a guessed amount.
     for _ in $(seq 1 20); do admin_listening && break; sleep 1; done

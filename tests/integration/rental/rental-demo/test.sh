@@ -182,8 +182,14 @@ A=$(printf '%s' "$HTML" | grep -n 'src/app.js' | head -1 | cut -d: -f1)
                                  || no "load order wrong"
 curl -s "$BASE/src/app.js" | grep -q "'rental.demo.data'" \
     && ok "registered in CUSTOM_VIEWS" || no "not registered"
-MEN=$(pg "SELECT count(*) FROM ir_ui_menu WHERE name='Demo Data' AND parent_id=101")
-[ "$MEN" = "1" ] && ok "menu entry under Settings -> Technical" || no "menu entry missing"
+# Demo Data moved from Technical into the "Database" group when Settings was
+# organised into dropdowns (docs/127). Checked by NAME so the assertion follows
+# the menu instead of pinning an id.
+MEN=$(pg "SELECT count(*) FROM ir_ui_menu m
+            JOIN ir_ui_menu g ON g.id = m.parent_id
+            JOIN ir_ui_menu s ON s.id = g.parent_id
+           WHERE m.name = 'Demo Data' AND g.name = 'Database' AND s.name = 'Settings'")
+[ "$MEN" = "1" ] && ok "menu entry under Settings -> Database" || no "menu entry missing"
 # The destructive action must not be a reflex click.
 JS=$(curl -s "$BASE/src/components/rental/RentalDemoData.js")
 printf '%s' "$JS" | grep -q "confirm !== 'REMOVE'" \

@@ -32,6 +32,14 @@ cd "$(dirname "$0")/.."
 REMOTE_HOST="${GCP_HOST:-easylockerspace}"
 REMOTE_DIR="${GCP_DIR:-~/code/c-erp}"
 DOCKER_IMAGE="${DOCKER_IMAGE:-gcp-builder}"
+# The cross-build gets its OWN directory.
+#
+# It used to build into ./build, which tests/run.sh also owns. Whichever ran
+# last left its cmake cache there and broke the other: run.sh would die with
+#   "The current CMakeCache.txt directory ... is different than /workspace/build"
+# and report `erp_tests (build)` as a test failure that had nothing to do with
+# any test. That cost three full suite runs before it was worth fixing.
+BUILD_DIR="${BUILD_DIR:-build-docker}"
 CCACHE_DIR="${CCACHE_DIR:-$HOME/.cache/cerp-ccache}"
 
 RESTART_SERVICE=0
@@ -68,6 +76,30 @@ done
 # fails for a reason that was corrected days ago, or worse succeeds against the
 # wrong library set and produces a binary that dies on the host.
 # -------------------------------------------------------------
+# Can we talk to the daemon at all? Ask before interpreting any docker output.
+#
+# `docker image inspect` fails the same way whether the image is missing or the
+# socket is unreadable, and swallowing the reason turned "permission denied"
+# into "image not found — building it". The script then tried to BUILD, which
+# failed on the same permission error one step later behind a much noisier
+# message. Diagnose the cause once, here, and say what to do about it.
+if ! docker_err=$(docker version --format '{{.Server.Version}}' 2>&1); then
+    echo "ERROR: cannot talk to the Docker daemon." >&2
+    echo "  $docker_err" | head -2 >&2
+    if printf '%s' "$docker_err" | grep -qi 'permission denied'; then
+        echo >&2
+        echo "  You ARE in the docker group ($(getent group docker 2>/dev/null || echo 'group missing'))," >&2
+        echo "  but a session only picks up group membership when it is CREATED." >&2
+        echo "  A WSL login started before the group was added keeps the old" >&2
+        echo "  credentials, and new terminal tabs re-attach to that same session." >&2
+        echo >&2
+        echo "  Fix, most reliable first:" >&2
+        echo "    wsl --shutdown      (from Windows PowerShell), then reopen the terminal" >&2
+        echo "    newgrp docker       (this shell only, no restart)" >&2
+    fi
+    exit 1
+fi
+
 image_created=$(docker image inspect "$DOCKER_IMAGE" --format '{{.Created}}' 2>/dev/null || true)
 
 if [ -z "$image_created" ]; then
@@ -106,8 +138,8 @@ docker run --rm \
 
 # Locate built binaries in local ./build/
 BINARIES=()
-[ -f ./build/c-erp ] && BINARIES+=(./build/c-erp)
-[ -f ./build/erp-admin ] && BINARIES+=(./build/erp-admin)
+[ -f "./$BUILD_DIR/c-erp" ]     && BINARIES+=("./$BUILD_DIR/c-erp")
+[ -f "./$BUILD_DIR/erp-admin" ] && BINARIES+=("./$BUILD_DIR/erp-admin")
 
 if [ ${#BINARIES[@]} -eq 0 ]; then
     echo "ERROR: No compiled binaries found in ./build to deploy." >&2
