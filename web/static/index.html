@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="/src/components/project.css">
     <link rel="stylesheet" href="/src/components/help.css">
     <link rel="stylesheet" href="/src/components/bomeditor.css">
+    <link rel="stylesheet" href="/src/components/m2oselect.css">
 </head>
 <body>
 <div id="app"></div>
@@ -23,6 +24,9 @@
 <script src="/src/components/LoginPage.js"></script>
 <script src="/src/components/UserMenu.js"></script>
 <script src="/src/components/DatePicker.js"></script>
+<!-- M2OSelect — the shared many-to-one picker. Must load before every screen
+     that names it in `static components`, which by now is most of them. -->
+<script src="/src/components/M2OSelect.js"></script>
 <!-- Rental components load BEFORE app.js, which is what lets app.js
      reference RentalUnitGrid in its CUSTOM_VIEWS map at definition time. -->
 <script src="/src/components/rental/RentalUnitGrid.js"></script>

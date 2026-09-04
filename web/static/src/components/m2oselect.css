@@ -1,0 +1,203 @@
+/* m2oselect.css — the shared many-to-one picker (M2OSelect.js).
+ *
+ * The widget replaces a <select> in place, so it must occupy the same box and
+ * wear the same skin: everything here is expressed in the app.css variables
+ * (--surface, --border, --accent, --text, --muted) so the picker follows the
+ * theme instead of punching a light-coloured hole in a dark screen.
+ */
+
+.m2o {
+    position: relative;
+    display: block;
+    width: 100%;
+    min-width: 0;              /* so it can shrink inside a table cell */
+}
+
+/* The widget is now the flex child where a bare .form-input used to be. */
+.gf-m2o > .m2o { flex: 1 1 auto; min-width: 0; }
+
+.m2o-control {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.m2o-input {
+    width: 100%;
+    padding-right: 24px;       /* room for the clear button */
+}
+
+/* A chosen value should read as a value, not as half-typed search text. */
+.m2o-input.has-value { color: var(--text); font-weight: 500; }
+.m2o-input::placeholder { color: var(--muted); opacity: .75; }
+
+.m2o-clear {
+    position: absolute;
+    right: 5px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 3px;
+}
+.m2o-clear:hover { color: var(--accent); }
+
+/* --- the dropdown ------------------------------------------------------- */
+.m2o-pop {
+    position: absolute;
+    z-index: 60;               /* above form cards, below the browse dialog */
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin-top: 3px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+    max-height: 264px;
+    overflow-y: auto;
+}
+
+.m2o-opt {
+    padding: 6px 10px;
+    font-size: .8125rem;
+    color: var(--text);
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.m2o-opt:hover { background: var(--border); }
+.m2o-opt.sel   { background: var(--border); color: var(--accent); font-weight: 600; }
+
+.m2o-note {
+    padding: 8px 10px;
+    font-size: .75rem;
+    color: var(--muted);
+}
+
+/* "N more…" — the honest statement that the list is not everything. The old
+   <select> made the opposite claim by saying nothing at all. */
+.m2o-more {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 5px 10px;
+    border-top: 1px solid var(--border);
+    background: var(--bg);
+    font-size: .75rem;
+    color: var(--muted);
+    position: sticky;
+    bottom: 0;
+}
+.m2o-browse {
+    border: 1px solid var(--border);
+    background: transparent;
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-size: .75rem;
+    cursor: pointer;
+    color: var(--accent);
+}
+.m2o-browse:hover { border-color: var(--accent); background: rgba(233, 69, 96, .12); }
+
+/* --- the browse dialog -------------------------------------------------- */
+.m2o-modal-back {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    background: rgba(0, 0, 0, .6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.m2o-modal {
+    width: min(560px, 92vw);
+    max-height: 78vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 14px 48px rgba(0, 0, 0, .55);
+    overflow: hidden;
+}
+
+.m2o-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 14px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-weight: 600;
+    font-size: .875rem;
+}
+.m2o-x {
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 19px;
+    line-height: 1;
+    cursor: pointer;
+}
+.m2o-x:hover { color: var(--accent); }
+
+.m2o-modal-search { margin: 10px 14px 8px; width: calc(100% - 28px); }
+
+.m2o-modal-list {
+    flex: 1;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    min-height: 120px;
+}
+
+.m2o-row {
+    padding: 8px 14px;
+    font-size: .8125rem;
+    color: var(--text);
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+}
+.m2o-row:hover { background: var(--border); }
+.m2o-row.sel   { background: var(--border); color: var(--accent); font-weight: 600; }
+
+.m2o-modal-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 14px;
+    font-size: .75rem;
+    color: var(--muted);
+}
+.m2o-modal-foot button {
+    border: 1px solid var(--border);
+    background: transparent;
+    border-radius: 3px;
+    padding: 3px 10px;
+    font-size: .75rem;
+    color: var(--text);
+    cursor: pointer;
+}
+.m2o-modal-foot button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.m2o-modal-foot button:disabled { opacity: .4; cursor: default; }
+
+/* --- inside an editable line table -------------------------------------- */
+/* Line grids are dense; the picker must not add height to the row. */
+.o2m-table .m2o-input,
+.so-lines  .m2o-input {
+    padding: 3px 20px 3px 6px;
+    font-size: .75rem;
+}
+.o2m-table .m2o-pop,
+.so-lines  .m2o-pop { min-width: 220px; }
+
+/* A dropdown inside a table must escape the row, not be clipped by it. */
+.o2m-table td, .so-lines td { overflow: visible; }

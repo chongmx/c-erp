@@ -24,6 +24,11 @@ class ListView extends Component {
                 <button class="btn btn-primary" t-on-click="onNew">New</button>
                 <button class="btn" t-on-click="onExport">Export CSV</button>
                 <button class="btn" t-on-click="onImportClick">Import CSV</button>
+                <!-- Only for models that HAVE an active flag; on the rest the
+                     button would promise a filter that does nothing. -->
+                <button t-if="hasActiveField" class="btn" t-on-click="toggleArchived"
+                        t-att-style="state.showArchived ? 'border-color:var(--accent);color:var(--accent)' : undefined"
+                        t-esc="state.showArchived ? 'Hide archived' : 'Show archived'"/>
                 <span t-if="state.importMsg"
                       t-att-class="'import-msg ' + (state.importOk ? 'import-ok' : 'import-err')"
                       t-esc="state.importMsg"/>
@@ -64,6 +69,7 @@ class ListView extends Component {
         this.state = useState({
             loading: true, records: [], error: '',
             importMsg: '', importOk: false,
+            showArchived: false,
         });
         onMounted(() => this.load());
         onWillUpdateProps((np) => {
@@ -95,6 +101,14 @@ class ListView extends Component {
             if (typeof domain === 'string') {
                 try { domain = JSON.parse(domain); } catch(_) { domain = []; }
             }
+            // The server hides archived records unless the domain mentions
+            // `active`. Naming it explicitly — either value — is what turns
+            // that off, and is the only route back to an archived record:
+            // without it, archiving would put a contact somewhere the UI can
+            // never reach again.
+            if (this.state.showArchived) {
+                domain = [...domain, '|', ['active', '=', true], ['active', '=', false]];
+            }
             const recs   = await RpcService.call(
                 action.res_model, 'search_read',
                 [domain], { fields: cols, limit: 80 });
@@ -110,6 +124,16 @@ class ListView extends Component {
         if (val === null || val === undefined || val === false) return '';
         if (Array.isArray(val)) return val[1] ?? val[0] ?? '';
         return String(val);
+    }
+
+    /** Does this model carry an archive flag? Read from the view's own fields. */
+    get hasActiveField() {
+        return !!((this.props.viewDef || {}).fields || {}).active;
+    }
+
+    toggleArchived() {
+        this.state.showArchived = !this.state.showArchived;
+        this.load();
     }
 
     onRowClick(id) { this.props.onOpenForm(id); }
@@ -163,6 +187,22 @@ class ListView extends Component {
     }
 }
 
+/**
+ * Fields that only apply for some values of another field, by model.
+ *
+ * rental.contract: the billing period is a preset. Eight of the nine presets
+ * fix the interval and unit themselves (migration 816 derives them by trigger);
+ * only "Custom — every X…" hands those two numbers to the user, so only Custom
+ * shows them.
+ */
+const CONDITIONAL_FIELDS = {
+    'rental.contract': {
+        billing_interval: { when: 'billing_period', equals: ['custom'] },
+        billing_unit:     { when: 'billing_period', equals: ['custom'] },
+    },
+};
+
+// ----------------------------------------------------------------
 // FormView — renders a form from get_views + read
 // ----------------------------------------------------------------
 class FormView extends Component {
@@ -198,23 +238,31 @@ class FormView extends Component {
                 <div class="gf-card" t-on-change="onFormChange" t-on-input="onFormInput" t-on-click="onFormClick">
                     <h1 class="gf-title" t-esc="recordTitle"/>
                     <div class="gf-grid">
-                        <t t-foreach="scalarFields" t-as="f" t-key="f.name">
+                        <t t-foreach="visibleScalarFields" t-as="f" t-key="f.name">
                             <div t-attf-class="gf-field{{ f.type === 'text' ? ' gf-field-wide' : '' }}{{ f.type === 'boolean' ? ' gf-field-bool' : '' }}">
                                 <label class="gf-label" t-esc="f.label"/>
                                 <div class="gf-control">
                                     <t t-if="f.type === 'many2one'">
                                         <div class="gf-m2o">
-                                            <select class="form-input" t-att-data-field="f.name">
-                                                <option value="0">—</option>
-                                                <t t-foreach="state.relOptions[f.name] || []" t-as="opt" t-key="opt.id">
-                                                    <option t-att-value="opt.id"
-                                                            t-att-selected="this.getM2oId(state.record[f.name]) === opt.id ? true : undefined">
-                                                        <t t-esc="opt.display"/>
-                                                    </option>
-                                                </t>
-                                            </select>
+                                            <M2OSelect model="f.relation"
+                                                       value="state.record[f.name]"
+                                                       label="f.label"
+                                                       domain="f.domain"
+                                                       readonly="f.readonly"
+                                                       onSelect="(id) => this.onFieldChange(f.name, id)"/>
                                             <button class="gf-addnew" t-att-data-addnew="f.name" title="Add new…">＋</button>
                                         </div>
+                                    </t>
+                                    <t t-elif="f.type === 'selection' and f.selection.length">
+                                        <select class="form-input"
+                                                t-att-data-field="f.name" t-att-data-type="'selection'">
+                                            <option value="" t-att-selected="!state.record[f.name] ? true : undefined">—</option>
+                                            <t t-foreach="f.selection" t-as="opt" t-key="opt[0]">
+                                                <option t-att-value="opt[0]"
+                                                        t-att-selected="state.record[f.name] === opt[0] ? true : undefined"
+                                                        t-esc="opt[1]"/>
+                                            </t>
+                                        </select>
                                     </t>
                                     <t t-elif="f.type === 'boolean'">
                                         <input type="checkbox" class="gf-check"
@@ -258,18 +306,12 @@ class FormView extends Component {
                                                 <td>
                                                     <t t-if="col.type === 'many2one'">
                                                         <div class="gf-m2o">
-                                                            <select class="o2m-input"
-                                                                    t-att-data-o2m="f.name"
-                                                                    t-att-data-key="line._key"
-                                                                    t-att-data-field="col.name">
-                                                                <option value="0">—</option>
-                                                                <t t-foreach="state.relOptions[col.name] || []" t-as="opt" t-key="opt.id">
-                                                                    <option t-att-value="opt.id"
-                                                                            t-att-selected="this.getM2oId(line[col.name]) === opt.id ? true : undefined">
-                                                                        <t t-esc="opt.display"/>
-                                                                    </option>
-                                                                </t>
-                                                            </select>
+                                                            <M2OSelect model="col.relation"
+                                                                       value="line[col.name]"
+                                                                       label="col.label"
+                                                                       domain="col.domain"
+                                                                       readonly="col.readonly"
+                                                                       onSelect="(id) => this.updateO2mLine(f.name, line._key, col.name, id)"/>
                                                             <button class="gf-addnew"
                                                                     t-att-data-addnew-o2m="f.name"
                                                                     t-att-data-addnew-field="col.name"
@@ -324,11 +366,12 @@ class FormView extends Component {
         </div>
     `;
 
+    static components = { M2OSelect };
+
     setup() {
         this.state = useState({
             loading: true, record: {}, isNew: !this.props.recordId, error: '',
             conflictError: '',
-            relOptions: {},
             o2mLines:   {},
             o2mMeta:    {},
             deletedIds: {},
@@ -366,10 +409,10 @@ class FormView extends Component {
         ctx.error = '';
         try {
             const id = await RpcService.call(ctx.relation, 'create', [{ name }], {});
-            // Make the new record selectable and select it immediately.
-            const opts = this.state.relOptions[ctx.field] ? [...this.state.relOptions[ctx.field]] : [];
-            opts.push({ id, display: name });
-            this.state.relOptions[ctx.field] = opts;
+            // Select it immediately. There is no options list to append to any
+            // more — writing the id is enough, because M2OSelect resolves the
+            // label from the id and so can display a record it has never seen
+            // in a search result.
             if (ctx.o2mField) {
                 const line = (this.state.o2mLines[ctx.o2mField] || []).find(l => l._key === ctx.targetKey);
                 if (line) line[ctx.field] = id;
@@ -392,7 +435,35 @@ class FormView extends Component {
             relation:      meta.relation      || null,
             relationField: meta.relation_field || null,
             readonly:      !!meta.readonly,
+            // The server may narrow which records this m2o may point at
+            // (res.partner.parent_id is companies only). M2OSelect ANDs it into
+            // every search, so the restriction now holds while typing too —
+            // the old <select> only ever applied it to its one initial fetch.
+            domain:        Array.isArray(meta.domain) ? meta.domain : [],
+            // [["value","Label"], …] for a selection field. Without this the
+            // form rendered a selection as a free text box, so choosing a
+            // billing period meant typing "quarterly" and hoping.
+            selection:     Array.isArray(meta.selection) ? meta.selection : [],
         }));
+    }
+
+    /**
+     * Scalar fields, minus the ones that do not apply to the current record.
+     *
+     * There is no <attrs> support in this form, so conditional visibility is
+     * this one table. "Every X" and its unit only mean anything when the
+     * billing period is Custom — shown always, they invite someone to set
+     * "every 3" on a contract that bills yearly and wonder why nothing changes.
+     */
+    get visibleScalarFields() {
+        const rules = CONDITIONAL_FIELDS[(this.props.action || {}).res_model] || null;
+        if (!rules) return this.scalarFields;
+        return this.scalarFields.filter(f => {
+            const rule = rules[f.name];
+            if (!rule) return true;
+            const cur = this.state.record[rule.when];
+            return rule.equals.includes(cur);
+        });
     }
 
     get scalarFields() {
@@ -416,6 +487,7 @@ class FormView extends Component {
             type:     m.type     || 'char',
             relation: m.relation || null,
             readonly: !!m.readonly,
+            domain:   Array.isArray(m.domain) ? m.domain : [],
         }));
     }
 
@@ -440,7 +512,6 @@ class FormView extends Component {
                     this.state.record = {};
                 }
             }
-            await this.loadRelOptions();
             await this.loadO2mData();
         } catch (e) {
             this.state.error = e.message;
@@ -449,21 +520,10 @@ class FormView extends Component {
         }
     }
 
-    async loadRelOptions() {
-        const m2oFields = this.scalarFields.filter(f => f.type === 'many2one' && f.relation);
-        await Promise.all(m2oFields.map(async f => {
-            try {
-                const recs = await RpcService.call(f.relation, 'search_read', [[]],
-                    { fields: ['id', 'name'], limit: 200 });
-                this.state.relOptions[f.name] = (Array.isArray(recs) ? recs : []).map(r => ({
-                    id:      r.id,
-                    display: r.name || String(r.id),
-                }));
-            } catch (_) {
-                this.state.relOptions[f.name] = [];
-            }
-        }));
-    }
+    // loadRelOptions() is gone. It used to prefetch up to 200 rows per m2o field
+    // so a <select> could list them; M2OSelect searches the server instead, so
+    // the prefetch was both a wasted round trip per relation and the source of
+    // the truncation bug it existed to serve.
 
     async loadO2mData() {
         const ALWAYS_SKIP = new Set(['id', 'create_date', 'write_date',
@@ -484,23 +544,10 @@ class FormView extends Component {
                     filtered[k] = v;
                 }
                 this.state.o2mMeta[f.name] = filtered;
-
-                // Load relOptions for Many2one fields within the sublist
-                await Promise.all(Object.entries(filtered)
-                    .filter(([, m]) => m.type === 'many2one' && m.relation)
-                    .map(async ([colName, m]) => {
-                        if (this.state.relOptions[colName]) return;
-                        try {
-                            const recs = await RpcService.call(m.relation, 'search_read', [[]],
-                                { fields: ['id', 'name'], limit: 200 });
-                            this.state.relOptions[colName] = (Array.isArray(recs) ? recs : []).map(r => ({
-                                id:      r.id,
-                                display: r.name || String(r.id),
-                            }));
-                        } catch (_) {
-                            this.state.relOptions[colName] = [];
-                        }
-                    }));
+                // No per-column prefetch here either: each line's M2OSelect
+                // resolves its own value and searches on demand, which is what
+                // makes a 5000-product line editor as responsive as a 5-product
+                // one.
             } catch (_) {
                 this.state.o2mMeta[f.name] = {};
             }
@@ -547,7 +594,16 @@ class FormView extends Component {
         const field = e.target.dataset.field;
         if (!field) return;
         if (e.target.tagName === 'SELECT') {
-            this.onFieldChange(field, parseInt(e.target.value) || 0);
+            // A selection's value is a WORD ('quarterly'), not an id. Running it
+            // through parseInt stored 0 and wiped the field on every change.
+            //
+            // The blank option means "leave it unset", which must travel as
+            // null and not as '' — an empty string is not one of the allowed
+            // values, so it fails the CHECK constraint with a raw SQL error
+            // instead of quietly taking the column default.
+            this.onFieldChange(field, e.target.dataset.type === 'selection'
+                ? (e.target.value || null)
+                : (parseInt(e.target.value) || 0));
         } else if (e.target.type === 'checkbox') {
             this.onFieldChange(field, e.target.checked);
         }
@@ -560,7 +616,10 @@ class FormView extends Component {
             return;
         }
         const field = e.target.dataset.field;
-        if (field && e.target.type !== 'checkbox') {
+        // A <select> fires input AND change. onFormChange is the one that
+        // knows a blank selection means null, so let it own selects outright
+        // rather than having two handlers race to write the same field.
+        if (field && e.target.type !== 'checkbox' && e.target.tagName !== 'SELECT') {
             this.onFieldChange(field, e.target.value);
         }
     }
@@ -1090,7 +1149,7 @@ class AuditLogPanel extends Component {
 // InvoiceFormView — the reference ERP-style Invoice (account.move) form
 // ----------------------------------------------------------------
 class InvoiceFormView extends Component {
-    static components = { DatePicker, ChatterPanel, AttachmentPanel };
+    static components = { M2OSelect, DatePicker, ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -1239,14 +1298,9 @@ class InvoiceFormView extends Component {
                         <div class="so-info-col">
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Customer</label>
-                                <select class="form-input" data-field="partner_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.partners" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.partner_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'res.partner'" label="'Customer'"
+                                           value="state.record.partner_id"
+                                           onSelect="(id) => this.setM2o('partner_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Invoice Date</label>
@@ -1267,25 +1321,15 @@ class InvoiceFormView extends Component {
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Journal</label>
-                                <select class="form-input" data-field="journal_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.journals" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.journal_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'account.journal'" label="'Journal'"
+                                           value="state.record.journal_id"
+                                           onSelect="(id) => this.setM2o('journal_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Payment Terms</label>
-                                <select class="form-input" data-field="payment_term_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.paymentTerms" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.payment_term_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'account.payment.term'" label="'Payment Terms'"
+                                           value="state.record.payment_term_id"
+                                           onSelect="(id) => this.setM2o('payment_term_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Reference</label>
@@ -1519,9 +1563,6 @@ class InvoiceFormView extends Component {
                     ? RpcService.call('account.move', 'read', [[recId]], { fields })
                           .then(r => (Array.isArray(r) ? r[0] : r) || {})
                     : Promise.resolve({}),
-                this.loadOpts('res.partner',          'partners',     ['id', 'name']),
-                this.loadOpts('account.journal',      'journals',     ['id', 'name']),
-                this.loadOpts('account.payment.term', 'paymentTerms', ['id', 'name']),
                 this.loadOpts('account.tax',          'taxOptions',   ['id', 'name']),
             ]);
             this.state.record = rec;
@@ -1615,6 +1656,14 @@ class InvoiceFormView extends Component {
     }
 
     // ---- helpers ----
+
+    /**
+     * M2OSelect picked a record (0 when cleared).
+     *
+     * Stores exactly what the old <select> stored — `parseInt(value) || 0`
+     * — so every save path that already reads this field keeps working.
+     */
+    setM2o(field, id) { this.state.record[field] = id || 0; }
 
     getM2oId(val) {
         if (!val && val !== 0) return 0;
@@ -1949,7 +1998,7 @@ class InvoiceFormView extends Component {
 // SaleOrderFormView — the reference ERP-style Sales Order form
 // ----------------------------------------------------------------
 class SaleOrderFormView extends Component {
-    static components = { DatePicker, InvoiceFormView, ChatterPanel, AttachmentPanel };
+    static components = { M2OSelect, DatePicker, InvoiceFormView, ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -2119,47 +2168,31 @@ class SaleOrderFormView extends Component {
                         <div class="so-info-col">
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Customer</label>
-                                <select class="form-input" data-field="partner_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.partners" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.partner_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'res.partner'"
+                                           label="'Customer'"
+                                           value="state.record.partner_id"
+                                           onSelect="(id) => this.setM2o('partner_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Invoice Address</label>
-                                <select class="form-input" data-field="partner_invoice_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.partners" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.partner_invoice_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'res.partner'"
+                                           label="'Invoice Address'"
+                                           value="state.record.partner_invoice_id"
+                                           onSelect="(id) => this.setM2o('partner_invoice_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Delivery Address</label>
-                                <select class="form-input" data-field="partner_shipping_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.partners" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.partner_shipping_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'res.partner'"
+                                           label="'Delivery Address'"
+                                           value="state.record.partner_shipping_id"
+                                           onSelect="(id) => this.setM2o('partner_shipping_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Payment Terms</label>
-                                <select class="form-input" data-field="payment_term_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.paymentTerms" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.payment_term_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'account.payment.term'"
+                                           label="'Payment Terms'"
+                                           value="state.record.payment_term_id"
+                                           onSelect="(id) => this.setM2o('payment_term_id', id)"/>
                             </div>
                         </div>
                         <div class="so-info-col">
@@ -2175,14 +2208,10 @@ class SaleOrderFormView extends Component {
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Salesperson</label>
-                                <select class="form-input" data-field="user_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.users" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.user_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'res.users'"
+                                           label="'Salesperson'"
+                                           value="state.record.user_id"
+                                           onSelect="(id) => this.setM2o('user_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Customer Ref</label>
@@ -2252,16 +2281,9 @@ class SaleOrderFormView extends Component {
                                     <t t-else="">
                                     <tr>
                                         <td class="so-col-product">
-                                            <select class="o2m-input"
-                                                    data-line-field="product_id"
-                                                    t-att-data-key="line._key">
-                                                <option value="0">—</option>
-                                                <t t-foreach="state.products" t-as="opt" t-key="opt.id">
-                                                    <option t-att-value="opt.id"
-                                                            t-att-selected="getM2oId(line.product_id) === opt.id ? true : undefined"
-                                                            t-esc="opt.display"/>
-                                                </t>
-                                            </select>
+                                            <M2OSelect model="'product.product'" label="'Product'"
+                                                       value="line.product_id"
+                                                       onSelect="(id) => this.updateLine(line._key, 'product_id', id)"/>
                                         </td>
                                         <td class="so-col-desc">
                                             <input class="o2m-input"
@@ -2276,16 +2298,9 @@ class SaleOrderFormView extends Component {
                                                    t-att-value="line.product_uom_qty !== undefined ? line.product_uom_qty : 1"/>
                                         </td>
                                         <td>
-                                            <select class="o2m-input"
-                                                    data-line-field="product_uom_id"
-                                                    t-att-data-key="line._key">
-                                                <option value="0">—</option>
-                                                <t t-foreach="state.uoms" t-as="opt" t-key="opt.id">
-                                                    <option t-att-value="opt.id"
-                                                            t-att-selected="getM2oId(line.product_uom_id) === opt.id ? true : undefined"
-                                                            t-esc="opt.display"/>
-                                                </t>
-                                            </select>
+                                            <M2OSelect model="'uom.uom'" label="'Unit of Measure'"
+                                                       value="line.product_uom_id"
+                                                       onSelect="(id) => this.updateLine(line._key, 'product_uom_id', id)"/>
                                         </td>
                                         <td class="so-col-num">
                                             <input class="o2m-input" type="number" step="0.01"
@@ -2345,14 +2360,10 @@ class SaleOrderFormView extends Component {
                         <div class="so-other-tab">
                             <div class="so-field-row">
                                 <label>Currency</label>
-                                <select class="form-input" data-field="currency_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.currencies" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.currency_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'res.currency'"
+                                           label="'Currency'"
+                                           value="state.record.currency_id"
+                                           onSelect="(id) => this.setM2o('currency_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label>Source</label>
@@ -2465,12 +2476,7 @@ class SaleOrderFormView extends Component {
                     ? RpcService.call('sale.order', 'read', [[this.props.recordId]], { fields })
                           .then(r => (Array.isArray(r) ? r[0] : r) || {})
                     : Promise.resolve({}),
-                this.loadOpts('res.partner',             'partners',     ['id', 'name']),
-                this.loadOpts('account.payment.term',    'paymentTerms', ['id', 'name']),
-                this.loadOpts('res.users',               'users',        ['id', 'name']),
                 this.loadOpts('res.currency',            'currencies',   ['id', 'name']),
-                this.loadOpts('product.product',         'products',     ['id', 'name']),
-                this.loadOpts('uom.uom',                 'uoms',         ['id', 'name']),
             ]);
             this.state.record = recordData;
             // Default currency for new records
@@ -2537,6 +2543,14 @@ class SaleOrderFormView extends Component {
     }
 
     // ---- Helpers ----
+
+    /**
+     * M2OSelect picked a record (0 when cleared).
+     *
+     * Stores exactly what the old <select> stored — `parseInt(value) || 0`
+     * — so every save path that already reads this field keeps working.
+     */
+    setM2o(field, id) { this.state.record[field] = id || 0; }
 
     getM2oId(val) {
         if (!val && val !== 0) return 0;
@@ -2924,7 +2938,7 @@ class SaleOrderFormView extends Component {
 // PurchaseOrderFormView — the reference ERP-style Purchase Order form
 // ----------------------------------------------------------------
 class PurchaseOrderFormView extends Component {
-    static components = { DatePicker, ChatterPanel, AttachmentPanel };
+    static components = { M2OSelect, DatePicker, ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -3021,36 +3035,24 @@ class PurchaseOrderFormView extends Component {
                         <div class="so-info-col">
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Vendor</label>
-                                <select class="form-input" data-field="partner_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.partners" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.partner_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'res.partner'"
+                                           label="'Vendor'"
+                                           value="state.record.partner_id"
+                                           onSelect="(id) => this.setM2o('partner_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Payment Terms</label>
-                                <select class="form-input" data-field="payment_term_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.paymentTerms" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.payment_term_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'account.payment.term'"
+                                           label="'Payment Terms'"
+                                           value="state.record.payment_term_id"
+                                           onSelect="(id) => this.setM2o('payment_term_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Purchase Rep.</label>
-                                <select class="form-input" data-field="user_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.users" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.user_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'res.users'"
+                                           label="'Purchase Rep.'"
+                                           value="state.record.user_id"
+                                           onSelect="(id) => this.setM2o('user_id', id)"/>
                             </div>
                         </div>
                         <div class="so-info-col">
@@ -3099,16 +3101,9 @@ class PurchaseOrderFormView extends Component {
                                 <t t-foreach="state.lines" t-as="line" t-key="line._key">
                                     <tr>
                                         <td class="so-col-product">
-                                            <select class="o2m-input"
-                                                    data-line-field="product_id"
-                                                    t-att-data-key="line._key">
-                                                <option value="0">—</option>
-                                                <t t-foreach="state.products" t-as="opt" t-key="opt.id">
-                                                    <option t-att-value="opt.id"
-                                                            t-att-selected="getM2oId(line.product_id) === opt.id ? true : undefined"
-                                                            t-esc="opt.display"/>
-                                                </t>
-                                            </select>
+                                            <M2OSelect model="'product.product'" label="'Product'"
+                                                       value="line.product_id"
+                                                       onSelect="(id) => this.updateLine(line._key, 'product_id', id)"/>
                                         </td>
                                         <td class="so-col-desc">
                                             <input class="o2m-input"
@@ -3123,16 +3118,9 @@ class PurchaseOrderFormView extends Component {
                                                    t-att-value="line.product_qty !== undefined ? line.product_qty : 1"/>
                                         </td>
                                         <td>
-                                            <select class="o2m-input"
-                                                    data-line-field="product_uom_id"
-                                                    t-att-data-key="line._key">
-                                                <option value="0">—</option>
-                                                <t t-foreach="state.uoms" t-as="opt" t-key="opt.id">
-                                                    <option t-att-value="opt.id"
-                                                            t-att-selected="getM2oId(line.product_uom_id) === opt.id ? true : undefined"
-                                                            t-esc="opt.display"/>
-                                                </t>
-                                            </select>
+                                            <M2OSelect model="'uom.uom'" label="'Unit of Measure'"
+                                                       value="line.product_uom_id"
+                                                       onSelect="(id) => this.updateLine(line._key, 'product_uom_id', id)"/>
                                         </td>
                                         <td class="so-col-num">
                                             <input class="o2m-input" type="number" step="0.01"
@@ -3187,14 +3175,10 @@ class PurchaseOrderFormView extends Component {
                         <div class="so-other-tab">
                             <div class="so-field-row">
                                 <label>Currency</label>
-                                <select class="form-input" data-field="currency_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.currencies" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.currency_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'res.currency'"
+                                           label="'Currency'"
+                                           value="state.record.currency_id"
+                                           onSelect="(id) => this.setM2o('currency_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label>Billing Status</label>
@@ -3277,12 +3261,7 @@ class PurchaseOrderFormView extends Component {
                     ? RpcService.call('purchase.order', 'read', [[this.props.recordId]], { fields })
                           .then(r => (Array.isArray(r) ? r[0] : r) || {})
                     : Promise.resolve({}),
-                this.loadOpts('res.partner',          'partners',     ['id', 'name']),
-                this.loadOpts('account.payment.term', 'paymentTerms', ['id', 'name']),
-                this.loadOpts('res.users',            'users',        ['id', 'name']),
                 this.loadOpts('res.currency',         'currencies',   ['id', 'name']),
-                this.loadOpts('product.product',      'products',     ['id', 'name']),
-                this.loadOpts('uom.uom',              'uoms',         ['id', 'name']),
             ]);
             this.state.record = recordData;
             // Default currency for new records
@@ -3335,6 +3314,14 @@ class PurchaseOrderFormView extends Component {
             }));
         } catch (_) { this.state.lines = []; }
     }
+
+    /**
+     * M2OSelect picked a record (0 when cleared).
+     *
+     * Stores exactly what the old <select> stored — `parseInt(value) || 0`
+     * — so every save path that already reads this field keeps working.
+     */
+    setM2o(field, id) { this.state.record[field] = id || 0; }
 
     getM2oId(val) {
         if (!val && val !== 0) return 0;
@@ -3594,7 +3581,7 @@ class PurchaseOrderFormView extends Component {
 // TransferFormView — stock.picking detail (the reference ERP-style)
 // ----------------------------------------------------------------
 class TransferFormView extends Component {
-    static components = { DatePicker, ChatterPanel, AttachmentPanel };
+    static components = { M2OSelect, DatePicker, ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -3672,25 +3659,20 @@ class TransferFormView extends Component {
                         <div class="so-info-col">
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Delivery Address</label>
-                                <select class="form-input" data-field="partner_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.partners" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.partner_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'res.partner'"
+                                           label="'Delivery Address'"
+                                           value="state.record.partner_id"
+                                           onSelect="(id) => this.setM2o('partner_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Source Location</label>
                                 <t t-if="isDraft">
-                                    <select class="form-input" data-field="location_id">
-                                        <t t-foreach="state.locations" t-as="loc" t-key="loc.id">
-                                            <option t-att-value="loc.id"
-                                                    t-att-selected="getM2oId(state.record.location_id) === loc.id ? true : undefined"
-                                                    t-esc="loc.display"/>
-                                        </t>
-                                    </select>
+                                    <M2OSelect model="'stock.location'"
+                                               label="'Source Location'"
+                                               value="state.record.location_id"
+                                               fields="['complete_name']"
+                                               format="(r) => r.complete_name || r.name"
+                                               onSelect="(id) => this.setM2o('location_id', id)"/>
                                 </t>
                                 <t t-else="">
                                     <span class="so-field-val" t-esc="locName(state.record.location_id)"/>
@@ -3699,13 +3681,12 @@ class TransferFormView extends Component {
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Destination</label>
                                 <t t-if="isDraft">
-                                    <select class="form-input" data-field="location_dest_id">
-                                        <t t-foreach="state.locations" t-as="loc" t-key="loc.id">
-                                            <option t-att-value="loc.id"
-                                                    t-att-selected="getM2oId(state.record.location_dest_id) === loc.id ? true : undefined"
-                                                    t-esc="loc.display"/>
-                                        </t>
-                                    </select>
+                                    <M2OSelect model="'stock.location'"
+                                               label="'Destination'"
+                                               value="state.record.location_dest_id"
+                                               fields="['complete_name']"
+                                               format="(r) => r.complete_name || r.name"
+                                               onSelect="(id) => this.setM2o('location_dest_id', id)"/>
                                 </t>
                                 <t t-else="">
                                     <span class="so-field-val" t-esc="locName(state.record.location_dest_id)"/>
@@ -3726,14 +3707,10 @@ class TransferFormView extends Component {
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Operation Type</label>
                                 <t t-if="isNew">
-                                    <select class="form-input" data-field="picking_type_id">
-                                        <option value="0">—</option>
-                                        <t t-foreach="state.pickingTypes" t-as="pt" t-key="pt.id">
-                                            <option t-att-value="pt.id"
-                                                    t-att-selected="getM2oId(state.record.picking_type_id) === pt.id ? true : undefined"
-                                                    t-esc="pt.display"/>
-                                        </t>
-                                    </select>
+                                    <M2OSelect model="'stock.picking.type'"
+                                               label="'Operation Type'"
+                                               value="state.record.picking_type_id"
+                                               onSelect="(id) => this.setM2o('picking_type_id', id)"/>
                                 </t>
                                 <t t-else="">
                                     <span class="so-field-val" t-esc="pickingTypeName"/>
@@ -3790,16 +3767,16 @@ class TransferFormView extends Component {
                                         <td t-esc="uomName(mv.product_uom_id)"/>
                                         <td t-if="anyTracked">
                                             <t t-if="isTracked(mv)">
-                                                <select class="inv-line-input"
-                                                        t-att-data-move-key="mv._key" data-move-field="lot_id"
-                                                        t-att-disabled="isDone ? true : undefined">
-                                                    <option value="0">— select —</option>
-                                                    <t t-foreach="lotsFor(mv)" t-as="lot" t-key="lot.id">
-                                                        <option t-att-value="lot.id"
-                                                                t-att-selected="getM2oId(mv.lot_id) === lot.id ? true : undefined"
-                                                                t-esc="lot.name"/>
-                                                    </t>
-                                                </select>
+                                                <!-- Scoped to this move's product by domain rather than by a
+                                                     prefetched per-product list: a warehouse accumulates lots
+                                                     without limit, and the old list showed only what had been
+                                                     fetched when the transfer was opened. -->
+                                                <M2OSelect model="'stock.production.lot'" label="'Lot / Serial'"
+                                                           placeholder="'Scan or search…'"
+                                                           value="mv.lot_id"
+                                                           domain="[['product_id','=',getM2oId(mv.product_id)]]"
+                                                           readonly="isDone"
+                                                           onSelect="(id) => this.setMoveLot(mv._key, id)"/>
                                                 <span t-if="!isDone" class="trn-lot-add" title="Create a new lot/serial"
                                                       t-on-click.stop="() => this.onNewLot(mv._key)">＋</span>
                                             </t>
@@ -3833,14 +3810,10 @@ class TransferFormView extends Component {
                             <div class="so-info-col">
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Responsible</label>
-                                    <select class="form-input" data-field="user_id">
-                                        <option value="0">—</option>
-                                        <t t-foreach="state.users" t-as="usr" t-key="usr.id">
-                                            <option t-att-value="usr.id"
-                                                    t-att-selected="getM2oId(state.record.user_id) === usr.id ? true : undefined"
-                                                    t-esc="usr.display"/>
-                                        </t>
-                                    </select>
+                                    <M2OSelect model="'res.users'"
+                                               label="'Responsible'"
+                                               value="state.record.user_id"
+                                               onSelect="(id) => this.setM2o('user_id', id)"/>
                                 </div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Company</label>
@@ -3884,15 +3857,10 @@ class TransferFormView extends Component {
             error:       null,
             record:      {},
             moves:       [],
-            partners:    [],
-            users:          [],
-            locations:      [],
             pickingTypes:   [],
             companyName:    '',
             activeTab:      'operations',
             chatRefreshKey: 0,
-            // Lots for the tracked products on this transfer, keyed by product id
-            lotsByProduct:  {},
             packing:        false,
             packMsg:        '',
         });
@@ -3934,18 +3902,9 @@ class TransferFormView extends Component {
             // single failing lookup (e.g. an 'active' column that isn't
             // registered as filterable on that model) yields an empty dropdown
             // instead of breaking the whole form with an "internal error".
-            const safe = pr => pr.catch(() => []);
-            const [parts, users, locs] = await Promise.all([
-                safe(RpcService.call('res.partner', 'search_read',
-                    [[]], { fields: ['id','name'], limit: 200 })),
-                safe(RpcService.call('res.users', 'search_read',
-                    [[]], { fields: ['id','name'], limit: 200 })),
-                safe(RpcService.call('stock.location', 'search_read',
-                    [[]], { fields: ['id','name','complete_name'], limit: 500 })),
-            ]);
-            this.state.partners  = (Array.isArray(parts) ? parts : []).map(p => ({ id: p.id, display: p.name }));
-            this.state.users     = (Array.isArray(users) ? users : []).map(u => ({ id: u.id, display: u.name }));
-            this.state.locations = (Array.isArray(locs)  ? locs  : []).map(l => ({ id: l.id, display: l.complete_name || l.name }));
+            // The partner / user / location prefetches that used to live here
+            // are gone: each M2OSelect searches its own model, so three
+            // list-the-whole-table round trips no longer run on every open.
 
             // Company name
             const companyId = this.getM2oId(this.state.record.company_id);
@@ -4012,30 +3971,16 @@ class TransferFormView extends Component {
             this.state.moves = arr.map(m => ({
                 _key: String(this._nextMoveKey++), ...m,
             }));
-            await this.loadLots();
         } catch (_) {
             this.state.moves = [];
         }
     }
 
-    // Lots are only fetched for the products that are actually tracked — an
-    // untracked transfer makes no extra call.
-    async loadLots() {
-        const tracked = [...new Set(this.state.moves
-            .filter(m => m.tracking === 'lot' || m.tracking === 'serial')
-            .map(m => this.getM2oId(m.product_id))
-            .filter(Boolean))];
-        if (!tracked.length) { this.state.lotsByProduct = {}; return; }
-        try {
-            const byProd = {};
-            for (const pid of tracked) {
-                const lots = await RpcService.call('stock.production.lot', 'search_read',
-                    [[['product_id','=',pid]]], { fields: ['id','name'], limit: 300 });
-                byProd[pid] = (Array.isArray(lots) ? lots : []).map(l => ({ id: l.id, name: l.name }));
-            }
-            this.state.lotsByProduct = byProd;
-        } catch (_) { this.state.lotsByProduct = {}; }
-    }
+    // loadLots() is gone. It fetched up to 300 lots PER TRACKED PRODUCT, in a
+    // loop, every time a transfer was opened — and a warehouse accumulates lots
+    // without limit, so the picker was still capped at 300 per product. Each
+    // line's M2OSelect now searches stock.production.lot scoped to its own
+    // product by domain.
 
     async loadLocNames(ids) {
         const validIds = ids.filter(Boolean);
@@ -4066,7 +4011,14 @@ class TransferFormView extends Component {
     isTracked(mv)  { return mv.tracking === 'lot' || mv.tracking === 'serial'; }
     get anyTracked() { return this.state.moves.some(m => this.isTracked(m)); }
     get anyPacked()  { return this.state.moves.some(m => !!m.result_package_id); }
-    lotsFor(mv)    { return this.state.lotsByProduct[this.getM2oId(mv.product_id)] || []; }
+
+    /** The lot picker chose a lot. Persists immediately, as the <select> did. */
+    setMoveLot(key, id) {
+        const mv = this.state.moves.find(m => m._key === key);
+        if (!mv) return;
+        mv.lot_id = id || 0;
+        this.saveLot(mv);
+    }
     m2oName(v)     { return Array.isArray(v) && v.length > 1 ? v[1] : ''; }
 
     get trackingSummary() {
@@ -4107,6 +4059,14 @@ class TransferFormView extends Component {
         if (cur >= 0 && s < cur) return ' done';
         return '';
     }
+
+    /**
+     * M2OSelect picked a record (0 when cleared).
+     *
+     * Stores exactly what the old <select> stored — `parseInt(value) || 0`
+     * — so every save path that already reads this field keeps working.
+     */
+    setM2o(field, id) { this.state.record[field] = id || 0; }
 
     getM2oId(val) {
         if (!val && val !== 0) return 0;
@@ -4164,9 +4124,10 @@ class TransferFormView extends Component {
         try {
             const id = await RpcService.call('stock.production.lot', 'create',
                 [{ name, product_id: pid }], {});
+            // [id, name] rather than a bare id: M2OSelect can then show the
+            // new lot straight away without a lookup.
             mv.lot_id = [id, name];
             await this.saveLot(mv);
-            await this.loadLots();
         } catch (e) {
             alert('Could not create the lot: ' + (e.message || e));
         }
@@ -4305,7 +4266,7 @@ class TransferFormView extends Component {
 // ProductFormView — product.product detail (the reference ERP 17-style)
 // ----------------------------------------------------------------
 class ProductFormView extends Component {
-    static components = { ChatterPanel, AttachmentPanel };
+    static components = { M2OSelect, ChatterPanel, AttachmentPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onFormChange"
@@ -4517,14 +4478,16 @@ class ProductFormView extends Component {
                                          bespoke Product form did not, so adding a category
                                          meant leaving the product half-filled. -->
                                     <div class="prd-combo">
-                                        <select class="form-input" data-field="categ_id">
-                                            <option value="0">—</option>
-                                            <t t-foreach="categoriesByPath" t-as="cat" t-key="cat.id">
-                                                <option t-att-value="cat.id"
-                                                        t-att-selected="m2oId(state.record.categ_id)===cat.id?true:undefined"
-                                                        t-esc="cat.fullPath"/>
-                                            </t>
-                                        </select>
+                                        <!-- format=: product.category has no path column, so the
+                                             full "All / Saleable / Office" label is built here from
+                                             the category tree the screen already holds. Three
+                                             categories called "Office" are indistinguishable by
+                                             name alone. -->
+                                        <M2OSelect model="'product.category'"
+                                                   label="'Category'"
+                                                   value="state.record.categ_id"
+                                                   format="(r) => this.categoryPath(r.id) || r.name"
+                                                   onSelect="(id) => this.setM2o('categ_id', id)"/>
                                         <button class="prd-combo-add" title="New category"
                                                 t-on-click.stop.prevent="() => this.openAddNew('product.category', 'Category', 'categ_id')">＋</button>
                                     </div>
@@ -4567,26 +4530,20 @@ class ProductFormView extends Component {
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Unit of Measure</label>
                                     <div class="prd-combo">
-                                        <select class="form-input" data-field="uom_id">
-                                            <t t-foreach="state.uoms" t-as="uom" t-key="uom.id">
-                                                <option t-att-value="uom.id"
-                                                        t-att-selected="m2oId(state.record.uom_id)===uom.id?true:undefined"
-                                                        t-esc="uom.name"/>
-                                            </t>
-                                        </select>
+                                        <M2OSelect model="'uom.uom'"
+                                                   label="'Unit of Measure'"
+                                                   value="state.record.uom_id"
+                                                   onSelect="(id) => this.setM2o('uom_id', id)"/>
                                         <button class="prd-combo-add" title="New unit of measure"
                                                 t-on-click.stop.prevent="() => this.openAddNew('uom.uom', 'Unit of Measure', 'uom_id')">＋</button>
                                     </div>
                                 </div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Purchase UoM</label>
-                                    <select class="form-input" data-field="uom_po_id">
-                                        <t t-foreach="state.uoms" t-as="uom" t-key="uom.id">
-                                            <option t-att-value="uom.id"
-                                                    t-att-selected="m2oId(state.record.uom_po_id)===uom.id?true:undefined"
-                                                    t-esc="uom.name"/>
-                                        </t>
-                                    </select>
+                                    <M2OSelect model="'uom.uom'"
+                                               label="'Purchase UoM'"
+                                               value="state.record.uom_po_id"
+                                               onSelect="(id) => this.setM2o('uom_po_id', id)"/>
                                 </div>
                             </div>
                         </div>
@@ -4751,14 +4708,12 @@ class ProductFormView extends Component {
                                 <div class="prd-tab-section-title">Receivables</div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Income Account</label>
-                                    <select class="form-input" data-field="income_account_id">
-                                        <option value="0">—</option>
-                                        <t t-foreach="state.accounts" t-as="acc" t-key="acc.id">
-                                            <option t-att-value="acc.id"
-                                                    t-att-selected="m2oId(state.record.income_account_id)===acc.id?true:undefined"
-                                                    t-esc="acc.code + ' ' + acc.name"/>
-                                        </t>
-                                    </select>
+                                    <M2OSelect model="'account.account'"
+                                               label="'Income Account'"
+                                               value="state.record.income_account_id"
+                                               fields="['code']"
+                                               format="(r) => (r.code ? r.code + ' ' : '') + r.name"
+                                               onSelect="(id) => this.setM2o('income_account_id', id)"/>
                                 </div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Customer Taxes</label>
@@ -4772,14 +4727,12 @@ class ProductFormView extends Component {
                                 <div class="prd-tab-section-title">Payables</div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Expense Account</label>
-                                    <select class="form-input" data-field="expense_account_id">
-                                        <option value="0">—</option>
-                                        <t t-foreach="state.accounts" t-as="acc" t-key="acc.id">
-                                            <option t-att-value="acc.id"
-                                                    t-att-selected="m2oId(state.record.expense_account_id)===acc.id?true:undefined"
-                                                    t-esc="acc.code + ' ' + acc.name"/>
-                                        </t>
-                                    </select>
+                                    <M2OSelect model="'account.account'"
+                                               label="'Expense Account'"
+                                               value="state.record.expense_account_id"
+                                               fields="['code']"
+                                               format="(r) => (r.code ? r.code + ' ' : '') + r.name"
+                                               onSelect="(id) => this.setM2o('expense_account_id', id)"/>
                                 </div>
                                 <div class="so-field-row">
                                     <label class="so-field-lbl">Vendor Taxes</label>
@@ -4889,16 +4842,15 @@ class ProductFormView extends Component {
         ctx.error  = '';
         try {
             const id = await RpcService.call(ctx.model, 'create', [{ name }], {});
-            // Refresh the list the picker reads from, then select the new row —
-            // the point of the ＋ is not having to go and find it.
+            // Selecting it is enough for the picker — it resolves a label from
+            // the id, so it can show a record it has never searched for. Only
+            // the category tree still needs reloading, because the path label
+            // is computed from it and a new category is not in it yet.
             if (ctx.model === 'product.category') {
                 const cats = await RpcService.call('product.category', 'search_read',
                     [[]], { fields: ['id','name','parent_id'], limit: 500 });
                 this.state.categories = Array.isArray(cats) ? cats : [];
-            } else {
-                const uoms = await RpcService.call('uom.uom', 'search_read',
-                    [[]], { fields: ['id','name'], limit: 100 });
-                this.state.uoms = Array.isArray(uoms) ? uoms : [];
+                this._catPaths = null;      // rebuild on next label lookup
             }
             this.state.record[ctx.field] = id;
             this.state.addNew = null;
@@ -4929,29 +4881,28 @@ class ProductFormView extends Component {
 
     get isNew() { return !this.props.recordId; }
 
-    get categoriesByPath() {
-        const cats = this.state.categories || [];
-        const paths = buildCategoryPaths(cats);
-        return cats
-            .map(c => ({ ...c, fullPath: paths.get(c.id) || c.name }))
-            .sort((a, b) => a.fullPath.localeCompare(b.fullPath));
+    /**
+     * "All / Saleable / Office" for a category id.
+     *
+     * Built from the category tree this screen loads anyway. The picker
+     * SEARCHES the server — so it can never run out of categories — and then
+     * asks this for a label, which is what keeps the path visible.
+     */
+    categoryPath(id) {
+        if (!this._catPaths) this._catPaths = buildCategoryPaths(this.state.categories || []);
+        return this._catPaths.get(id) || '';
     }
 
     async load() {
         this.state.loading = true;
         this.state.error   = null;
         try {
-            const [cats, uoms, accs] = await Promise.all([
-                RpcService.call('product.category', 'search_read',
-                    [[]], { fields: ['id','name','parent_id'], limit: 500 }),
-                RpcService.call('uom.uom', 'search_read',
-                    [[]], { fields: ['id','name'], limit: 100 }),
-                RpcService.call('account.account', 'search_read',
-                    [[]], { fields: ['id','code','name'], limit: 500 }),
-            ]);
+            // Categories stay: the screen builds a path label from the whole
+            // tree. The uom and account prefetches are gone — their pickers
+            // search their own model now.
+            const cats = await RpcService.call('product.category', 'search_read',
+                [[]], { fields: ['id','name','parent_id'], limit: 500 });
             this.state.categories = Array.isArray(cats) ? cats : [];
-            this.state.uoms       = Array.isArray(uoms) ? uoms : [];
-            this.state.accounts   = Array.isArray(accs) ? accs : [];
 
             if (this.props.recordId) {
                 const recs = await RpcService.call('product.product', 'read',
@@ -5003,6 +4954,14 @@ class ProductFormView extends Component {
     }
 
     // ---- Helpers ----
+    /**
+     * M2OSelect picked a record (0 when cleared).
+     *
+     * Stores exactly what the old <select> stored — `parseInt(value) || 0`
+     * — so every save path that already reads this field keeps working.
+     */
+    setM2o(field, id) { this.state.record[field] = id || 0; }
+
     m2oId(val) {
         if (!val && val !== 0) return 0;
         if (typeof val === 'number') return val;
@@ -5233,6 +5192,7 @@ class ProductFormView extends Component {
 // LocationFormView — stock.location detail
 // ----------------------------------------------------------------
 class LocationFormView extends Component {
+    static components = { M2OSelect };
     static template = xml`
         <div class="so-shell" t-on-change="onFormChange" t-on-input="onFormInput">
             <div class="so-page-header">
@@ -5262,14 +5222,12 @@ class LocationFormView extends Component {
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Parent Location</label>
-                                <select class="form-input" data-field="location_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.locations" t-as="loc" t-key="loc.id">
-                                        <option t-att-value="loc.id"
-                                                t-att-selected="m2oId(state.record.location_id)===loc.id?true:undefined"
-                                                t-esc="loc.complete_name || loc.name"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'stock.location'"
+                                           label="'Parent Location'"
+                                           value="state.record.location_id"
+                                           fields="['complete_name']"
+                                           format="(r) => r.complete_name || r.name"
+                                           onSelect="(id) => this.setM2o('location_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Usage</label>
@@ -5310,10 +5268,7 @@ class LocationFormView extends Component {
         this.state.loading = true;
         this.state.error   = null;
         try {
-            const locs = await RpcService.call('stock.location', 'search_read', [[]], {
-                fields: ['id','name','complete_name'], limit: 200 });
-            this.state.locations = Array.isArray(locs) ? locs : [];
-
+            // The parent-location prefetch is gone; its picker searches.
             if (this.props.recordId) {
                 const recs = await RpcService.call('stock.location', 'read',
                     [[this.props.recordId]],
@@ -5331,6 +5286,14 @@ class LocationFormView extends Component {
             this.state.loading = false;
         }
     }
+
+    /**
+     * M2OSelect picked a record (0 when cleared).
+     *
+     * Stores exactly what the old <select> stored — `parseInt(value) || 0`
+     * — so every save path that already reads this field keeps working.
+     */
+    setM2o(field, id) { this.state.record[field] = id || 0; }
 
     m2oId(val) {
         if (!val && val !== 0) return 0;
@@ -5386,6 +5349,7 @@ class LocationFormView extends Component {
 // WarehouseFormView — stock.warehouse detail
 // ----------------------------------------------------------------
 class WarehouseFormView extends Component {
+    static components = { M2OSelect };
     static template = xml`
         <div class="so-shell" t-on-change="onFormChange" t-on-input="onFormInput">
             <div class="so-page-header">
@@ -5427,48 +5391,35 @@ class WarehouseFormView extends Component {
                             <div class="prd-tab-section-title">Locations</div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Main Stock Location</label>
-                                <select class="form-input" data-field="lot_stock_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="internalLocations" t-as="loc" t-key="loc.id">
-                                        <option t-att-value="loc.id"
-                                                t-att-selected="m2oId(state.record.lot_stock_id)===loc.id?true:undefined"
-                                                t-esc="loc.complete_name || loc.name"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'stock.location'"
+                                           label="'Main Stock Location'"
+                                           value="state.record.lot_stock_id"
+                                           domain="[['usage','in',['internal','view']]]"
+                                           fields="['complete_name']"
+                                           format="(r) => r.complete_name || r.name"
+                                           onSelect="(id) => this.setM2o('lot_stock_id', id)"/>
                             </div>
                             <div class="prd-tab-section-title" style="margin-top:12px;">Operation Types</div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Receipts</label>
-                                <select class="form-input" data-field="in_type_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.pickingTypes" t-as="pt" t-key="pt.id">
-                                        <option t-att-value="pt.id"
-                                                t-att-selected="m2oId(state.record.in_type_id)===pt.id?true:undefined"
-                                                t-esc="pt.name"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'stock.picking.type'"
+                                           label="'Receipts'"
+                                           value="state.record.in_type_id"
+                                           onSelect="(id) => this.setM2o('in_type_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Deliveries</label>
-                                <select class="form-input" data-field="out_type_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.pickingTypes" t-as="pt" t-key="pt.id">
-                                        <option t-att-value="pt.id"
-                                                t-att-selected="m2oId(state.record.out_type_id)===pt.id?true:undefined"
-                                                t-esc="pt.name"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'stock.picking.type'"
+                                           label="'Deliveries'"
+                                           value="state.record.out_type_id"
+                                           onSelect="(id) => this.setM2o('out_type_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Internal Transfers</label>
-                                <select class="form-input" data-field="int_type_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.pickingTypes" t-as="pt" t-key="pt.id">
-                                        <option t-att-value="pt.id"
-                                                t-att-selected="m2oId(state.record.int_type_id)===pt.id?true:undefined"
-                                                t-esc="pt.name"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'stock.picking.type'"
+                                           label="'Internal Transfers'"
+                                           value="state.record.int_type_id"
+                                           onSelect="(id) => this.setM2o('int_type_id', id)"/>
                             </div>
                         </div>
                     </div>
@@ -5483,23 +5434,12 @@ class WarehouseFormView extends Component {
         onMounted(() => this.load());
     }
 
-    get internalLocations() {
-        return this.state.locations.filter(l => l.usage === 'internal' || l.usage === 'view');
-    }
 
     async load() {
         this.state.loading = true;
         this.state.error   = null;
         try {
-            const [locs, pts] = await Promise.all([
-                RpcService.call('stock.location', 'search_read', [[]], {
-                    fields: ['id','name','complete_name','usage'], limit: 200 }),
-                RpcService.call('stock.picking.type', 'search_read', [[]], {
-                    fields: ['id','name','code'], limit: 50 }),
-            ]);
-            this.state.locations    = Array.isArray(locs) ? locs : [];
-            this.state.pickingTypes = Array.isArray(pts)  ? pts  : [];
-
+            // Both prefetches are gone; the four pickers search their models.
             if (this.props.recordId) {
                 const recs = await RpcService.call('stock.warehouse', 'read',
                     [[this.props.recordId]],
@@ -5522,6 +5462,14 @@ class WarehouseFormView extends Component {
             this.state.loading = false;
         }
     }
+
+    /**
+     * M2OSelect picked a record (0 when cleared).
+     *
+     * Stores exactly what the old <select> stored — `parseInt(value) || 0`
+     * — so every save path that already reads this field keeps working.
+     */
+    setM2o(field, id) { this.state.record[field] = id || 0; }
 
     m2oId(val) {
         if (!val && val !== 0) return 0;
@@ -5580,7 +5528,7 @@ class WarehouseFormView extends Component {
 // ContactFormView — res.partner detail
 // ----------------------------------------------------------------
 class ContactFormView extends Component {
-    static components = { ChatterPanel };
+    static components = { M2OSelect, ChatterPanel };
     static template = xml`
         <div class="so-shell"
              t-on-change="onFormChange"
@@ -5596,6 +5544,61 @@ class ContactFormView extends Component {
                     <div class="so-action-btns">
                         <button class="btn btn-primary" t-on-click.stop="onSave">Save</button>
                         <button class="btn" t-on-click.stop="onDiscard">Discard</button>
+                        <t t-if="!isNew">
+                            <!-- Archive is offered beside Delete, not instead of it:
+                                 a contact with history cannot be deleted, and being
+                                 told that without being shown the way out is what
+                                 makes people delete the wrong record. -->
+                            <button class="btn" t-on-click.stop="onArchive"
+                                    t-esc="state.record.active === false ? 'Unarchive' : 'Archive'"/>
+                            <button class="btn btn-danger" t-on-click.stop="onDelete">Delete</button>
+                        </t>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Delete confirmation. It states what will happen BEFORE the
+                 button is pressed, including links that will be detached. -->
+            <div t-if="state.confirmDelete" class="m2o-modal-back" t-on-click="closeDelete">
+                <div class="m2o-modal" t-on-click.stop="() => {}">
+                    <div class="m2o-modal-head">
+                        <span>Delete <t t-esc="state.record.name || 'this contact'"/>?</span>
+                        <button class="m2o-x" t-on-click="closeDelete">×</button>
+                    </div>
+                    <div style="padding:14px 16px">
+                        <t t-if="state.deleteBlockers.length">
+                            <p style="margin:0 0 8px">This contact cannot be deleted. It is
+                               still used by:</p>
+                            <ul style="margin:0 0 12px 18px">
+                                <t t-foreach="state.deleteBlockers" t-as="b" t-key="b.model">
+                                    <li><t t-esc="b.label"/> (<t t-esc="b.count"/>)</li>
+                                </t>
+                            </ul>
+                            <p style="margin:0">Archive it instead — it stops appearing in
+                               lists while its history stays intact.</p>
+                        </t>
+                        <t t-else="">
+                            <p style="margin:0 0 8px">This cannot be undone.</p>
+                            <t t-if="state.deleteDetach.length">
+                                <p style="margin:0 0 6px">These links will be cleared:</p>
+                                <ul style="margin:0 0 12px 18px">
+                                    <t t-foreach="state.deleteDetach" t-as="d" t-key="d.model">
+                                        <li><t t-esc="d.label"/> (<t t-esc="d.count"/>)</li>
+                                    </t>
+                                </ul>
+                            </t>
+                        </t>
+                        <div t-if="state.deleteError" class="error" t-esc="state.deleteError"/>
+                    </div>
+                    <div class="m2o-modal-foot">
+                        <button t-on-click="closeDelete">Cancel</button>
+                        <span/>
+                        <t t-if="state.deleteBlockers.length">
+                            <button class="btn" t-on-click="onArchiveFromDialog">Archive instead</button>
+                        </t>
+                        <t t-else="">
+                            <button class="btn btn-danger" t-on-click="confirmDelete">Delete</button>
+                        </t>
                     </div>
                 </div>
             </div>
@@ -5650,15 +5653,19 @@ class ContactFormView extends Component {
                                         </span>
                                     </t>
                                     <t t-else="">
-                                        <select class="form-input" t-on-change="onCompanyNameSelect">
-                                            <option value="">—</option>
-                                            <t t-foreach="state.companies" t-as="co" t-key="co.id">
-                                                <option t-att-value="co.id"
-                                                        t-att-selected="m2oId(state.record.company_id)===co.id?true:undefined"
-                                                        t-esc="co.name"/>
-                                            </t>
-                                            <option value="__new__">— New Company —</option>
-                                        </select>
+                                        <!-- The company this person works for. Searched on the server, so
+                                             a company created a minute ago in another tab is findable now;
+                                             the old <select> listed a fixed prefetch and a customer with
+                                             more companies than the prefetch simply could not pick theirs. -->
+                                        <div class="gf-m2o">
+                                            <M2OSelect model="'res.partner'" label="'Company'"
+                                                       placeholder="'Search a company…'"
+                                                       value="state.record.parent_id"
+                                                       domain="[['is_company','=',true]]"
+                                                       onSelect="(id, nm) => this.onCompanyPicked(id, nm)"/>
+                                            <button class="gf-addnew" title="New company…"
+                                                    t-on-click.stop.prevent="startNewCompany">＋</button>
+                                        </div>
                                     </t>
                                 </t>
                             </div>
@@ -5709,25 +5716,20 @@ class ContactFormView extends Component {
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Country</label>
-                                <select class="form-input" data-field="country_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.countries" t-as="co" t-key="co.id">
-                                        <option t-att-value="co.id"
-                                                t-att-selected="m2oId(state.record.country_id)===co.id?true:undefined"
-                                                t-esc="co.name"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'res.country'"
+                                           label="'Country'"
+                                           value="state.record.country_id"
+                                           onSelect="(id) => this.setM2o('country_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">State / Province</label>
-                                <select class="form-input" data-field="state_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="filteredStates" t-as="st" t-key="st.id">
-                                        <option t-att-value="st.id"
-                                                t-att-selected="m2oId(state.record.state_id)===st.id?true:undefined"
-                                                t-esc="st.name"/>
-                                    </t>
-                                </select>
+                                <!-- The country filter that filteredStates applied in the client is
+                                     now a domain, so it narrows the SEARCH rather than a prefetched
+                                     list — which matters for countries with hundreds of states. -->
+                                <M2OSelect model="'res.country.state'" label="'State / Province'"
+                                           value="state.record.state_id"
+                                           domain="stateDomain"
+                                           onSelect="(id) => this.setM2o('state_id', id)"/>
                             </div>
                         </div>
                     </div>
@@ -5761,14 +5763,74 @@ class ContactFormView extends Component {
             loading:        true,
             error:          null,
             record:         {},
-            countries:      [],
-            states:         [],
-            companies:      [],   // company contacts for Company Name select
             newCompanyMode: false,
             chatRefreshKey: 0,
+            confirmDelete:  false,
+            deleteBlockers: [],   // documents that forbid the delete
+            deleteDetach:   [],   // links that would be cleared by it
+            deleteError:    '',
         });
         this._orig = {};
         onMounted(() => this.load());
+    }
+
+    /**
+     * Delete pressed. Ask the server what depends on this contact BEFORE
+     * showing a confirmation, so the dialog can say either "these links will
+     * be cleared" or "this cannot be deleted, and here is why".
+     */
+    async onDelete() {
+        this.state.deleteError    = '';
+        this.state.deleteBlockers = [];
+        this.state.deleteDetach   = [];
+        try {
+            const dep = await RpcService.call('res.partner', 'check_unlink',
+                [[this.props.recordId]], {});
+            this.state.deleteBlockers = (dep && dep.blockers) || [];
+            this.state.deleteDetach   = (dep && dep.detach)   || [];
+        } catch (e) {
+            // A failed check must not become a confident "safe to delete".
+            this.state.deleteError = e.message || String(e);
+            this.state.deleteBlockers = [{ model: '?', label: 'unknown records', count: '?' }];
+        }
+        this.state.confirmDelete = true;
+    }
+
+    closeDelete() { this.state.confirmDelete = false; }
+
+    async confirmDelete() {
+        try {
+            await RpcService.call('res.partner', 'unlink', [[this.props.recordId]], {});
+            this.state.confirmDelete = false;
+            this.props.onBack();
+        } catch (e) {
+            // The server checks again on its own account; if it refuses here,
+            // something changed between the check and the click.
+            this.state.deleteError = e.message || String(e);
+        }
+    }
+
+    /**
+     * Archive / unarchive — the answer for a contact that has history.
+     *
+     * `active = false` keeps every invoice, order and contract pointing at a
+     * row that still exists, while taking it out of the lists and pickers.
+     */
+    async onArchive() {
+        const nowActive = this.state.record.active !== false;
+        try {
+            await RpcService.call('res.partner', 'write',
+                [[this.props.recordId], { active: !nowActive }], {});
+            if (nowActive) this.props.onBack();   // archived: leave the form
+            else await this.load();               // unarchived: stay and refresh
+        } catch (e) {
+            this.state.error = e.message || String(e);
+        }
+    }
+
+    async onArchiveFromDialog() {
+        this.state.confirmDelete = false;
+        await this.onArchive();
     }
 
     get isNew()      { return !this.props.recordId; }
@@ -5776,32 +5838,23 @@ class ContactFormView extends Component {
     get isCustomer() { return (this.state.record.customer_rank || 0) > 0; }
     get isVendor()   { return (this.state.record.vendor_rank   || 0) > 0; }
 
-    get filteredStates() {
+    /** States of the chosen country, or all of them while no country is set. */
+    get stateDomain() {
         const cid = this.m2oId(this.state.record.country_id);
-        if (!cid) return this.state.states;
-        return this.state.states.filter(s => {
-            const sid = Array.isArray(s.country_id) ? s.country_id[0] : s.country_id;
-            return sid === cid;
-        });
+        return cid ? [['country_id', '=', cid]] : [];
     }
 
     async load() {
         this.state.loading = true;
         this.state.error   = null;
         try {
-            const [countries, states, companies] = await Promise.all([
-                RpcService.call('res.country', 'search_read', [[]], { fields: ['id','name'], limit: 300 }),
-                RpcService.call('res.country.state', 'search_read', [[]], { fields: ['id','name','country_id'], limit: 500 }),
-                RpcService.call('res.partner', 'search_read', [[['is_company','=',true]]], { fields: ['id','name'], limit: 500 }),
-            ]);
-            this.state.countries = Array.isArray(countries) ? countries : [];
-            this.state.states    = Array.isArray(states)    ? states    : [];
-            this.state.companies = Array.isArray(companies) ? companies : [];
-
+            // Three whole-table prefetches (countries, states, companies) used
+            // to run here before the form could show. All three pickers search
+            // their own model now, so opening a contact is one read.
             if (this.props.recordId) {
                 const recs = await RpcService.call('res.partner', 'read',
                     [[this.props.recordId]],
-                    { fields: ['id','name','company_name','company_id','email','phone','mobile','website',
+                    { fields: ['id','name','company_name','commercial_company_name','parent_id','email','phone','mobile','website',
                                'street','city','zip','lang','comment','job_position',
                                'is_company','is_individual','is_contractor',
                                'country_id','state_id',
@@ -5811,7 +5864,7 @@ class ContactFormView extends Component {
                 this._orig        = { ...recs[0] };
             } else {
                 this.state.record = {
-                    name: '', company_name: '', company_id: false,
+                    name: '', company_name: '', parent_id: false,
                     email: '', phone: '', mobile: '', website: '',
                     street: '', city: '', zip: '', lang: '',
                     is_company: false, is_individual: false, is_contractor: false,
@@ -5828,6 +5881,14 @@ class ContactFormView extends Component {
         }
     }
 
+    /**
+     * M2OSelect picked a record (0 when cleared).
+     *
+     * Stores exactly what the old <select> stored — `parseInt(value) || 0`
+     * — so every save path that already reads this field keeps working.
+     */
+    setM2o(field, id) { this.state.record[field] = id || 0; }
+
     m2oId(val) {
         if (!val && val !== 0) return 0;
         if (typeof val === 'number') return val;
@@ -5841,26 +5902,37 @@ class ContactFormView extends Component {
         this.state.record.is_company = !this.state.record.is_company;
         if (this.state.record.is_company) {
             this.state.record.company_name = this.state.record.name || '';
+            this.state.record.parent_id    = false;   // a company has no parent
             this.state.newCompanyMode = false;
         }
     }
     toggleIndividual() { this.state.record.is_individual = !this.state.record.is_individual; }
 
-    onCompanyNameSelect(e) {
-        const val = e.target.value;
-        if (val === '__new__') {
-            this.state.newCompanyMode = true;
-            this.state.record.company_name = '';
-            this.state.record.company_id   = false;
-        } else if (val === '') {
-            this.state.record.company_name = '';
-            this.state.record.company_id   = false;
-        } else {
-            const coId = parseInt(val);
-            const co   = this.state.companies.find(c => c.id === coId);
-            this.state.record.company_id   = coId;
-            this.state.record.company_name = co ? co.name : '';
-        }
+    // The customer's company is parent_id — a link to another res.partner.
+    // It is NOT company_id, which is the multi-company TENANT that owns the
+    // row. Writing a partner id there made the server refuse the save with
+    // "You cannot create records for another company", because no res.company
+    // has that id — which is how adding a contact to a customer appeared to be
+    // forbidden. company_id is stamped by the server and must never be sent
+    // from here.
+    /**
+     * The company picker chose a company (id 0 when cleared).
+     *
+     * parent_id is the link the server cares about; company_name is kept in
+     * step only so the form shows something sensible before the round trip.
+     * The server clears it once parent_id is set (docs/130 §5) and the list
+     * renders commercial_company_name, which is derived from the link.
+     */
+    onCompanyPicked(id, name) {
+        this.state.record.parent_id    = id || false;
+        this.state.record.company_name = id ? (name || '') : '';
+    }
+
+    /** "＋" beside the picker: type a company name that has no record yet. */
+    startNewCompany() {
+        this.state.newCompanyMode      = true;
+        this.state.record.company_name = '';
+        this.state.record.parent_id    = false;
     }
     toggleCustomer()   { this.state.record.customer_rank = this.isCustomer ? 0 : 1; }
     toggleVendor()     { this.state.record.vendor_rank   = this.isVendor   ? 0 : 1; }
@@ -5897,11 +5969,23 @@ class ContactFormView extends Component {
         const companyNameVal = (r.company_name || '').trim();
         if (companyNameVal && !r.is_company) {
             // Resolve company_id: if name was typed free-form, find or create the company partner
-            const existing = this.state.companies.find(
-                c => c.name.toLowerCase() === companyNameVal.toLowerCase());
-            if (existing) {
-                r.company_id = existing.id;
-            } else if (!this.m2oId(r.company_id)) {
+            // Does a company of this name already exist? Ask the SERVER.
+            // This used to scan a 500-row prefetch, so typing the name of
+            // company number 501 did not find it and silently created a
+            // duplicate company instead of linking to the real one.
+            let existingId = 0;
+            try {
+                const hits = await RpcService.call('res.partner', 'search_read',
+                    [[['is_company', '=', true], ['name', 'ilike', companyNameVal]]],
+                    { fields: ['id', 'name'], limit: 20 });
+                const exact = (Array.isArray(hits) ? hits : []).find(
+                    c => (c.name || '').toLowerCase() === companyNameVal.toLowerCase());
+                if (exact) existingId = exact.id;
+            } catch (_) { /* fall through to create */ }
+
+            if (existingId) {
+                r.parent_id = existingId;
+            } else if (!this.m2oId(r.parent_id)) {
                 // Auto-create the company partner and capture its ID
                 try {
                     const newCoId = await RpcService.call('res.partner', 'create', [{
@@ -5909,10 +5993,7 @@ class ContactFormView extends Component {
                         is_company: true,
                         company_name: companyNameVal,
                     }]);
-                    r.company_id = typeof newCoId === 'number' ? newCoId : 0;
-                    const cos = await RpcService.call('res.partner', 'search_read',
-                        [[['is_company','=',true]]], { fields: ['id','name'], limit: 500 });
-                    this.state.companies = Array.isArray(cos) ? cos : [];
+                    r.parent_id = typeof newCoId === 'number' ? newCoId : 0;
                 } catch (e) {
                     console.warn('[contact] Auto-create company failed:', e.message || e);
                 }
@@ -5922,7 +6003,9 @@ class ContactFormView extends Component {
         const vals = {
             name:          r.name.trim(),
             company_name:  r.company_name   || false,
-            company_id:    this.m2oId(r.company_id) || false,
+            // parent_id, not company_id: see onCompanyPicked. company_id is
+            // the tenant stamp and is set by the server, never by the client.
+            parent_id:     this.m2oId(r.parent_id) || false,
             email:         r.email         || false,
             phone:         r.phone         || false,
             mobile:        r.mobile        || false,
@@ -5963,7 +6046,7 @@ class ContactFormView extends Component {
 // BomFormView — mrp.bom detail (Bill of Materials)
 // ----------------------------------------------------------------
 class BomFormView extends Component {
-    static components = { DatePicker };
+    static components = { M2OSelect, DatePicker };
     static template = xml`
         <div class="so-shell"
              t-on-change="onAnyChange"
@@ -6002,14 +6085,10 @@ class BomFormView extends Component {
                         <div class="so-info-col">
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Product</label>
-                                <select class="form-input" data-field="product_id">
-                                    <option value="0">— select product —</option>
-                                    <t t-foreach="state.products" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.product_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'product.product'"
+                                           label="'Product'"
+                                           value="state.record.product_id"
+                                           onSelect="(id) => this.setM2o('product_id', id)"/>
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Reference</label>
@@ -6033,14 +6112,10 @@ class BomFormView extends Component {
                             </div>
                             <div class="so-field-row">
                                 <label class="so-field-lbl">Unit of Measure</label>
-                                <select class="form-input" data-field="product_uom_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.uoms" t-as="opt" t-key="opt.id">
-                                        <option t-att-value="opt.id"
-                                                t-att-selected="getM2oId(state.record.product_uom_id) === opt.id ? true : undefined"
-                                                t-esc="opt.display"/>
-                                    </t>
-                                </select>
+                                <M2OSelect model="'uom.uom'"
+                                           label="'Unit of Measure'"
+                                           value="state.record.product_uom_id"
+                                           onSelect="(id) => this.setM2o('product_uom_id', id)"/>
                             </div>
                         </div>
                     </div>
@@ -6064,15 +6139,10 @@ class BomFormView extends Component {
                             <t t-foreach="state.lines" t-as="line" t-key="line._key">
                                 <tr>
                                     <td>
-                                        <select class="form-input" style="width:100%"
-                                                t-att-data-key="line._key" data-line-field="product_id">
-                                            <option value="0">— select product —</option>
-                                            <t t-foreach="state.products" t-as="opt" t-key="opt.id">
-                                                <option t-att-value="opt.id"
-                                                        t-att-selected="getM2oId(line.product_id) === opt.id ? true : undefined"
-                                                        t-esc="opt.display"/>
-                                            </t>
-                                        </select>
+                                        <M2OSelect model="'product.product'" label="'Component'"
+                                                   placeholder="'Search a component…'"
+                                                   value="line.product_id"
+                                                   onSelect="(id) => this.setLineM2o(line._key, 'product_id', id)"/>
                                     </td>
                                     <td style="text-align:right">
                                         <input class="form-input" type="number" step="0.001" min="0.001"
@@ -6081,15 +6151,9 @@ class BomFormView extends Component {
                                                t-att-value="line.product_qty ?? 1"/>
                                     </td>
                                     <td>
-                                        <select class="form-input" style="width:100%"
-                                                t-att-data-key="line._key" data-line-field="product_uom_id">
-                                            <option value="0">—</option>
-                                            <t t-foreach="state.uoms" t-as="opt" t-key="opt.id">
-                                                <option t-att-value="opt.id"
-                                                        t-att-selected="getM2oId(line.product_uom_id) === opt.id ? true : undefined"
-                                                        t-esc="opt.display"/>
-                                            </t>
-                                        </select>
+                                        <M2OSelect model="'uom.uom'" label="'Unit of Measure'"
+                                                   value="line.product_uom_id"
+                                                   onSelect="(id) => this.setLineM2o(line._key, 'product_uom_id', id)"/>
                                     </td>
                                     <td style="text-align:center">
                                         <button class="btn btn-danger"
@@ -6117,8 +6181,7 @@ class BomFormView extends Component {
             record:   { bom_type: 'normal', product_qty: 1 },
             lines:    [],
             deletedLineIds: [],
-            products: [],
-            uoms:     [],
+            titleProduct: '',   // resolved by id, not found in a prefetch
         });
         this._nextKey = 1;
         onMounted(() => this.load());
@@ -6126,11 +6189,35 @@ class BomFormView extends Component {
 
     get pageTitle() {
         if (this.state.isNew) return 'New Bill of Materials';
-        const p = this.state.products.find(o => o.id === this.getM2oId(this.state.record.product_id));
-        const name = p ? p.display : ('BOM #' + this.props.recordId);
+        const name = this.state.titleProduct || ('BOM #' + this.props.recordId);
         const ref  = this.state.record.code ? ' [' + this.state.record.code + ']' : '';
         return name + ref;
     }
+
+    /**
+     * The heading names the product this BOM builds.
+     *
+     * It used to find that name in a 500-row prefetch, so a BOM for a product
+     * outside those 500 was headed "BOM #37". Reading the one record by id
+     * costs the same round trip the prefetch did and is always right.
+     */
+    async loadTitleProduct() {
+        const pid = this.getM2oId(this.state.record.product_id);
+        if (!pid) { this.state.titleProduct = ''; return; }
+        try {
+            const r = await RpcService.call('product.product', 'read', [[pid], ['name']], {});
+            const rec = Array.isArray(r) ? r[0] : r;
+            this.state.titleProduct = (rec && rec.name) || '';
+        } catch (_) { this.state.titleProduct = ''; }
+    }
+
+    /**
+     * M2OSelect picked a record (0 when cleared).
+     *
+     * Stores exactly what the old <select> stored — `parseInt(value) || 0`
+     * — so every save path that already reads this field keeps working.
+     */
+    setM2o(field, id) { this.state.record[field] = id || 0; }
 
     getM2oId(val) {
         if (!val && val !== 0) return 0;
@@ -6143,32 +6230,20 @@ class BomFormView extends Component {
         this.state.loading = true;
         this.state.error   = '';
         try {
-            const [recordData] = await Promise.all([
-                this.props.recordId
-                    ? RpcService.call('mrp.bom', 'read', [[this.props.recordId]],
-                            { fields: ['product_id','code','bom_type','product_qty','product_uom_id','active'] })
-                          .then(r => (Array.isArray(r) ? r[0] : r) || {})
-                    : Promise.resolve({ bom_type: 'normal', product_qty: 1 }),
-                this.loadOpts('product.product', 'products', ['id','name']),
-                this.loadOpts('uom.uom',         'uoms',     ['id','name']),
-            ]);
+            const recordData = this.props.recordId
+                ? await RpcService.call('mrp.bom', 'read', [[this.props.recordId]],
+                        { fields: ['product_id','code','bom_type','product_qty','product_uom_id','active'] })
+                      .then(r => (Array.isArray(r) ? r[0] : r) || {})
+                : { bom_type: 'normal', product_qty: 1 };
             this.state.record = recordData;
             this.state.deletedLineIds = [];
+            await this.loadTitleProduct();
             if (this.props.recordId) await this.loadLines();
         } catch (e) {
             this.state.error = e.message;
         } finally {
             this.state.loading = false;
         }
-    }
-
-    async loadOpts(model, key, fields) {
-        try {
-            const recs = await RpcService.call(model, 'search_read', [[]], { fields, limit: 500 });
-            this.state[key] = (Array.isArray(recs) ? recs : []).map(r => ({
-                id: r.id, display: r.name || String(r.id),
-            }));
-        } catch (_) { this.state[key] = []; }
     }
 
     async loadLines() {
@@ -6180,6 +6255,13 @@ class BomFormView extends Component {
                 _key: String(this._nextKey++), ...r,
             }));
         } catch (_) { this.state.lines = []; }
+    }
+
+    /** A component line's M2OSelect picked a record. Mirrors onAnyChange's
+     *  SELECT branch, which no longer sees these fields. */
+    setLineM2o(key, field, id) {
+        const line = this.state.lines.find(l => l._key === key);
+        if (line) line[field] = id || 0;
     }
 
     onAnyChange(e) {
@@ -9463,6 +9545,7 @@ const GROUP_DEFS = [
 // UserFormView — create / edit a res.users record
 // ----------------------------------------------------------------
 class UserFormView extends Component {
+    static components = { M2OSelect };
     static template = xml`
         <div class="so-shell">
             <!-- Breadcrumb -->
@@ -9528,25 +9611,15 @@ class UserFormView extends Component {
                     </div>
                     <div class="field-row">
                         <label>Display Name (Partner)</label>
-                        <select class="field-input" t-on-change="e => this.state.record.partner_id = parseInt(e.target.value) || 0">
-                            <option value="">— select —</option>
-                            <t t-foreach="state.partners" t-as="p" t-key="p.id">
-                                <option t-att-value="p.id"
-                                        t-att-selected="state.record.partner_id === p.id"
-                                        t-esc="p.name"/>
-                            </t>
-                        </select>
+                        <M2OSelect model="'res.partner'" label="'Partner'"
+                                   value="state.record.partner_id"
+                                   onSelect="(id) => this.state.record.partner_id = id"/>
                     </div>
                     <div class="field-row">
                         <label>Company</label>
-                        <select class="field-input" t-on-change="e => this.state.record.company_id = parseInt(e.target.value) || 0">
-                            <option value="">— select —</option>
-                            <t t-foreach="state.companies" t-as="c" t-key="c.id">
-                                <option t-att-value="c.id"
-                                        t-att-selected="state.record.company_id === c.id"
-                                        t-esc="c.name"/>
-                            </t>
-                        </select>
+                        <M2OSelect model="'res.company'" label="'Company'"
+                                   value="state.record.company_id"
+                                   onSelect="(id) => this.state.record.company_id = id"/>
                     </div>
                     <div class="field-row" style="display:flex;align-items:center;gap:10px">
                         <input type="checkbox" id="uf-active"
@@ -9626,12 +9699,7 @@ class UserFormView extends Component {
             copied:         false,
         });
         onMounted(async () => {
-            const [partners, companies] = await Promise.all([
-                RpcService.call('res.partner', 'search_read', [[]], { fields:['id','name'], limit:200 }),
-                RpcService.call('res.company', 'search_read', [[]], { fields:['id','name'], limit:100 }),
-            ]);
-            this.state.partners  = partners  || [];
-            this.state.companies = companies || [];
+            // Partner and company prefetches removed: both pickers search.
             if (this.props.recordId) await this.loadRecord();
         });
     }
@@ -10288,7 +10356,7 @@ class ProductCategoryListView extends Component {
 // AssetFormView — account.asset detail: confirm → schedule → depreciate (docs/084)
 // ----------------------------------------------------------------
 class AssetFormView extends Component {
-    static components = { DatePicker };
+    static components = { M2OSelect, DatePicker };
     static template = xml`
         <div class="so-shell" t-on-change="onChange" t-on-input="onInput">
             <div class="so-page-header">
@@ -10339,10 +10407,9 @@ class AssetFormView extends Component {
                             <div class="so-field-row"><label class="so-field-lbl">Asset Name</label>
                                 <input class="form-input" data-field="name" t-att-value="state.record.name || ''"/></div>
                             <div class="so-field-row"><label class="so-field-lbl">Asset Type</label>
-                                <select class="form-input" data-field="asset_type_id">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.types" t-as="o" t-key="o.id"><option t-att-value="o.id" t-att-selected="getM2oId(state.record.asset_type_id) === o.id ? true : undefined" t-esc="o.display"/></t>
-                                </select></div>
+                                <M2OSelect model="'account.asset.type'" label="'Asset Type'"
+                                           value="state.record.asset_type_id"
+                                           onSelect="(id) => this.setM2o('asset_type_id', id)"/></div>
                             <div class="so-field-row"><label class="so-field-lbl">Gross Value</label>
                                 <input class="form-input" type="number" step="0.01" data-field="value" t-att-value="state.record.value !== undefined ? state.record.value : 0" t-att-readonly="isRunning ? true : undefined"/></div>
                             <div class="so-field-row"><label class="so-field-lbl">Acquisition Date</label>
@@ -10354,14 +10421,21 @@ class AssetFormView extends Component {
                             <div class="so-field-row"><label class="so-field-lbl">Months / period</label>
                                 <input class="form-input" type="number" data-field="period_months" t-att-value="state.record.period_months !== undefined ? state.record.period_months : 12" t-att-readonly="isRunning ? true : undefined"/></div>
                             <div class="so-field-row"><label class="so-field-lbl">Depreciation Journal</label>
-                                <select class="form-input" data-field="journal_id"><option value="0">—</option>
-                                    <t t-foreach="state.journals" t-as="o" t-key="o.id"><option t-att-value="o.id" t-att-selected="getM2oId(state.record.journal_id) === o.id ? true : undefined" t-esc="o.display"/></t></select></div>
+                                <M2OSelect model="'account.journal'" label="'Depreciation Journal'"
+                                           value="state.record.journal_id"
+                                           onSelect="(id) => this.setM2o('journal_id', id)"/></div>
                             <div class="so-field-row"><label class="so-field-lbl">Expense Account</label>
-                                <select class="form-input" data-field="account_expense_id"><option value="0">—</option>
-                                    <t t-foreach="state.accounts" t-as="o" t-key="o.id"><option t-att-value="o.id" t-att-selected="getM2oId(state.record.account_expense_id) === o.id ? true : undefined" t-esc="o.display"/></t></select></div>
+                                <M2OSelect model="'account.account'" label="'Expense Account'"
+                                           value="state.record.account_expense_id"
+                                           fields="['code']"
+                                           format="(r) => (r.code ? r.code + ' ' : '') + r.name"
+                                           onSelect="(id) => this.setM2o('account_expense_id', id)"/></div>
                             <div class="so-field-row"><label class="so-field-lbl">Depreciation Account</label>
-                                <select class="form-input" data-field="account_depreciation_id"><option value="0">—</option>
-                                    <t t-foreach="state.accounts" t-as="o" t-key="o.id"><option t-att-value="o.id" t-att-selected="getM2oId(state.record.account_depreciation_id) === o.id ? true : undefined" t-esc="o.display"/></t></select></div>
+                                <M2OSelect model="'account.account'" label="'Depreciation Account'"
+                                           value="state.record.account_depreciation_id"
+                                           fields="['code']"
+                                           format="(r) => (r.code ? r.code + ' ' : '') + r.name"
+                                           onSelect="(id) => this.setM2o('account_depreciation_id', id)"/></div>
                         </div>
                     </div>
                     <t t-if="state.lines.length">
@@ -10399,6 +10473,14 @@ class AssetFormView extends Component {
         const cur = order[this.state.record.state] ?? 0, x = order[s];
         return x === cur ? ' active' : (x < cur ? ' done' : '');
     }
+    /**
+     * M2OSelect picked a record (0 when cleared).
+     *
+     * Stores exactly what the old <select> stored — `parseInt(value) || 0`
+     * — so every save path that already reads this field keeps working.
+     */
+    setM2o(field, id) { this.state.record[field] = id || 0; }
+
     getM2oId(v) {
         if (!v && v !== 0) return 0;
         if (typeof v === 'number') return v;
@@ -10411,14 +10493,7 @@ class AssetFormView extends Component {
     async load() {
         this.state.loading = true; this.state.error = '';
         try {
-            const [types, journals, accounts] = await Promise.all([
-                RpcService.call('account.asset.type', 'search_read', [[]], { fields: ['id','name'], limit: 200 }).catch(() => []),
-                RpcService.call('account.journal', 'search_read', [[]], { fields: ['id','name'], limit: 200 }).catch(() => []),
-                RpcService.call('account.account', 'search_read', [[]], { fields: ['id','name','code'], limit: 500 }).catch(() => []),
-            ]);
-            this.state.types    = (types || []).map(t => ({ id: t.id, display: t.name }));
-            this.state.journals = (journals || []).map(j => ({ id: j.id, display: j.name }));
-            this.state.accounts = (accounts || []).map(a => ({ id: a.id, display: (a.code ? a.code + ' ' : '') + a.name }));
+            // Type / journal / account prefetches removed: each picker searches.
             if (this.props.recordId) {
                 const r = await RpcService.call('account.asset', 'read', [[this.props.recordId]],
                     { fields: ['name','asset_type_id','value','value_residual','acquisition_date',
@@ -10464,7 +10539,7 @@ class AssetFormView extends Component {
 // BudgetFormView — account.budget: planned vs actual per position (docs/085)
 // ----------------------------------------------------------------
 class BudgetFormView extends Component {
-    static components = { DatePicker };
+    static components = { M2OSelect, DatePicker };
     static template = xml`
         <div class="so-shell" t-on-change="onChange" t-on-input="onInput" t-on-click="onClick">
             <div class="so-page-header">
@@ -10543,12 +10618,9 @@ class BudgetFormView extends Component {
                             <t t-foreach="state.lines" t-as="l" t-key="l._key">
                                 <tr>
                                     <td>
-                                        <select class="o2m-input" data-line-field="post_id" t-att-data-key="l._key">
-                                            <option value="0">—</option>
-                                            <t t-foreach="state.posts" t-as="o" t-key="o.id">
-                                                <option t-att-value="o.id" t-att-selected="getM2oId(l.post_id) === o.id ? true : undefined" t-esc="o.display"/>
-                                            </t>
-                                        </select>
+                                        <M2OSelect model="'account.budget.post'" label="'Budgetary Position'"
+                                                   value="l.post_id"
+                                                   onSelect="(id) => this.setLineM2o(l._key, 'post_id', id)"/>
                                     </td>
                                     <td class="so-col-num">
                                         <input class="o2m-input" type="number" step="0.01" data-line-field="planned_amount"
@@ -10594,6 +10666,19 @@ class BudgetFormView extends Component {
     }
     remainingOf(l) { return (parseFloat(l.planned_amount) || 0) - (parseFloat(l.practical_amount) || 0); }
     pctWidth(l) { return Math.max(0, Math.min(100, this.pctOf(l))); }
+    /** A budget line's M2OSelect picked a position. */
+    setLineM2o(key, field, id) {
+        const l = this.state.lines.find(x => x._key === key);
+        if (l) l[field] = id || 0;
+    }
+    /**
+     * M2OSelect picked a record (0 when cleared).
+     *
+     * Stores exactly what the old <select> stored — `parseInt(value) || 0`
+     * — so every save path that already reads this field keeps working.
+     */
+    setM2o(field, id) { this.state.record[field] = id || 0; }
+
     getM2oId(v) {
         if (!v && v !== 0) return 0;
         if (typeof v === 'number') return v;
@@ -10606,9 +10691,7 @@ class BudgetFormView extends Component {
     async load() {
         this.state.loading = true; this.state.error = '';
         try {
-            const posts = await RpcService.call('account.budget.post', 'search_read', [[]],
-                { fields: ['id', 'name'], limit: 200 }).catch(() => []);
-            this.state.posts = (posts || []).map(p => ({ id: p.id, display: p.name }));
+            // Budgetary-position prefetch removed: the line picker searches.
             if (this.props.recordId) {
                 const r = await RpcService.call('account.budget', 'read', [[this.props.recordId]],
                     { fields: ['name', 'date_from', 'date_to', 'state'] });
@@ -10695,6 +10778,7 @@ class BudgetFormView extends Component {
 // Index · Description · Date · Debit · Credit, with a running balance.
 // ----------------------------------------------------------------
 class BankAccountFormView extends Component {
+    static components = { M2OSelect };
     static template = xml`
         <div class="so-shell" t-on-change="onChange" t-on-input="onInput" t-on-click="onClick">
             <div class="so-page-header">
@@ -10738,10 +10822,9 @@ class BankAccountFormView extends Component {
                             <div class="so-field-row"><label class="so-field-lbl">Account Number</label>
                                 <input class="form-input" data-field="account_number" t-att-value="state.record.account_number || ''"/></div>
                             <div class="so-field-row"><label class="so-field-lbl">Journal</label>
-                                <select class="form-input" data-field="journal_id"><option value="0">—</option>
-                                    <t t-foreach="state.journals" t-as="o" t-key="o.id">
-                                        <option t-att-value="o.id" t-att-selected="getM2oId(state.record.journal_id) === o.id ? true : undefined" t-esc="o.display"/>
-                                    </t></select></div>
+                                <M2OSelect model="'account.journal'" label="'Journal'"
+                                           value="state.record.journal_id"
+                                           onSelect="(id) => this.setM2o('journal_id', id)"/></div>
                         </div>
                     </div>
 
@@ -10812,6 +10895,14 @@ class BankAccountFormView extends Component {
             return Object.assign({}, l, { _idx: i + 1, _balance: run });
         });
     }
+    /**
+     * M2OSelect picked a record (0 when cleared).
+     *
+     * Stores exactly what the old <select> stored — `parseInt(value) || 0`
+     * — so every save path that already reads this field keeps working.
+     */
+    setM2o(field, id) { this.state.record[field] = id || 0; }
+
     getM2oId(v) {
         if (!v && v !== 0) return 0;
         if (typeof v === 'number') return v;
@@ -10824,9 +10915,7 @@ class BankAccountFormView extends Component {
     async load() {
         this.state.loading = true; this.state.error = '';
         try {
-            const js = await RpcService.call('account.journal', 'search_read', [[]],
-                { fields: ['id', 'name'], limit: 200 }).catch(() => []);
-            this.state.journals = (js || []).map(j => ({ id: j.id, display: j.name }));
+            // Journal prefetch removed: the journal picker searches.
             if (this.props.recordId) {
                 const r = await RpcService.call('account.bank.account', 'read', [[this.props.recordId]],
                     { fields: ['name', 'bank_name', 'account_number', 'journal_id', 'active'] });
@@ -11157,7 +11246,7 @@ class AccountSettings extends Component {
 // are what somebody is approving, and after posting they are in the ledger.
 // ----------------------------------------------------------------
 class ExpenseSheetFormView extends Component {
-    static components = { DatePicker, AttachmentPanel };
+    static components = { M2OSelect, DatePicker, AttachmentPanel };
     static template = xml`
         <div class="so-shell" t-on-change="onChange" t-on-input="onInput">
             <div class="so-page-header">
@@ -11236,14 +11325,10 @@ class ExpenseSheetFormView extends Component {
                                 <input class="form-input" data-field="name" placeholder="e.g. March client visits"
                                        t-att-value="state.record.name || ''" t-att-readonly="isDraft ? undefined : true"/></div>
                             <div class="so-field-row"><label class="so-field-lbl">Employee</label>
-                                <select class="form-input" data-field="employee_id" t-att-disabled="isDraft ? undefined : true">
-                                    <option value="0">—</option>
-                                    <t t-foreach="state.employees" t-as="o" t-key="o.id">
-                                        <option t-att-value="o.id"
-                                                t-att-selected="getM2oId(state.record.employee_id) === o.id ? true : undefined"
-                                                t-esc="o.display"/>
-                                    </t>
-                                </select></div>
+                                <M2OSelect model="'hr.employee'" label="'Employee'"
+                                           value="state.record.employee_id"
+                                           readonly="!isDraft"
+                                           onSelect="(id) => this.setM2o('employee_id', id)"/></div>
                             <div class="so-field-row"><label class="so-field-lbl">Date</label>
                                 <DatePicker value="formatDate(state.record.date)" onSelect.bind="setDate"/></div>
                         </div>
@@ -11256,14 +11341,13 @@ class ExpenseSheetFormView extends Component {
                                             t-att-selected="isCompanyPaid ? true : undefined">Company</option>
                                 </select></div>
                             <div class="so-field-row"><label class="so-field-lbl">Journal</label>
-                                <select class="form-input" data-field="journal_id" t-att-disabled="isDraft ? undefined : true">
-                                    <option value="0">— default —</option>
-                                    <t t-foreach="state.journals" t-as="o" t-key="o.id">
-                                        <option t-att-value="o.id"
-                                                t-att-selected="getM2oId(state.record.journal_id) === o.id ? true : undefined"
-                                                t-esc="o.display"/>
-                                    </t>
-                                </select></div>
+                                <M2OSelect model="'account.journal'" label="'Journal'"
+                                           placeholder="'— default —'"
+                                           value="state.record.journal_id"
+                                           fields="['code']"
+                                           format="(r) => (r.code ? r.code + ' — ' : '') + r.name"
+                                           readonly="!isDraft"
+                                           onSelect="(id) => this.setM2o('journal_id', id)"/></div>
                             <div class="so-field-row"><label class="so-field-lbl">Notes</label>
                                 <input class="form-input" data-field="note"
                                        t-att-value="state.record.note === false ? '' : (state.record.note || '')"
@@ -11294,15 +11378,13 @@ class ExpenseSheetFormView extends Component {
                                     <td><input class="o2m-input" type="date" data-lf="date" t-att-data-line="l._key"
                                                t-att-value="formatDate(l.date)" t-att-readonly="isDraft ? undefined : true"/></td>
                                     <td>
-                                        <select class="o2m-input" data-lf="account_id" t-att-data-line="l._key"
-                                                t-att-disabled="isDraft ? undefined : true">
-                                            <option value="0">— default —</option>
-                                            <t t-foreach="state.accounts" t-as="a" t-key="a.id">
-                                                <option t-att-value="a.id"
-                                                        t-att-selected="getM2oId(l.account_id) === a.id ? true : undefined"
-                                                        t-esc="a.display"/>
-                                            </t>
-                                        </select>
+                                        <M2OSelect model="'account.account'" label="'Expense Account'"
+                                                   placeholder="'— default —'"
+                                                   value="l.account_id"
+                                                   fields="['code']"
+                                                   format="(r) => (r.code ? r.code + ' ' : '') + r.name"
+                                                   readonly="!isDraft"
+                                                   onSelect="(id) => this.setLineField(l._key, 'account_id', id)"/>
                                     </td>
                                     <td class="so-col-num"><input class="o2m-input" type="number" step="0.01"
                                                data-lf="quantity" t-att-data-line="l._key"
@@ -11389,6 +11471,14 @@ class ExpenseSheetFormView extends Component {
         return x === cur ? ' active' : (x < cur ? ' done' : '');
     }
 
+    /**
+     * M2OSelect picked a record (0 when cleared).
+     *
+     * Stores exactly what the old <select> stored — `parseInt(value) || 0`
+     * — so every save path that already reads this field keeps working.
+     */
+    setM2o(field, id) { this.state.record[field] = id || 0; }
+
     getM2oId(v) {
         if (!v && v !== 0) return 0;
         if (typeof v === 'number') return v;
@@ -11418,15 +11508,14 @@ class ExpenseSheetFormView extends Component {
     async load() {
         this.state.loading = true; this.state.error = '';
         try {
-            const [emps, journals, accounts, taxes] = await Promise.all([
-                RpcService.call('hr.employee', 'search_read', [[]], { fields: ['id','name'], limit: 300 }).catch(() => []),
-                RpcService.call('account.journal', 'search_read', [[]], { fields: ['id','name','code'], limit: 100 }).catch(() => []),
-                RpcService.call('account.account', 'search_read', [[]], { fields: ['id','name','code'], limit: 500 }).catch(() => []),
-                RpcService.call('account.tax', 'search_read', [[]], { fields: ['id','name','amount','amount_type','price_include'], limit: 100 }).catch(() => []),
-            ]);
-            this.state.employees = (emps || []).map(e => ({ id: e.id, display: e.name }));
-            this.state.journals  = (journals || []).map(j => ({ id: j.id, display: (j.code ? j.code + ' — ' : '') + j.name }));
-            this.state.accounts  = (accounts || []).map(a => ({ id: a.id, display: (a.code ? a.code + ' ' : '') + a.name }));
+            // Only taxes are still prefetched. Unlike the others this list is
+            // not just labels for a dropdown — lineTax() reads rate and
+            // price_include off it to keep the totals live as the user types,
+            // so it has to be in memory. Employee / journal / account pickers
+            // search their own model.
+            const taxes = await RpcService.call('account.tax', 'search_read', [[]],
+                { fields: ['id','name','amount','amount_type','price_include'], limit: 100 })
+                .catch(() => []);
             this.state.taxes     = (taxes || []).map(t => ({
                 id: t.id, display: t.name, rate: parseFloat(t.amount) || 0,
                 fixed: t.amount_type === 'fixed', priceInclude: !!t.price_include,
