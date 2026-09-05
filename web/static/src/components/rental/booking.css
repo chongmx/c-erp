@@ -1,0 +1,176 @@
+/* =============================================================
+   booking.css — the rental booking calendar (RentalBooking.js)
+
+   The day-strip is the load-bearing element: one box per day, filled when
+   the unit is let. It has to stay legible at 31 boxes across on a laptop,
+   so the boxes are small and the gap is 1px. Reading the ROW is the point,
+   not any individual box — that is what tells you whether a unit is solid,
+   patchy, or sitting empty all month.
+   ============================================================= */
+
+.rbk-wrap { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+
+.rbk-toolbar {
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 10px; border-bottom: 1px solid var(--border);
+}
+.rbk-spacer { flex: 1; }
+.rbk-month { display: flex; align-items: center; gap: 6px; }
+.rbk-month-label { font-weight: 600; min-width: 11ch; text-align: center; }
+.rbk-nav, .rbk-today {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); border-radius: 4px; padding: 3px 9px; cursor: pointer;
+}
+.rbk-nav:hover, .rbk-today:hover { border-color: var(--accent); color: var(--accent); }
+
+.rbk-headline { display: flex; align-items: baseline; gap: 8px; }
+.rbk-pct { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+.rbk-pct-cap { font-size: .8rem; color: var(--muted); }
+.rbk-sub { font-size: .75rem; color: var(--muted); }
+
+.rbk-error {
+    background: rgba(244,71,71,.12); border: 1px solid var(--err, #f44747);
+    padding: 8px 12px; border-radius: 4px; font-size: .85rem;
+}
+
+.rbk-body { display: grid; grid-template-columns: 240px 1fr; gap: 18px; align-items: start; }
+@media (max-width: 900px) { .rbk-body { grid-template-columns: 1fr; } }
+
+/* ---- sidebar ---------------------------------------------------------- */
+.rbk-side {
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface);
+    max-height: 70vh; overflow-y: auto;
+}
+.rbk-side-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; cursor: pointer; font-size: .85rem;
+    border-bottom: 1px solid rgba(255,255,255,.04);
+}
+.rbk-side-row:hover { background: rgba(255,255,255,.04); }
+.rbk-side-row.sel  { background: rgba(255,255,255,.07); color: var(--accent); font-weight: 600; }
+.rbk-side-all  { font-weight: 600; }
+.rbk-side-type { font-weight: 600; background: var(--bg); }
+.rbk-side-unit { padding-left: 22px; font-size: .8rem; }
+.rbk-side-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rbk-side-count, .rbk-side-days { font-size: .72rem; color: var(--muted); }
+
+/* A unit's CURRENT state, as a colour. Deliberately distinct from the day
+   boxes, which are about a period rather than about right now. */
+.rbk-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--muted); }
+.rbk-dot-available   { background: #3fb950; }
+.rbk-dot-reserved    { background: #d29922; }
+.rbk-dot-occupied    { background: #58a6ff; }
+.rbk-dot-maintenance { background: #f0883e; }
+.rbk-dot-retired     { background: #6e7681; }
+
+/* ---- strips ----------------------------------------------------------- */
+.rbk-main { min-width: 0; }
+.rbk-title { margin: 0 0 6px; font-size: 1rem; }
+.rbk-strip-head { margin-bottom: 8px; }
+
+.rbk-strips { display: flex; flex-direction: column; gap: 3px; }
+.rbk-strip-row {
+    display: grid; grid-template-columns: 150px 1fr 92px;
+    align-items: center; gap: 10px;
+    padding: 3px 0;
+}
+.rbk-strip-label { cursor: pointer; overflow: hidden; }
+.rbk-strip-label:hover .rbk-strip-code { color: var(--accent); }
+.rbk-strip-code { font-weight: 600; font-size: .82rem; }
+.rbk-strip-name {
+    display: block; font-size: .72rem; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.rbk-boxes, .rbk-ruler { display: flex; gap: 1px; }
+.rbk-box {
+    flex: 1 1 0; min-width: 6px; height: 20px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 1px;
+}
+.rbk-box.let   { background: var(--accent); border-color: var(--accent); }
+.rbk-box.today { outline: 1px solid var(--text); outline-offset: -1px; }
+
+.rbk-ruler { margin-left: 160px; margin-right: 102px; }
+.rbk-rule {
+    flex: 1 1 0; min-width: 6px; font-size: .6rem; color: var(--muted);
+    text-align: left;
+}
+
+.rbk-strip-num { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.rbk-strip-days { font-size: .72rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.rbk-chip {
+    font-size: .68rem; padding: 1px 6px; border-radius: 9px;
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.rbk-chip-hot  { background: rgba(88,166,255,.18);  color: #58a6ff; }
+.rbk-chip-ok   { background: rgba(63,185,80,.16);   color: #3fb950; }
+.rbk-chip-low  { background: rgba(210,153,34,.16);  color: #d29922; }
+.rbk-chip-idle { background: rgba(110,118,129,.18); color: var(--muted); }
+
+/* ---- one unit: the month grid ---------------------------------------- */
+.rbk-unit-head { margin-bottom: 10px; }
+.rbk-unit-name { font-weight: 400; color: var(--muted); margin-left: 8px; font-size: .85rem; }
+.rbk-unit-meta { display: flex; align-items: center; gap: 10px; font-size: .78rem; color: var(--muted); }
+.rbk-badge {
+    padding: 1px 7px; border-radius: 9px; font-size: .7rem;
+    background: rgba(255,255,255,.06); color: var(--text); text-transform: capitalize;
+}
+.rbk-line-active  { color: #58a6ff; }
+.rbk-line-pending { color: #d29922; }
+
+.rbk-cal {
+    display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px;
+    margin-bottom: 12px;
+}
+.rbk-cal-wd {
+    font-size: .68rem; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .06em; padding-bottom: 2px;
+}
+.rbk-cal-blank { min-height: 54px; }
+.rbk-cal-day {
+    min-height: 54px; border: 1px solid var(--border); border-radius: 4px;
+    padding: 4px 6px; cursor: pointer; background: var(--bg);
+    display: flex; flex-direction: column; gap: 2px; overflow: hidden;
+}
+.rbk-cal-day.free:hover { border-color: var(--accent); }
+.rbk-cal-day.let {
+    background: rgba(88,166,255,.14); border-color: rgba(88,166,255,.5); cursor: default;
+}
+.rbk-cal-day.today  { outline: 1px solid var(--text); outline-offset: -2px; }
+.rbk-cal-day.picked { background: rgba(210,153,34,.22); border-color: #d29922; }
+.rbk-cal-num { font-size: .78rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.rbk-cal-who {
+    font-size: .66rem; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.rbk-selbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; margin-bottom: 12px;
+    background: var(--surface); border: 1px solid var(--accent); border-radius: 5px;
+}
+.rbk-selbar-text { flex: 1; font-size: .85rem; }
+.rbk-selbar-n { color: var(--muted); margin-left: 8px; font-size: .78rem; }
+.rbk-hint { font-size: .78rem; color: var(--muted); margin-bottom: 12px; }
+
+.rbk-bookings-title {
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin-bottom: 6px;
+}
+.rbk-bk-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.rbk-bk-table th {
+    text-align: left; padding: 5px 8px; color: var(--muted);
+    font-size: .7rem; text-transform: uppercase; letter-spacing: .05em;
+    border-bottom: 1px solid var(--border);
+}
+.rbk-bk-table td { padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,.04); }
+
+/* ---- the booking dialog ---------------------------------------------- */
+.rbk-dlg { padding: 14px 16px; display: grid; gap: 12px; }
+.rbk-dlg label { display: block; font-size: .8rem; color: var(--muted); }
+.rbk-dlg label .form-input { width: 100%; margin-top: 3px; }
+.rbk-dlg-two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.rbk-dlg-note { margin: 0; font-size: .74rem; color: var(--muted); line-height: 1.5; }
+.rbk-dlg-err { font-size: .8rem; }

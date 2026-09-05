@@ -373,8 +373,28 @@ class FormView extends Component {
                                                     <t t-elif="col.readonly">
                                                         <span t-esc="line[col.name] !== undefined ? String(line[col.name]) : ''"/>
                                                     </t>
+                                                    <!-- A selection in a LINE is a dropdown, exactly as it is
+                                                         on the form above. Without this branch the column
+                                                         rendered as a free text box, so setting a line's
+                                                         Billing meant typing "recurring" letter-perfect and
+                                                         Status meant typing "active" — and anything else was
+                                                         rejected on save by a CHECK constraint, from a form
+                                                         that never offered the valid values. -->
+                                                    <t t-elif="col.type === 'selection' and col.selection.length">
+                                                        <select class="o2m-input"
+                                                                t-att-data-o2m="f.name"
+                                                                t-att-data-key="line._key"
+                                                                t-att-data-field="col.name">
+                                                            <option value="" t-att-selected="!line[col.name] ? true : undefined">—</option>
+                                                            <t t-foreach="col.selection" t-as="opt" t-key="opt[0]">
+                                                                <option t-att-value="opt[0]"
+                                                                        t-att-selected="line[col.name] === opt[0] ? true : undefined"
+                                                                        t-esc="opt[1]"/>
+                                                            </t>
+                                                        </select>
+                                                    </t>
                                                     <t t-else="">
-                                                        <input t-att-type="col.type === 'float' || col.type === 'integer' || col.type === 'monetary' ? 'number' : 'text'"
+                                                        <input t-att-type="col.type === 'date' || col.type === 'datetime' ? 'date' : (col.type === 'float' || col.type === 'integer' || col.type === 'monetary' ? 'number' : 'text')"
                                                                t-att-step="col.type === 'float' || col.type === 'monetary' ? '0.01' : undefined"
                                                                class="o2m-input"
                                                                t-att-value="line[col.name] !== undefined ? line[col.name] : ''"
@@ -404,9 +424,21 @@ class FormView extends Component {
                 <div class="gf-modal" t-on-click="onModalBackdrop">
                     <div class="gf-modal-card">
                         <h3 class="gf-modal-title">New <t t-esc="state.addNew.label"/></h3>
-                        <label class="gf-modal-lbl">Name</label>
-                        <input class="gf-modal-input" t-att-value="state.addNew.name"
-                               t-on-input="onAddNewNameInput" t-on-keydown="onAddNewKey"/>
+                        <!-- One input per field the target model REQUIRES, not
+                             a lone Name box. A rental unit is required to have
+                             a code, so "＋" beside the Unit picker used to post
+                             {name} and come back "Code is required" — on the
+                             one screen where the picker is empty because no
+                             unit exists yet, leaving no way forward at all. -->
+                        <t t-foreach="state.addNew.fields" t-as="qf" t-key="qf.name">
+                            <label class="gf-modal-lbl" t-esc="qf.label"/>
+                            <input class="gf-modal-input"
+                                   t-att-data-quick="qf.name"
+                                   t-att-value="state.addNew.values[qf.name] || ''"
+                                   t-att-placeholder="qf.placeholder || undefined"
+                                   t-on-input="(ev) => this.onAddNewFieldInput(qf.name, ev)"
+                                   t-on-keydown="onAddNewKey"/>
+                        </t>
                         <div t-if="state.addNew.error" class="gf-modal-err" t-esc="state.addNew.error"/>
                         <div class="gf-modal-actions">
                             <button class="btn" t-on-click="closeAddNew">Cancel</button>
@@ -447,7 +479,45 @@ class FormView extends Component {
     }
 
     // ---- combobox "Add new…" — create a related record inline ----
-    openAddNew(ctx) { this.state.addNew = { name: '', error: '', ...ctx }; }
+    /**
+     * Open the quick-create dialog for a related model.
+     *
+     * The field list is asked of the SERVER rather than hardcoded: every field
+     * the model marks required, plus `name` when it has one. A dialog that only
+     * ever offered "Name" was a dead end on any model that requires something
+     * else — and it failed at the worst moment, because the reason you reach
+     * for "＋" is that the picker had nothing to offer.
+     */
+    async openAddNew(ctx) {
+        this.state.addNew = { name: '', error: '', values: {},
+                              fields: [{ name: 'name', label: 'Name' }], ...ctx };
+        try {
+            const meta = await RpcService.call(ctx.relation, 'fields_get', [], {});
+            const list = [];
+            for (const [fname, m] of Object.entries(meta || {})) {
+                if (fname === 'id' || fname === 'company_id') continue;
+                // A relation cannot be typed into a text box; asking for one
+                // here would produce a dialog nobody can complete. Those models
+                // need their own form, and the error below says so.
+                if (m.type === 'many2one' || m.type === 'one2many') continue;
+                if (fname === 'name' || m.required) list.push({ name: fname, label: m.string || fname });
+            }
+            // `name` first when present: it is the field people expect to type.
+            list.sort((a, b) => (a.name === 'name' ? -1 : b.name === 'name' ? 1 : 0));
+            // Check the dialog is still the one we asked about: the user may
+            // have closed it, or opened another, while fields_get was in flight.
+            if (list.length && this.state.addNew && this.state.addNew.relation === ctx.relation)
+                this.state.addNew.fields = list;
+        } catch (_) {
+            // Keep the plain Name box — better a dialog that might fail than
+            // no dialog at all.
+        }
+    }
+    onAddNewFieldInput(name, e) {
+        if (!this.state.addNew) return;
+        this.state.addNew.values[name] = e.target.value;
+        if (name === 'name') this.state.addNew.name = e.target.value;
+    }
     onAddNewNameInput(e) { if (this.state.addNew) this.state.addNew.name = e.target.value; }
     onAddNewKey(e) { if (e.key === 'Enter') { e.preventDefault(); this.submitAddNew(); } }
     closeAddNew() { this.state.addNew = null; }
@@ -456,11 +526,18 @@ class FormView extends Component {
     async submitAddNew() {
         const ctx = this.state.addNew;
         if (!ctx) return;
-        const name = (ctx.name || '').trim();
-        if (!name) { ctx.error = 'Please enter a name.'; return; }
+        const vals = {};
+        for (const f of (ctx.fields || [])) {
+            const v = (ctx.values[f.name] || '').trim();
+            if (v) vals[f.name] = v;
+        }
+        if (!Object.keys(vals).length) {
+            ctx.error = `Please fill in ${(ctx.fields || []).map(f => f.label).join(' and ')}.`;
+            return;
+        }
         ctx.error = '';
         try {
-            const id = await RpcService.call(ctx.relation, 'create', [{ name }], {});
+            const id = await RpcService.call(ctx.relation, 'create', [vals], {});
             // Select it immediately. There is no options list to append to any
             // more — writing the id is enough, because M2OSelect resolves the
             // label from the id and so can display a record it has never seen
@@ -561,6 +638,9 @@ class FormView extends Component {
                     relation: meta[c.name].relation || null,
                     readonly: !!meta[c.name].readonly,
                     domain:   Array.isArray(meta[c.name].domain) ? meta[c.name].domain : [],
+                    // Carried for the same reason the scalar form carries it:
+                    // without the choices the column can only be a text box.
+                    selection: Array.isArray(meta[c.name].selection) ? meta[c.name].selection : [],
                     fields:       c.fields       || null,
                     searchFields: c.searchFields || null,
                     format:       c.format       || null,
@@ -573,6 +653,7 @@ class FormView extends Component {
             relation: m.relation || null,
             readonly: !!m.readonly,
             domain:   Array.isArray(m.domain) ? m.domain : [],
+            selection: Array.isArray(m.selection) ? m.selection : [],
         }));
     }
 
@@ -672,8 +753,20 @@ class FormView extends Component {
     onFormChange(e) {
         const o2mField = e.target.dataset.o2m;
         if (o2mField) {
-            this.updateO2mLine(o2mField, e.target.dataset.key, e.target.dataset.field,
-                e.target.tagName === 'SELECT' ? (parseInt(e.target.value) || 0) : e.target.value);
+            // The same trap the scalar branch below documents, in the copy
+            // nobody had reason to look at: a <select> in a LINE is a selection
+            // field, so its value is a WORD ('recurring'), and parseInt made it
+            // 0. onFormInput had already stored the right value, so this ran
+            // second and wiped it — the line saved with the column default and
+            // the screen showed the choice that had just been discarded.
+            //
+            // Every id-carrying <select> in a line table is gone; a many2one
+            // column renders M2OSelect, which reports through onSelect and
+            // never reaches here.
+            const val = e.target.tagName === 'SELECT'
+                ? (e.target.value || null)      // blank means unset, not ''
+                : e.target.value;
+            this.updateO2mLine(o2mField, e.target.dataset.key, e.target.dataset.field, val);
             return;
         }
         const field = e.target.dataset.field;
@@ -11794,6 +11887,7 @@ const CUSTOM_VIEWS = {
     // plus a matching isXxxModel getter.
     'rental.unit':        RentalUnitGrid,
     'rental.dashboard':   RentalDashboard,
+    'rental.booking':     RentalBooking,
     'rental.demo.data':   RentalDemoData,
     // Custom screens for the new modules (components loaded by index.html).
     'barcode.scan':       BarcodeScan,
