@@ -194,7 +194,7 @@ sec "11. the reset LINK, driven through a real browser"
 # so a mistake in it is silent server-side. This drives the whole loop in
 # Chrome: admin mints a link → open it anonymously → the panel renders → set a
 # password → success → the new password signs in. Skips cleanly without Chrome.
-DRIVE="$R/tests/functional/10-account/drive.mjs"
+DRIVE="$R/tests/functional/account/accounting/drive.mjs"
 if command -v node >/dev/null 2>&1 && [ -f "$DRIVE" ]; then
     REP=$(RESET_LOGIN="$NEW" SHOT=/tmp/account-reset.png node "$DRIVE" 2>/tmp/aj_drive.err | tail -1)
     SKIP=$(printf '%s' "$REP" | python3 -c 'import sys,json;print(json.loads(sys.stdin.read() or "{}").get("skipped",""))' 2>/dev/null)

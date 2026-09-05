@@ -229,6 +229,34 @@ fi
 CUR_SCENARIO=""
 FIXTURES_ACTIVE=0
 
+# Wait until the server can actually SERVE A LOGIN, not merely answer a socket.
+#
+# Loading a scenario stops the server, drops the schema, restores and starts a
+# fresh process — and db_snapshot.sh calls that done as soon as `GET /` answers.
+# It answers too early: the website route catches its own database error and
+# redirects to /login either way, so a 302 arrives while the pool is still
+# warming. `/healthz` is no better — it is a static 200 that touches nothing.
+#
+# The result was the first test or two after a restore failing at
+# `auth_or_die` with "cannot authenticate", having tested nothing at all. Both
+# passed standalone a minute later, which is the signature of a race and the
+# most expensive kind of red: it looks like the code and it is not.
+#
+# A login is the cheapest request that proves the DB pool, the session manager
+# and res_users are all up, so poll that.
+wait_for_login() {
+    local i
+    for i in $(seq 1 30); do
+        curl -s -X POST "$BASE/web/session/authenticate" \
+             -H 'Content-Type: application/json' --max-time 3 \
+             --data "{\"jsonrpc\":\"2.0\",\"method\":\"call\",\"params\":{\"db\":\"$DBN\",\"login\":\"${ERP_LOGIN:-admin}\",\"password\":\"${ERP_PASSWORD:-admin}\"}}" \
+          | grep -q '"session_id"' && return 0
+        sleep 1
+    done
+    echo "    NOTE: the server is up but will not accept a login after 30s"
+    return 1
+}
+
 switch_scenario() {  # switch_scenario <name>
     local want="$1"
     [ "$want" = "$CUR_SCENARIO" ] && return 0
@@ -243,6 +271,7 @@ switch_scenario() {  # switch_scenario <name>
     printf '    \033[2mscenario -> %s\033[0m\n' "$want"
     if scenario_load "$want" > "$LOGDIR/scenario.log" 2>&1; then
         CUR_SCENARIO="$want"
+        wait_for_login
         # A restore wipes the fixture set with everything else. Anything that
         # already asked for it needs it back, or every later test reading "the
         # first product" fails for a reason that is ours, not the code's.

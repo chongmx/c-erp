@@ -34,7 +34,7 @@ source tests/lib/harness.sh
 # and reproduces the old failure first so the test is known to be able to fail.
 #
 # It is an API test on purpose — it pins the RPC contract. That the widget
-# actually renders is checked by tests/functional/13-form-pickers, which drives
+# actually renders is checked by tests/functional/core/form-pickers, which drives
 # a real browser, because an OWL template error is invisible from here.
 # =============================================================
 BASE=${BASE:-http://127.0.0.1:8069}

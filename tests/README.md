@@ -36,6 +36,7 @@ tests/
     sale_fixture.sh ensure_sale_fixture — one sale order, for tests that need
                     only that and do not want the whole canonical set
     render.mjs      the browser driver (see docs/browser-render-checks.md)
+    render_*.mjs    one click-driven journey each, called by a functional test
     testlib/        vendored python helpers (segno, qrcheck) for QR checks
   tools/          run by hand, not by the runner — they measure the suite
     audit_test_leaks.sh         row deltas per test: who leaves rows behind
@@ -46,6 +47,9 @@ tests/
   setup/          creates the canonical fixtures, and asserts the creation
   integration/    per-area technical checks
     core/ money/ account/ sale/ purchase/ stock/ product/ mrp/ project/ rental/
+  functional/     whole journeys, driven by CLICKING a real browser
+    account/ base/ core/ mrp/ portal/ product/ project/ purchase/
+    rental/ sale/ stock/
   security/       penetration tests — these assert that things FAIL
     auth/ access/ injection/ hardening/
   teardown/       deletes the fixtures, and asserts the deletion
@@ -54,6 +58,27 @@ tests/
 **A test is a folder, not a file.** That is what lets it carry whatever it
 needs: `test.sh`, a `seed.sql`, a `helper.cpp`, an `expected/` directory of
 golden output. Nest one level deeper if a test grows enough parts to need it.
+
+**Both tiers are grouped by module, and neither encodes order in a name.**
+Functional tests were once `01-sell`, `02-buy`, … `17-partner-display-name`,
+which stopped scaling the moment there were several per area: the number said
+where a test ran but not what it covered, and five different concerns sat in
+one flat list. Run order is `order=` in the `meta`, and it is unchanged by the
+move — so a folder can be renamed or re-filed without touching the sequence.
+
+### Functional tests are click-driven
+
+A functional test drives a real browser and asserts what is **on the screen**.
+It does not create its records over the API — a record planted by one `create`
+call is not the record a user has, and the difference is where the bugs live: a
+picker that never offered the row, a dialog that could only be cancelled, a
+dropdown that was a text box. Where a large starting state is needed, load a
+prefabricated scenario once through the database restore *page*, and restore at
+the end.
+
+The shell test owns the fixtures, the cleanup and the verdict, and re-checks
+the database with `pg` afterwards — so a driver that stopped early cannot pass
+by saying nothing.
 
 ## The `meta` file
 
