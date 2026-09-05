@@ -539,3 +539,23 @@
 /* Rental dashboard: the on-demand billing run beside the horizon filter. */
 .rental-filters input[type="date"] { padding: 3px 6px; }
 .dash-bill-msg { font-size: .75rem; color: var(--muted); margin-left: 4px; }
+
+/* =============================================================
+   The add/edit unit dialog (RentalUnitGrid.js).
+
+   One dialog serves both, so the field set cannot drift between creating a
+   unit and correcting it later — which is how "I can set a zone on the way in
+   but not afterwards" happens.
+   ============================================================= */
+.ru-dlg { padding: 14px 16px; display: grid; gap: 11px; }
+.ru-dlg label { display: block; font-size: .8rem; color: var(--muted); }
+.ru-dlg label .form-input { width: 100%; margin-top: 3px; }
+.ru-dlg textarea.form-input { resize: vertical; font-family: inherit; }
+.ru-dlg-two   { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+.ru-dlg-three { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 11px; }
+.ru-dlg-note {
+    margin: -4px 0 0; font-size: .73rem; color: var(--muted); line-height: 1.5;
+}
+@media (max-width: 560px) {
+    .ru-dlg-two, .ru-dlg-three { grid-template-columns: 1fr; }
+}

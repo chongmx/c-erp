@@ -27,6 +27,11 @@ const RENTAL_UNIT_STATES = [
 ];
 
 class RentalUnitGrid extends owl.Component {
+    // OWL resolves a sub-component at FIRST RENDER, so a class that renders
+    // <M2OSelect/> without naming it here throws only when a user opens this
+    // exact screen — never at load, and never in an API test.
+    static components = { M2OSelect };
+
     static template = owl.xml`
         <div class="rental-grid-wrap viz-root">
 
@@ -59,40 +64,98 @@ class RentalUnitGrid extends owl.Component {
                 <button t-on-click="load">Refresh</button>
             </div>
 
-            <!-- Adding a unit had no UI at all: this screen replaces the list
-                 view for rental.unit, so there was no New button anywhere and a
-                 lettings business could not add the thing it lets. -->
-            <div t-if="state.newUnit" class="m2o-modal-back" t-on-click="closeNewUnit">
+            <!-- ONE dialog for both adding and editing.
+                 Adding had no UI at all — this screen replaces the list view
+                 for rental.unit, so there was no New button anywhere and a
+                 lettings business could not add the thing it lets. Editing had
+                 the mirror problem: clicking a unit called openUnit(), which
+                 did nothing, so a typo in a code or a unit moved to another
+                 zone could not be corrected from the only screen that shows
+                 units. Two dialogs would be two sets of fields to keep in
+                 step, so this is one, and its id decides which it is.
+
+                 NB: no backticks anywhere in this template. The whole thing is
+                 a JS template LITERAL, so a stray backtick — even inside an XML
+                 comment — closes the string early, and the file dies with
+                 "Unexpected identifier". The component then never defines, the
+                 app never boots, and the browser reports it three layers away
+                 as a screen that will not open. -->
+            <div t-if="state.unitDlg" class="m2o-modal-back" t-on-click="closeUnitDlg">
                 <div class="m2o-modal" t-on-click.stop="() => {}">
                     <div class="m2o-modal-head">
-                        <span>New unit</span>
-                        <button class="m2o-x" t-on-click="closeNewUnit">×</button>
+                        <span t-esc="state.unitDlg.id ? 'Edit ' + state.unitDlg.origCode : 'New unit'"/>
+                        <button class="m2o-x" t-on-click="closeUnitDlg">×</button>
                     </div>
-                    <div style="padding:14px 16px;display:grid;gap:10px">
-                        <label>Code
-                            <input class="form-input" data-nu="code" style="width:100%"
-                                   t-att-value="state.newUnit.code"
-                                   t-on-input="ev => this.state.newUnit.code = ev.target.value"
-                                   placeholder="e.g. A-101"/></label>
-                        <label>Name
-                            <input class="form-input" data-nu="name" style="width:100%"
-                                   t-att-value="state.newUnit.name"
-                                   t-on-input="ev => this.state.newUnit.name = ev.target.value"/></label>
+                    <div class="ru-dlg">
+                        <div class="ru-dlg-two">
+                            <label>Code
+                                <input class="form-input" data-nu="code"
+                                       t-att-value="state.unitDlg.code"
+                                       t-on-input="ev => { this.state.unitDlg.code = ev.target.value; }"
+                                       placeholder="e.g. A-101"/></label>
+                            <label>Name
+                                <input class="form-input" data-nu="name"
+                                       t-att-value="state.unitDlg.name"
+                                       t-on-input="ev => { this.state.unitDlg.name = ev.target.value; }"/></label>
+                        </div>
+                        <!-- Type is a SEARCH box, not a <select> of a prefetch.
+                             The prefetch was loaded once when the screen opened,
+                             capped at 200 and unordered, so a unit type created
+                             afterwards — on the Unit Types screen, in another
+                             tab, by anyone — simply was not in this list, and
+                             there was no way to search for it. M2OSelect asks
+                             the server on every focus, so a type created a
+                             moment ago is found by typing part of its name. -->
                         <label>Type
-                            <select class="form-input" data-nu="type_id" style="width:100%"
-                                    t-on-change="ev => this.state.newUnit.type_id = ev.target.value">
-                                <option value="">—</option>
-                                <t t-foreach="state.types" t-as="ty" t-key="ty.id">
-                                    <option t-att-value="ty.id"><t t-esc="ty.name"/></option>
+                            <M2OSelect model="'rental.unit.type'" label="'Unit Type'"
+                                       placeholder="'Search a unit type…'"
+                                       value="state.unitDlg.type_id"
+                                       fields="['code']"
+                                       searchFields="['code']"
+                                       format="(r) => (r.code ? r.code + ' — ' : '') + (r.name || '')"
+                                       onSelect="(id) => { this.state.unitDlg.type_id = id; }"/></label>
+                        <div class="ru-dlg-three">
+                            <label>Site
+                                <input class="form-input" data-nu="site"
+                                       t-att-value="state.unitDlg.site"
+                                       t-on-input="ev => { this.state.unitDlg.site = ev.target.value; }"/></label>
+                            <label>Zone
+                                <input class="form-input" data-nu="zone"
+                                       t-att-value="state.unitDlg.zone"
+                                       t-on-input="ev => { this.state.unitDlg.zone = ev.target.value; }"
+                                       placeholder="e.g. Ground floor"/></label>
+                            <label>Floor
+                                <input class="form-input" data-nu="floor"
+                                       t-att-value="state.unitDlg.floor"
+                                       t-on-input="ev => { this.state.unitDlg.floor = ev.target.value; }"/></label>
+                        </div>
+                        <label>Service status
+                            <select class="form-input" data-nu="state"
+                                    t-on-change="ev => { this.state.unitDlg.state = ev.target.value; }">
+                                <t t-foreach="allStates" t-as="s" t-key="s.key">
+                                    <option t-att-value="s.key"
+                                            t-att-selected="state.unitDlg.state === s.key ? true : undefined"
+                                            t-esc="s.label"/>
                                 </t>
                             </select></label>
-                        <div t-if="state.newUnit.error" class="error" t-esc="state.newUnit.error"/>
+                        <p class="ru-dlg-note">
+                            Available, reserved and occupied are <strong>derived</strong> from
+                            this unit's contracts and are recomputed automatically. Only
+                            <strong>maintenance</strong> and <strong>retired</strong> stick —
+                            they are operator facts, and they take a unit out of the lettable
+                            stock until you put it back.
+                        </p>
+                        <label>Notes
+                            <textarea class="form-input" data-nu="notes" rows="2"
+                                      t-on-input="ev => { this.state.unitDlg.notes = ev.target.value; }"><t t-esc="state.unitDlg.notes"/></textarea></label>
+                        <div t-if="state.unitDlg.error" class="error" t-esc="state.unitDlg.error"/>
                     </div>
                     <div class="m2o-modal-foot">
-                        <button t-on-click="closeNewUnit">Cancel</button>
+                        <button t-on-click="closeUnitDlg">Cancel</button>
                         <span/>
-                        <button class="btn btn-primary" t-on-click="createUnit"
-                                t-att-disabled="state.newUnit.saving ? true : undefined">Create</button>
+                        <button class="btn btn-primary" t-on-click="saveUnit"
+                                t-att-disabled="state.unitDlg.saving ? true : undefined"
+                                t-esc="state.unitDlg.id ? 'Save' : 'Create'"/>
                     </div>
                 </div>
             </div>
@@ -207,7 +270,7 @@ class RentalUnitGrid extends owl.Component {
             view: 'grid',
             fZone: '', fType: '', fState: '', fCode: '',
             tip: { show: false, x: 0, y: 0, code: '', rows: [] },
-            newUnit: null,   // the "New unit" dialog, or null when closed
+            unitDlg: null,   // the add/edit dialog, or null when closed
         });
         owl.onWillStart(() => this.load());
     }
@@ -345,35 +408,101 @@ class RentalUnitGrid extends owl.Component {
     }
     hideTip() { this.state.tip.show = false; }
 
+    /** A blank dialog. */
     openNewUnit() {
-        this.state.newUnit = { code: '', name: '', type_id: '', error: '', saving: false };
+        this.state.unitDlg = {
+            id: 0, origCode: '', code: '', name: '', type_id: 0,
+            site: '', zone: '', floor: '', state: 'available', notes: '',
+            error: '', saving: false,
+        };
+        // The Type picker searches the server for itself, but the grid's type
+        // FILTER and its type labels still come from the list fetched when this
+        // screen opened. Refresh it here so a type added since then is not
+        // missing from both — and so a unit created with that type is labelled
+        // the moment the grid reloads, rather than showing a blank Type cell.
+        this.reloadTypes();
     }
-    closeNewUnit() { this.state.newUnit = null; }
+
+    /** The same dialog, filled from a unit. */
+    editUnit(u) {
+        this.state.unitDlg = {
+            id:       u.id,
+            origCode: u.code,
+            code:     u.code || '',
+            name:     u.name || '',
+            type_id:  this.typeId(u) || 0,
+            site:     u.site  || '',
+            zone:     u.zone  || '',
+            floor:    u.floor || '',
+            state:    u.state || 'available',
+            notes:    u.notes || '',
+            error:    '', saving: false,
+        };
+        this.reloadTypes();
+    }
+
+    async reloadTypes() {
+        try {
+            const types = await RpcService.call('rental.unit.type', 'search_read', [[]],
+                { fields: ['id', 'name', 'default_rate'], limit: 200, order: 'name ASC' });
+            this.state.types = types || [];
+        } catch (_) { /* the picker still works; only the filter goes stale */ }
+    }
+    closeUnitDlg() { this.state.unitDlg = null; }
 
     /** Create the unit, then reload so it appears in the grid immediately. */
-    async createUnit() {
-        const nu = this.state.newUnit;
+    /**
+     * Create or update, depending on whether the dialog carries an id.
+     *
+     * One path, so the two can never drift into accepting different fields —
+     * which is how "I can set a zone when I create a unit but not afterwards"
+     * happens.
+     */
+    async saveUnit() {
+        const nu = this.state.unitDlg;
         if (!nu || nu.saving) return;
         const code = (nu.code || '').trim();
         if (!code) { nu.error = 'A code is required.'; return; }
         nu.saving = true; nu.error = '';
         try {
-            const vals = { code, name: (nu.name || '').trim() || code };
-            if (nu.type_id) vals.type_id = parseInt(nu.type_id, 10);
-            await RpcService.call('rental.unit', 'create', [vals], {});
-            this.state.newUnit = null;
+            const vals = {
+                code,
+                name:  (nu.name  || '').trim() || code,
+                site:  (nu.site  || '').trim(),
+                zone:  (nu.zone  || '').trim(),
+                floor: (nu.floor || '').trim(),
+                notes: nu.notes || '',
+                state: nu.state || 'available',
+            };
+            // M2OSelect reports a NUMBER, and 0 means cleared. Sending
+            // type_id: 0 would be a foreign key to nothing; `false` is how this
+            // ORM spells "no relation" (normalizeForDb_).
+            vals.type_id = nu.type_id ? (parseInt(nu.type_id, 10) || false) : false;
+
+            if (nu.id) await RpcService.call('rental.unit', 'write', [[nu.id], vals], {});
+            else       await RpcService.call('rental.unit', 'create', [vals], {});
+
+            this.state.unitDlg = null;
             await this.load();
         } catch (e) {
-            nu.error = (e && e.message) || String(e);
+            nu.error  = (e && e.message) || String(e);
             nu.saving = false;
         }
     }
 
+    /**
+     * Clicking a unit opens it for editing.
+     *
+     * A parent may still claim the click — that hook was here for the phase
+     * that opens the unit's contract — but with nothing supplying it the click
+     * used to do nothing at all, on the only screen that lists units. Editing
+     * is the useful default until something better claims it.
+     */
     openUnit(u) {
-        // Phase 4 opens the contract. Until contracts have a form, the
-        // click is a no-op rather than a dead link that appears to work.
         if (this.props && typeof this.props.onOpenUnit === 'function') {
             this.props.onOpenUnit(u);
+            return;
         }
+        this.editUnit(u);
     }
 }
