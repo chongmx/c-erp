@@ -200,6 +200,10 @@ GET   /site/api/health
 GET   /robots.txt · /sitemap.xml     generated from the published page set
 
 GET   /healthz
+GET   /rental/dashboard  ·  /rental/cashflow
+GET   /rental/calendar?month=YYYY-MM[&type_id=N]   day-level occupancy
+POST  /rental/booking/create                       let a unit for a period
+POST  /rental/billing/run?date=YYYY-MM-DD          generate invoices now
 GET   /rental/demo/status                     what demo data exists
 POST  /rental/demo/seed  ·  /rental/demo/clear
 ```
@@ -207,6 +211,18 @@ POST  /rental/demo/seed  ·  /rental/demo/clear
 The two rental-demo mutations are `POST`, deliberately: a `GET` that changes
 data can be triggered by a link, a prefetch or a crawler. All three
 authenticate.
+
+Every rental route authenticates — occupancy, tenant names and receivables are
+commercially sensitive, and the first cut of these routes had no auth at all.
+Parameters travel as query or form values rather than a JSON body, which is the
+shape the whole module uses; one idiom is worth more than a tidier payload.
+
+`POST /rental/booking/create` takes `unit_id`, `partner_id`, `date_start` and
+optionally `date_end` (empty = open-ended), `unit_price` (default: the unit
+type's rate), `contract_id` (default: open a new contract) and `billing_mode`.
+It answers **400 with a sentence** when the operator's request cannot stand —
+overlapping dates naming the clashing let, a retired unit, no customer — rather
+than a masked 500.
 
 ## Errors
 

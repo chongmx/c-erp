@@ -123,6 +123,14 @@ Keep `validate()` in step, so an invalid value is a 400 naming the choices
 rather than a 500 quoting SQL. The choices, the CHECK and `validate()` are
 three copies of one list — changing one alone is the bug.
 
+**This applies to o2m LINE columns as much as to form fields.** A rental
+contract line's `billing_mode` and `state` were `Char` behind CHECK
+constraints, so the line table rendered two free text boxes into which the user
+had to type `recurring` and `active` letter-perfect — and a contract could not
+be completed at all. `tests/functional/rental/unit-picker` asserts the rendered
+control, not just the stored value, because the model can be right while the
+screen is unusable.
+
 ### `normalizeForDb_` handles `false` → NULL and `[id,"Name"]` → id
 
 `write()` and `create()` call it automatically. In `deserializeFields()`, use
@@ -184,6 +192,27 @@ makes this survive review. Look the real name up first:
 SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
  WHERE conrelid = 't'::regclass AND contype = 'c';
 ```
+
+### Sharpen a constraint, never just drop it
+
+When a constraint blocks a feature, the question is not "can this be removed"
+but "what was it actually protecting?" — those are rarely the same rule.
+
+`rental_contract_line` had a partial UNIQUE index on `(unit_id)` for live
+lines: at most one per unit. It blocked a booking calendar outright, because
+two non-overlapping lets on one unit is the whole point of a calendar. Dropping
+it would also have removed the double-let guard, and nothing would have failed
+until two tenants turned up at the same locker.
+
+The rule it was really enforcing was *never two tenants in one unit at the same
+time*, which an overlap exclusion states exactly (migration 820). Strictly
+sharper, so existing data cannot violate it, and the feature falls out.
+
+Where the replacement is a constraint the database enforces, keep a **trigger
+alongside it for the message**: an exclusion violation tells the user something
+is wrong, not which booking is in the way. The constraint is the one that
+survives a race; the trigger is the one a person can act on. Then test both
+halves — that the new case is allowed *and* that the old guarantee still holds.
 
 This has now happened twice in `rental`: migration 816 guessed
 `rental_contract_billing_period_chk` when the constraint was
@@ -383,6 +412,20 @@ inside a module constructor. It currently carries `db()`, `devMode()`,
 
 There is no bundler, which constrains what the frontend can do.
 
+### No backticks inside a template — not even in a comment
+
+A component's template is a JS **template literal**. A stray backtick anywhere
+inside it — including inside an XML `<!-- comment -->` — closes the string
+early, and the file dies at parse time with something as unhelpful as
+`Unexpected identifier 'id'`.
+
+The component then never defines, `app.js` throws on the missing global, the
+whole application fails to boot, and what a browser test reports is a screen
+that will not open, three layers from the cause. Quote code in template comments
+with plain words or single quotes, and never with backticks.
+
+`node --check web/static/src/components/<file>.js` catches it in a second.
+
 ### Event delegation inside `t-foreach` — mandatory
 
 A named method in `t-on-*` inside a `t-foreach` cannot resolve in the IIFE
@@ -452,13 +495,32 @@ missing static components key in parent
 
 fires only when a user opens that one form — never at load, never in an API
 test, and the screen is blank rather than broken-looking.
-`tests/functional/13-form-pickers` checks this statically across every class
+`tests/functional/core/form-pickers` checks this statically across every class
 *and* by opening each form in a browser.
 
 ### `complete_name` is not on `product.product`
 
 It exists on `stock_location`, not on products. Load product options with
 `['id', 'name']`.
+
+### A derived label belongs in a column, not in `serializeFields`
+
+`read` and `search_read` return **columns**: `rowsToJson_` projects whatever the
+SELECT produced, not the model's `toJson()`. A value assembled in
+`serializeFields` therefore never reaches a client through the ordinary read
+path, however correct it looks in the C++.
+
+So a label a client has to see — `res_partner.display_name`, "Carol, Big
+Carrots" — needs all three:
+
+1. a **stored column**, maintained by trigger in a migration, so hand-written
+   SQL and other modules see the same value;
+2. `fieldRegistry_.add(...)`, so `buildSelectCols_` will actually select it and
+   a domain may filter on it (S-49 rejects unregistered columns outright);
+3. **no** `deserializeFields` entry, so a client cannot write it back.
+
+Deriving it at read time instead costs the picker its `ORDER BY` and its
+`ilike` — which is usually the feature that was wanted in the first place.
 
 ## Naming
 

@@ -73,6 +73,41 @@ The infrastructure here is the important part:
 child contacts, with the child inheriting the parent's address unless it
 overrides it.
 
+### How a contact is labelled
+
+A person is shown with their company, an organisation with itself:
+
+| the row | `display_name` |
+|---|---|
+| company "Big Carrots" | `Big Carrots` |
+| Carol, `parent_id` → Big Carrots | `Carol, Big Carrots` |
+| Carol, no company | `Carol` |
+| Carol, free-text `company_name` "Big Carrots" | `Carol, Big Carrots` |
+
+The company part is `commercial_company_name` — the commercial parent's name
+when that is a company, else the row's own free text — so an imported contact
+that never had a company *record* reads the same as a linked one. The suffix is
+dropped when it would repeat the name.
+
+`display_name` is a **stored column**, maintained by trigger (migration 15),
+not composed at read and not composed by the client:
+
+- a client cannot format what a client never sees consistently — there are
+  forty-odd pickers and several choose their model at runtime
+  (`<M2OSelect model="f.relation"/>`), so "update every call site" cannot be
+  finished;
+- a picker has to `ORDER` and `ilike` on it. Typing "Big Carrots" into a
+  Customer box finds the people who work there, which a computed value could
+  not support.
+
+Renaming a company cascades to every contact beneath it, and re-parenting or
+promoting a contact to a company recomputes its own. The field is registered on
+the model so `search_read` returns it and a domain may filter on it (S-49), but
+it is **not** deserialised: accepting it from a client would let a contact
+present itself under a company it does not belong to.
+`tests/integration/core/partner-display-name` pins the rule and both cascades;
+`tests/functional/base/partner-display-name` drives the pickers on screen.
+
 ### Deleting a contact
 
 `PartnerService::unlink` refuses when any **document** refers to the contact,
@@ -288,9 +323,63 @@ The storage-rental business built on top of the ERP.
 | `RentalExpenses.cpp` | recurring expenses |
 | `RentalForecast.cpp` | the cashflow forecast |
 | `RentalDashboard.cpp` | the dashboard aggregates |
+| `RentalCalendar.cpp` | day-level occupancy, and booking a unit from the calendar |
 | `RentalEvents.cpp` | the unit event log |
 | `RentalMigrations.cpp` | all rental DDL |
 | `RentalDemo.cpp` | demo data, behind `/rental/demo/{seed,clear,status}` |
+
+### The booking calendar
+
+**Rental → Booking** (menu 315, action 127) is a day-level view of what is let:
+a sidebar of types and units, a strip of day-boxes per unit, and a month grid
+for one unit with the tenant on each day.
+
+**Occupancy is derived, never stored.** A unit is occupied on day *D* when a
+live line exists with `date_start <= D` and (`date_end IS NULL` or
+`D <= date_end`) — the same dates `RentalBilling` reads, so the calendar shows
+exactly what will be invoiced. Storing it as well would create a second source
+of truth that drifts the first time someone edits a line. `date_end` is
+**inclusive**: it is the last day of the let, which is how billing already
+treats it, so the next booking starts the day after.
+
+Booking from the calendar creates an ordinary `rental.contract.line`, opening a
+contract when none is given. A dated booking defaults to `oneoff` billing and an
+open-ended one to `recurring` — the other way round, a three-day cabin hire
+would be invoiced every month for ever.
+
+| Route | |
+|---|---|
+| `GET /rental/calendar?month=YYYY-MM[&type_id=N]` | the month, by unit and by type |
+| `POST /rental/booking/create` | let a unit for a period |
+
+#### The guard that had to change
+
+Migration 803 enforced the double-let rule with a partial UNIQUE index on
+`rental_contract_line(unit_id) WHERE state IN ('pending','active')` — **at most
+one live line per unit**. That also made a booking calendar impossible: Alice
+10–14 December and Bob 20–23 December could not both exist, so a unit could be
+let exactly once.
+
+Migration 820 replaces it with an **overlap exclusion**, which is strictly
+sharper. The rule was never "one line per unit", it was *never two tenants in
+one unit at the same time*:
+
+```sql
+EXCLUDE USING gist (unit_id WITH =,
+                    daterange(date_start, COALESCE(date_end,'infinity'), '[]') WITH &&)
+  WHERE (state IN ('pending','active') AND unit_id IS NOT NULL)
+```
+
+Two guards, deliberately. The constraint is race-proof and holds against
+hand-written SQL, but needs `btree_gist` and its message is unreadable; a
+`BEFORE` trigger names the dates that clash, and still enforces the rule where
+the extension cannot be installed. Existing data cannot violate it — one live
+line per unit is trivially non-overlapping.
+
+`tests/integration/rental/booking-occupancy` pins the day arithmetic (clamping
+at both month edges, open-ended lets, unions, retired units);
+`tests/functional/rental/booking-calendar` books from the screen and proves
+both halves of the guard — sequential lets allowed, overlapping lets refused.
 
 ### The billing period
 

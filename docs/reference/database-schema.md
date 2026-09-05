@@ -92,7 +92,7 @@ after the table appears here too.
 | `res_country_state` | 6 | `id`, `country_id`, `name`, `code`, `create_date`, `write_date` |
 | `res_currency` | 10 | `id`, `name`, `symbol`, `position`, `rounding`, `decimal_places`, `active`, `create_date`, `write_date`, `rate` |
 | `res_lang` | 11 | `id`, `name`, `code`, `iso_code`, `url_code`, `active`, `direction`, `date_format`, `time_format`, `create_date`, `write_date` |
-| `res_partner` | 34 | `id`, `name`, `email`, `phone`, `is_company`, `company_id`, `active`, `create_date`, `write_date`, `signup_token`, `signup_expiration`, `portal_password_hash`, `portal_active`, `property_product_pricelist_id`, `street`, `city`, `zip`, `lang`, `country_id`, `state_id`, `mobile`, `website`, `comment`, `job_position`, `customer_rank`, `vendor_rank`, `is_contractor`, `is_individual`, `company_name`, `parent_id`, `commercial_partner_id`, `type`, `street2`, `commercial_company_name` |
+| `res_partner` | 35 | `id`, `name`, `email`, `phone`, `is_company`, `company_id`, `active`, `create_date`, `write_date`, `signup_token`, `signup_expiration`, `portal_password_hash`, `portal_active`, `property_product_pricelist_id`, `street`, `city`, `zip`, `lang`, `country_id`, `state_id`, `mobile`, `website`, `comment`, `job_position`, `customer_rank`, `vendor_rank`, `is_contractor`, `is_individual`, `company_name`, `parent_id`, `commercial_partner_id`, `type`, `street2`, `commercial_company_name`, `display_name` |
 
 ### auth — users, groups, companies
 

@@ -276,6 +276,27 @@ update one file and not the other.
 - **Look at the screenshot at least once.** Assertions confirm elements exist;
   only a picture shows white-on-white, a collapsed column, or a control that
   renders as an empty box.
+- **"It exists" is not "it is visible." Hit-test it.** An element clipped away
+  by an ancestor's `overflow: hidden` still reports a real `offsetHeight`, real
+  child rows and a real bounding box, and passes every DOM assertion you can
+  write about it — while the user sees nothing at all. That is exactly what
+  `.o2m-table { overflow: hidden }` did to every dropdown opened in a line
+  table. Take the point where the content is drawn and ask the page what is
+  actually there:
+
+  ```js
+  const r = opt.getBoundingClientRect();
+  const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  const visible = !!(hit && (hit === opt || opt.contains(hit)));
+  ```
+
+  Check the rect is inside the viewport too — an element can be painted
+  perfectly and still be off screen.
+- **Screenshot BEFORE you interrogate the page.** Every CDP round trip is a
+  chance for headless Chrome to blur the page, and a blur closes anything that
+  hides on blur. An "is the dropdown open?" `evaluate()` placed before the
+  capture is what closes the dropdown, and the picture comes back empty while
+  the assertion insists it was open.
 - **Check a CSS token exists before relying on its fallback.** `var(--nope,
   #fff)` is silent and will happily fight the theme.
 - **Restart the server after adding any file under `web/static/`.**

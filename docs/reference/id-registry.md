@@ -52,7 +52,7 @@ seeded by exactly one module.
 | 104, 110–120 | `mrp` | **Manufacturing** |
 | 130, 137–142 | `project` | **Project** |
 | 150 | `bom` | BOM editor |
-| 300, 309–314, 320–322, 330 | `rental` | **Rental** |
+| 300, 309–315, 320–322, 330 | `rental` | **Rental** |
 | 400–402 | `help` | **Help Centre** |
 | 403, 413–415 | `ir` | technical menus, AI settings |
 | 404–408 | `hr` | attendance, leave, holidays |
@@ -70,7 +70,7 @@ seeded by exactly one module.
 | 17–29, 31, 47, 94, 99 | `stock` |
 | 30, 71–72, 95–96, 101 | `report` |
 | 34–38 | `mrp` |
-| 39–46 | `rental` |
+| 39–46, 127 | `rental` |
 | 48 | `sale` |
 | 49 | `purchase` |
 | 100 | `portal` |

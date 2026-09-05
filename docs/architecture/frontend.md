@@ -65,12 +65,36 @@ frontend code at all. One control per field type:
 
 | `fields_get` type | Control |
 |---|---|
-| `many2one` | `M2OSelect` (below), plus a **＋** that creates a record from a name |
+| `many2one` | `M2OSelect` (below), plus a **＋** that quick-creates a record |
 | `selection` | a `<select>` built from the field's `selection` list |
 | `boolean` | a checkbox |
 | `text` | a textarea |
 | `date`, `datetime`, `integer`, `float`, `monetary` | a typed `<input>` |
-| `one2many` | an editable line table, each line's m2o also an `M2OSelect` |
+| `one2many` | an editable line table — **the same controls per column** |
+
+The line table is not a simpler renderer: a column gets the control its type
+asks for, exactly as a form field does. It did once fall behind, and a rental
+contract line was the result — two selections rendered as free text boxes and
+two dates as plain text, on the one screen you cannot complete a contract
+without.
+
+The **＋** asks the target model for the fields it *requires* (`fields_get`),
+not just a name. A model that requires more — `rental.unit` needs a code —
+otherwise gave "An internal error occurred" from a dialog that could only be
+cancelled, and it failed exactly when it was needed most, because the reason
+you reach for ＋ is that the picker had nothing to offer.
+
+**A line table must not clip its own overflow.** `.o2m-table` carried
+`overflow: hidden` to make `border-radius` clip the header background, and it
+clipped away every dropdown opened inside the table: the list rendered, with
+real rows and a real height, and the user saw an empty box. A line is usually
+the last row, so its dropdown opens past the table edge and disappears
+completely. `.o2m-table td { overflow: visible }` does not save you — the clip
+is on the **table**. Round the header cells instead.
+
+That failure mode is why the browser checks hit-test the dropdown
+(`elementFromPoint` over the first row) rather than asking whether the element
+has a height. A clipped list passes every DOM assertion ever written about it.
 
 A **selection renders as a combobox only if the server declares it one.** A
 field registered as `FieldType::Char` gets a free text box however few values
@@ -133,8 +157,9 @@ never be reused; see [../reference/id-registry.md](../reference/id-registry.md).
 | `WebsitePages.js` | the page editor and view switcher |
 | `Dashboard.js`, `PartnerList.js`, `FieldsInspector.js` | present in the tree but **not loaded** by `index.html` — dead unless re-added |
 
-`rental/` holds `RentalUnitGrid.js`, `RentalDashboard.js` and
-`RentalDemoData.js`.
+`rental/` holds `RentalUnitGrid.js`, `RentalDashboard.js`,
+`RentalBooking.js` (the day-level booking calendar — sidebar of assets,
+one day-strip per unit, month grid per unit) and `RentalDemoData.js`.
 
 ### Picking a related record — `M2OSelect`
 
@@ -145,6 +170,7 @@ and it never holds the whole table:
 | | |
 |---|---|
 | typing | `search_read(domain + [['name','ilike',term]], limit 20, order 'name ASC')`, debounced 250 ms |
+| the label | `display_name` where the model stores one, else `name` — so every partner picker reads "Carol, Big Carrots" |
 | the count | `search_count(domain)` — the dropdown states how many rows it is **not** showing |
 | "Browse all" | the same search, paged 50 at a time, with Prev/Next |
 | the current value | `read([id], fields)` — resolved **by id**, never looked up in a page of results |
@@ -164,15 +190,26 @@ which fails three separate ways once a table passes the limit:
 Resolving the current value by id is what makes the third impossible.
 
 Props: `model`, `value`, `label`, `domain`, `fields` (extra columns to read),
-`format` (a record → label function, for `code — name` style labels),
-`readonly`, `onSelect(id, displayName)`.
+`searchFields` (extra columns a typed term also matches), `format` (a record →
+label function, for `code — name` style labels), `readonly`,
+`onSelect(id, displayName)`.
+
+**The label comes from the model, not the call site.** An explicit `format`
+still wins, but otherwise the widget prefers the record's stored `display_name`
+over its bare `name`, and searches that column too. That is what turns every
+partner picker into "Carol, Big Carrots" — including the ones whose model is
+only known at runtime (`model="f.relation"` on the generic form), which no
+amount of per-site formatting could have reached. `M2O_DISPLAY_NAME_MODELS` at
+the top of the file lists the models that store one; it is a list rather than
+"always ask" because reading an unregistered column is harmless while
+*filtering* on one is rejected outright (S-49).
 
 Two rules when using it:
 
 - **name it in `static components`.** OWL resolves a sub-component at first
   render, so a class that renders `<M2OSelect/>` without declaring it throws
   only when a user opens that exact form — nothing else catches it.
-  `tests/functional/13-form-pickers` checks every class both ways.
+  `tests/functional/core/form-pickers` checks every class both ways.
 - **no prefetching alongside it.** The point is that the table is never listed;
   a leftover `search_read([[]], limit: 500)` next to a picker is a round trip
   whose result nothing reads.
