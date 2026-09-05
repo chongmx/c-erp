@@ -11,6 +11,7 @@
 #include "RentalBilling.hpp"
 #include "RentalExpenses.hpp"
 #include "RentalForecast.hpp"
+#include "RentalCalendar.hpp"
 #include "RentalDashboard.hpp"
 #include "RentalDemo.hpp"
 #include "SessionManager.hpp"
@@ -463,18 +464,46 @@ public:
         // silently DISCARDED by write() — the tax_ids_json defect in
         // docs/053, and the reason every new column is registered in the
         // same commit that adds it.
-        fieldRegistry_.add({"billing_mode",       FieldType::Char,     "Billing"});
+        // Every one of these four is fenced by a CHECK constraint, so its
+        // vocabulary is already fixed — registering it as Char only hid that
+        // from the client. A line's Billing and Status then rendered as free
+        // TEXT BOXES in the contract's line table: the user had to type
+        // "recurring" and "active" letter-perfect, and anything else was
+        // refused on save by a constraint, from a form that never showed the
+        // valid values. Same argument as billing_period on the contract above.
+        {
+            core::FieldDef bm{"billing_mode", FieldType::Selection, "Billing"};
+            bm.selection = { {"recurring", "Recurring"}, {"oneoff", "One off"},
+                             {"ondemand", "On demand"},  {"manual", "Manual"} };
+            fieldRegistry_.add(bm);
+        }
         fieldRegistry_.add({"billing_months",     FieldType::Integer,  "Every (months)"});
         // docs/architecture/modules.md "The billing period": (interval, unit) expresses every period in one shape —
         // daily/weekly/monthly/quarterly/biannual/yearly are just presets over
         // it, and "every X <unit>" is the same field pair with an arbitrary X.
         fieldRegistry_.add({"billing_interval",   FieldType::Integer,  "Every"});
-        fieldRegistry_.add({"billing_unit",       FieldType::Char,     "Period"});
+        {
+            core::FieldDef bu{"billing_unit", FieldType::Selection, "Period"};
+            bu.selection = { {"day", "Day"}, {"week", "Week"},
+                             {"month", "Month"}, {"year", "Year"} };
+            fieldRegistry_.add(bu);
+        }
         fieldRegistry_.add({"billing_lead_days",  FieldType::Integer,  "Invoice Lead Days"});
         fieldRegistry_.add({"next_period_start",  FieldType::Date,     "Next Period"});
         fieldRegistry_.add({"invoiced_through",   FieldType::Date,     "Invoiced Through"});
-        fieldRegistry_.add({"proration_policy",   FieldType::Char,     "Proration"});
-        fieldRegistry_.add({"state",              FieldType::Char,     "Status"});
+        {
+            core::FieldDef pp{"proration_policy", FieldType::Selection, "Proration"};
+            pp.selection = { {"full_period",      "Charge the full period"},
+                             {"prorate_days",     "Prorate by days"},
+                             {"start_next_cycle", "Start next cycle"} };
+            fieldRegistry_.add(pp);
+        }
+        {
+            core::FieldDef st{"state", FieldType::Selection, "Status"};
+            st.selection = { {"pending", "Pending"}, {"active", "Active"},
+                             {"ended", "Ended"},     {"cancelled", "Cancelled"} };
+            fieldRegistry_.add(st);
+        }
         fieldRegistry_.add({"company_id",         FieldType::Many2one, "Company", false, false, true, false, "res.company"});
         // discount_pct is BIGINT micro-units like every other scaled value,
         // so 12.5% stores as 12500000 — not a NUMERIC percentage.
@@ -1189,6 +1218,107 @@ void RentalModule::registerRoutes() {
         },
         {drogon::Get});
 
+    // ----------------------------------------------------------
+    // The Booking screen (docs: rental booking calendar).
+    //
+    // Two routes, both authenticated like everything else here:
+    //   GET  /rental/calendar?month=YYYY-MM[&type_id=N]   day-level occupancy
+    //   POST /rental/booking/create?unit_id=..&partner_id=..&date_start=..
+    //
+    // Parameters travel as query/form values, not a JSON body, because that
+    // is the shape every other route in this module already uses
+    // (/rental/billing/run?date=). One idiom is worth more than a marginally
+    // tidier payload.
+    // ----------------------------------------------------------
+    auto companyOf = [sessions](const drogon::HttpRequestPtr& req) -> int {
+        if (!sessions) return 0;
+        auto s = sessions->get(req->getCookie(SessionManager::cookieName()));
+        return (s.has_value() && s->isAuthenticated()) ? s->companyId : 0;
+    };
+
+    drogon::app().registerHandler(
+        "/rental/calendar",
+        [db, devMode, checkAuth, unauthorized, companyOf](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+            if (!checkAuth(req)) { cb(unauthorized()); return; }
+            auto json = [&cb](int code, const nlohmann::json& body) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
+                r->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                r->setBody(body.dump());
+                cb(r);
+            };
+            try {
+                std::string ym;
+                if (auto m = req->getOptionalParameter<std::string>("month")) ym = *m;
+                int typeId = 0;
+                if (auto t = req->getOptionalParameter<std::string>("type_id")) {
+                    try { typeId = std::stoi(*t); } catch (...) { typeId = 0; }
+                }
+                json(200, RentalCalendar::month(db, ym, companyOf(req), typeId));
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[rental/calendar] pool: " << e.what();
+                json(503, {{"error", "The server is temporarily overloaded. Please retry."}});
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[rental/calendar] " << e.what();
+                json(500, {{"error", devMode ? e.what() : "An internal error occurred"}});
+            }
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandler(
+        "/rental/booking/create",
+        [db, devMode, checkAuth, unauthorized, companyOf](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+            if (!checkAuth(req)) { cb(unauthorized()); return; }
+            auto json = [&cb](int code, const nlohmann::json& body) {
+                auto r = drogon::HttpResponse::newHttpResponse();
+                r->setStatusCode(static_cast<drogon::HttpStatusCode>(code));
+                r->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                r->setBody(body.dump());
+                cb(r);
+            };
+            auto p = [&req](const char* k) -> std::string {
+                auto v = req->getOptionalParameter<std::string>(k);
+                return v ? *v : std::string();
+            };
+            auto num = [&p](const char* k, int dflt) {
+                const auto s = p(k);
+                if (s.empty()) return dflt;
+                try { return std::stoi(s); } catch (...) { return dflt; }
+            };
+            try {
+                RentalCalendar::BookRequest br;
+                br.unitId     = num("unit_id", 0);
+                br.partnerId  = num("partner_id", 0);
+                br.contractId = num("contract_id", 0);
+                br.dateStart  = p("date_start");
+                br.dateEnd    = p("date_end");
+                br.billingMode = p("billing_mode");
+                const auto price = p("unit_price");
+                if (!price.empty()) {
+                    try { br.unitPrice = std::stod(price); } catch (...) { br.unitPrice = -1.0; }
+                }
+                br.companyId = companyOf(req);
+                json(200, RentalCalendar::book(db, br));
+            } catch (const ValidationError& e) {
+                // The operator's own mistake — overlapping dates, no customer,
+                // a retired unit. 400 with the reason, always passed through:
+                // these messages are written for the screen and contain no
+                // schema detail (SEC-28).
+                json(400, {{"error", e.what()}});
+            } catch (const PoolExhaustedException& e) {
+                LOG_ERROR << "[rental/booking] pool: " << e.what();
+                json(503, {{"error", "The server is temporarily overloaded. Please retry."}});
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[rental/booking/create] " << e.what();
+                json(500, {{"error", devMode ? e.what() : "An internal error occurred"}});
+            }
+        },
+        {drogon::Post});
+
     // The dashboard: ONE endpoint returning the whole payload, cached
     // 60 s. Not a dozen search_read calls assembled in the browser —
     // docs/040 §3.4.
@@ -1309,7 +1439,11 @@ void RentalModule::seedActions_() {
             (43, 'Expenses',   'rental.expense',         'list,form'),
             (44, 'Categories', 'rental.expense.category','list,form'),
             (45, 'Events',     'rental.event',           'list'),
-            (46, 'Demo Data',  'rental.demo.data',       'list')
+            (46, 'Demo Data',  'rental.demo.data',       'list'),
+            -- 127, not 47: the rental block 39-46 is full and 47 is
+            -- Barcode. tests/integration/core/menu-ids prints the next
+            -- free id in each space, which is how this one was chosen.
+            (127, 'Booking',   'rental.booking',        'list')
         ON CONFLICT (id) DO UPDATE
             SET res_model = EXCLUDED.res_model,
                 view_mode = EXCLUDED.view_mode
@@ -1338,6 +1472,7 @@ void RentalModule::seedMenus_() {
     txn.exec(R"SQL(
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
             (309, 'Dashboard',  310,  5, 39),
+            (315, 'Booking',    310,  7, 127),
             (311, 'Units',      310, 10, 40),
             (312, 'Contracts',  310, 20, 42),
             (313, 'Expenses',   310, 30, 43),

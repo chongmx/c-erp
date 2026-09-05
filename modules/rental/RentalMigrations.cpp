@@ -932,6 +932,112 @@ void registerRentalMigrations(MigrationRunner& runner) {
            AND invoiced_through IS NULL;
     )SQL"});
 
+    // --------------------------------------------------------
+    // 820 — sequential bookings on one unit (the booking calendar)
+    //
+    // Migration 803 put a partial UNIQUE index on rental_contract_line
+    // (unit_id) WHERE state IN ('pending','active'). That is the double-let
+    // guard, and it is the right instinct: deriving rental_unit.state keeps
+    // the UI honest, but only a CONSTRAINT makes the race impossible when two
+    // operators let the same locker at the same moment.
+    //
+    // It is also too strong for a booking calendar. "At most one live line per
+    // unit" forbids Alice in A-101 for 3-7 December AND Bob for 12-20
+    // December — two lets that never touch. A calendar you cannot book twice
+    // on is not a calendar.
+    //
+    // So the guard is not removed, it is SHARPENED: the rule was never "one
+    // line per unit", it was "never two tenants in one unit at the same time".
+    // An exclusion constraint says exactly that and nothing more.
+    //
+    // Ranges are INCLUSIVE at both ends ('[]'). date_end is the last day of
+    // the let — the billing run already treats it that way
+    // (next_period_start <= date_end) — so a unit IS occupied on date_end and
+    // the next booking starts the day after. An open-ended line runs to
+    // 'infinity', which is what makes "rent until termination" block every
+    // later booking, correctly.
+    //
+    // TWO guards, deliberately:
+    //
+    //   * the EXCLUDE constraint is race-proof and enforced whatever writes
+    //     the row — but needs btree_gist, and its message is unreadable;
+    //   * the BEFORE trigger names the dates that clash, which is what an
+    //     operator needs, and still enforces the rule on a database where the
+    //     extension cannot be installed.
+    //
+    // Existing data cannot violate this: the old index already allowed at most
+    // one live line per unit, so there is nothing to overlap with.
+    // --------------------------------------------------------
+    runner.registerMigration({820, "rental_line_booking_overlap", R"SQL(
+        DO $mig$
+        BEGIN
+            -- Best effort. A role without CREATE privilege on the database
+            -- falls through to the trigger, which needs no extension.
+            BEGIN
+                CREATE EXTENSION IF NOT EXISTS btree_gist;
+            EXCEPTION WHEN OTHERS THEN
+                RAISE NOTICE 'btree_gist unavailable; the overlap guard will be trigger-only';
+            END;
+
+            IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'btree_gist')
+               AND NOT EXISTS (SELECT 1 FROM pg_constraint
+                                WHERE conname = 'rental_cl_unit_no_overlap') THEN
+                EXECUTE $ddl$
+                    ALTER TABLE rental_contract_line
+                      ADD CONSTRAINT rental_cl_unit_no_overlap
+                      EXCLUDE USING gist (
+                          unit_id WITH =,
+                          daterange(date_start,
+                                    COALESCE(date_end, 'infinity'::date), '[]') WITH &&)
+                      WHERE (state IN ('pending','active') AND unit_id IS NOT NULL)
+                $ddl$;
+            END IF;
+        END $mig$;
+
+        -- The readable half of the guard. Fires first, so an operator sees
+        -- which dates clash rather than a constraint name.
+        CREATE OR REPLACE FUNCTION rental_line_check_overlap() RETURNS trigger AS $fn$
+        DECLARE clash RECORD;
+        BEGIN
+            IF NEW.unit_id IS NULL OR NEW.state NOT IN ('pending','active') THEN
+                RETURN NEW;
+            END IF;
+            SELECT l.date_start, l.date_end INTO clash
+              FROM rental_contract_line l
+             WHERE l.unit_id = NEW.unit_id
+               AND l.id IS DISTINCT FROM NEW.id
+               AND l.state IN ('pending','active')
+               AND daterange(l.date_start,
+                             COALESCE(l.date_end, 'infinity'::date), '[]')
+                && daterange(NEW.date_start,
+                             COALESCE(NEW.date_end, 'infinity'::date), '[]')
+             LIMIT 1;
+            IF FOUND THEN
+                RAISE EXCEPTION
+                    'This unit is already let from % to %',
+                    clash.date_start,
+                    COALESCE(clash.date_end::text, 'open-ended')
+                    USING ERRCODE = 'exclusion_violation';
+            END IF;
+            RETURN NEW;
+        END $fn$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS rental_line_overlap_trg ON rental_contract_line;
+        CREATE TRIGGER rental_line_overlap_trg
+            BEFORE INSERT OR UPDATE OF unit_id, date_start, date_end, state
+            ON rental_contract_line
+            FOR EACH ROW EXECUTE FUNCTION rental_line_check_overlap();
+
+        -- Only now is the old index redundant. Dropped by the name the
+        -- database reports, not a guessed one (docs/development/conventions).
+        DROP INDEX IF EXISTS rental_cl_unit_live_uniq;
+
+        -- The calendar's driving query: live lines for a unit over a window.
+        CREATE INDEX IF NOT EXISTS rental_cl_unit_period_idx
+            ON rental_contract_line (unit_id, date_start, date_end)
+            WHERE state IN ('pending','active');
+    )SQL"});
+
 }
 
 } // namespace cerp::modules::rental

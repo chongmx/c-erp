@@ -149,18 +149,67 @@ NEXTM=$(pg "SELECT count(*) FROM rental_invoice_link WHERE contract_line_id=$LIN
 
 echo
 echo "############ 6. the double-let guard ############"
-# A second live line on the same unit is what happens when two operators
-# let the same locker concurrently. The partial unique index makes it
-# impossible rather than unlikely.
+# A second live line covering the same days is what happens when two operators
+# let the same locker concurrently. It must be impossible, not unlikely.
+#
+# The MECHANISM changed in migration 820 and this test changed with it. It used
+# to be a partial UNIQUE index on (unit_id) for live lines — at most one, ever —
+# which also made a booking calendar impossible: two non-overlapping lets on one
+# unit is the whole point of one. It is now an overlap exclusion, which forbids
+# exactly the dangerous case and allows the useful one.
+#
+# So the assertions below are about the GUARANTEE, not the error text: the
+# overlapping row must not exist afterwards, whichever guard rejected it. The
+# old version grepped for "duplicate key", which is the unique index's wording
+# and nothing else's — a test that would fail on a change that made the rule
+# stricter.
 CON2=$(pg "INSERT INTO rental_contract (name,partner_id,state,date_start,company_id)
            VALUES ('RTEST/2',$PARTNER,'active',CURRENT_DATE,1) RETURNING id")
 ERR2=$(pgE "INSERT INTO rental_contract_line
               (contract_id,partner_id,unit_id,date_start,unit_price,state,company_id)
             VALUES ($CON2,$PARTNER,$UNIT,CURRENT_DATE,$((120*M)),'active',1)")
-echo "    second live line on unit $UNIT -> $(printf '%s' "$ERR2" | head -1)"
-printf '%s' "$ERR2" | grep -qi "duplicate key\|unique" \
-    && ok "a unit cannot be let twice concurrently" \
-    || no "the same unit was let twice — double-let is possible"
+echo "    overlapping live line on unit $UNIT -> $(printf '%s' "$ERR2" | head -1)"
+LIVE=$(pg "SELECT count(*) FROM rental_contract_line
+            WHERE unit_id=$UNIT AND state IN ('pending','active')")
+[ "$LIVE" = "1" ] && ok "a unit cannot be let twice over the same days" \
+                  || no "$LIVE live lines on one unit — double-let is possible"
+printf '%s' "$ERR2" | grep -qi "already let\|exclusion\|conflicting key\|duplicate key\|unique" \
+    && ok "and the refusal says why" \
+    || no "the insert was refused with an unrecognisable error: $ERR2"
+
+# The capability the change bought: two lets on ONE unit that do not overlap.
+# Impossible under the old index, and the reason the booking calendar exists.
+#
+# On its own unit, with BOUNDED dates. The line above is open-ended — it runs
+# to infinity, so it correctly blocks every later let, and asserting otherwise
+# against it would be asserting that "rent until termination" does not mean
+# what it says.
+UNIT2=$(pg "INSERT INTO rental_unit (code,name,state,company_id)
+            VALUES ('RTEST-A02','Probe unit 2','available',1) RETURNING id")
+SEQ1=$(pg "INSERT INTO rental_contract_line
+             (contract_id,partner_id,unit_id,date_start,date_end,unit_price,state,company_id)
+           VALUES ($CON2,$PARTNER,$UNIT2,CURRENT_DATE + 400, CURRENT_DATE + 410,
+                   $((120*M)),'pending',1) RETURNING id")
+[ -n "$SEQ1" ] && ok "a bounded future let is accepted" || no "a bounded future let was refused"
+SEQ2=$(pg "INSERT INTO rental_contract_line
+             (contract_id,partner_id,unit_id,date_start,date_end,unit_price,state,company_id)
+           VALUES ($CON2,$PARTNER,$UNIT2,CURRENT_DATE + 411, CURRENT_DATE + 420,
+                   $((120*M)),'pending',1) RETURNING id")
+[ -n "$SEQ2" ] && ok "and a SECOND let, starting the day the first ends, is allowed too" \
+              || no "a non-overlapping second let was refused — the guard is too broad"
+
+# The boundary itself: date_end is the LAST day of a let, so a booking starting
+# ON it is a same-day double-let and must be refused. One day either side of
+# this line is the difference between a clean handover and two tenants.
+ERR3=$(pgE "INSERT INTO rental_contract_line
+              (contract_id,partner_id,unit_id,date_start,date_end,unit_price,state,company_id)
+            VALUES ($CON2,$PARTNER,$UNIT2,CURRENT_DATE + 410, CURRENT_DATE + 415,
+                    $((120*M)),'pending',1)")
+printf '%s' "$ERR3" | grep -qi "already let\|exclusion\|conflicting key" \
+    && ok "but starting ON the previous let's end date is refused — date_end is inclusive" \
+    || no "a let starting on the previous one's end date was accepted"
+pg "DELETE FROM rental_contract_line WHERE unit_id=${UNIT2:-0}" >/dev/null
+pg "DELETE FROM rental_unit WHERE id=${UNIT2:-0}" >/dev/null
 
 # Once the first line ENDS the unit must become lettable again, or a
 # locker could never be re-let after its first tenant.
