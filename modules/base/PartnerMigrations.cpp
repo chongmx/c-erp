@@ -314,6 +314,120 @@ void registerPartnerMigrations(MigrationRunner& runner) {
         UPDATE res_partner SET commercial_company_name = res_partner_commercial_name_of(id);
     )SQL"});
 
+    // --------------------------------------------------------
+    // 15 — display_name (docs/130 §4)
+    //
+    // "Carol" is not enough to pick from a list. There are three Carols and
+    // the one that matters is the one at Big Carrots — so a person shows as
+    //
+    //     Carol, Big Carrots
+    //
+    // and an organisation shows as itself. That is one rule, and it has to
+    // hold in EVERY picker, list and report, so it is stored on the row rather
+    // than reassembled by each caller. Every previous attempt to format this
+    // client-side left some combobox showing the bare name, which is how you
+    // get a contract filed against the wrong Carol.
+    //
+    // Which company? commercial_company_name, already maintained by migration
+    // 14: the commercial parent's name when that is a company, else the row's
+    // own free-text company_name. So an imported contact that never had a
+    // company RECORD still reads "Carol, Big Carrots", and the rule does not
+    // fork on how the data arrived.
+    //
+    // The suffix is dropped when it would repeat the name — a company whose
+    // contact carries the same name reads "Big Carrots", not
+    // "Big Carrots, Big Carrots".
+    //
+    // TRIGGER ORDERING. This deliberately does NOT read
+    // NEW.commercial_company_name. Same-timing triggers fire in NAME order and
+    // res_partner_commercial_name_trg ('c') does sort before
+    // res_partner_display_name_trg ('d'), so the value WOULD be populated —
+    // but that is a property of two names, not a guarantee, and migration 14
+    // was written to fix exactly this class of bug. The chain is resolved
+    // independently instead, mirroring res_partner_set_commercial_name().
+    // --------------------------------------------------------
+    runner.registerMigration({15, "res_partner_display_name", R"SQL(
+        ALTER TABLE res_partner ADD COLUMN IF NOT EXISTS display_name VARCHAR;
+
+        -- The one rule, in one place: name, or "name, company".
+        CREATE OR REPLACE FUNCTION res_partner_display_name_join(
+                                       p_name VARCHAR, p_company VARCHAR)
+        RETURNS VARCHAR AS $fn$
+        BEGIN
+            IF p_company IS NULL OR btrim(p_company) = '' THEN
+                RETURN p_name;
+            END IF;
+            IF btrim(p_company) = btrim(COALESCE(p_name, '')) THEN
+                RETURN p_name;
+            END IF;
+            RETURN COALESCE(p_name, '') || ', ' || btrim(p_company);
+        END $fn$ LANGUAGE plpgsql IMMUTABLE;
+
+        -- Used by the backfill and the cascade, which both address a row that
+        -- already exists and so can read its stored commercial_company_name.
+        CREATE OR REPLACE FUNCTION res_partner_display_name_of(p_id INTEGER)
+        RETURNS VARCHAR AS $fn$
+        DECLARE nm VARCHAR; isc BOOLEAN; cn VARCHAR;
+        BEGIN
+            SELECT name, is_company, commercial_company_name
+              INTO nm, isc, cn
+              FROM res_partner WHERE id = p_id;
+            IF isc THEN RETURN nm; END IF;
+            RETURN res_partner_display_name_join(nm, cn);
+        END $fn$ LANGUAGE plpgsql;
+
+        CREATE OR REPLACE FUNCTION res_partner_set_display_name() RETURNS trigger AS $fn$
+        DECLARE cp INTEGER; nm VARCHAR; isc BOOLEAN; co VARCHAR;
+        BEGIN
+            IF NEW.is_company THEN
+                NEW.display_name := NEW.name;
+                RETURN NEW;
+            END IF;
+            IF NEW.parent_id IS NULL THEN
+                co := NEW.company_name;
+            ELSE
+                cp := res_partner_commercial_of(NEW.parent_id);
+                SELECT name, is_company INTO nm, isc FROM res_partner WHERE id = cp;
+                co := CASE WHEN isc THEN nm ELSE NEW.company_name END;
+            END IF;
+            NEW.display_name := res_partner_display_name_join(NEW.name, co);
+            RETURN NEW;
+        END $fn$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS res_partner_display_name_trg ON res_partner;
+        CREATE TRIGGER res_partner_display_name_trg
+            BEFORE INSERT OR UPDATE ON res_partner
+            FOR EACH ROW EXECUTE FUNCTION res_partner_set_display_name();
+
+        -- Renaming Big Carrots must reach every Carol beneath it.
+        CREATE OR REPLACE FUNCTION res_partner_cascade_display_name() RETURNS trigger AS $fn$
+        BEGIN
+            IF NEW.name IS DISTINCT FROM OLD.name
+               OR NEW.is_company IS DISTINCT FROM OLD.is_company
+               OR NEW.commercial_partner_id IS DISTINCT FROM OLD.commercial_partner_id THEN
+                UPDATE res_partner c
+                   SET display_name = res_partner_display_name_of(c.id)
+                 WHERE c.commercial_partner_id = NEW.id
+                   AND c.id <> NEW.id
+                   AND c.display_name IS DISTINCT FROM res_partner_display_name_of(c.id);
+            END IF;
+            RETURN NULL;
+        END $fn$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS res_partner_cascade_display_name_trg ON res_partner;
+        CREATE TRIGGER res_partner_cascade_display_name_trg
+            AFTER UPDATE ON res_partner
+            FOR EACH ROW EXECUTE FUNCTION res_partner_cascade_display_name();
+
+        UPDATE res_partner SET display_name = res_partner_display_name_of(id)
+         WHERE display_name IS DISTINCT FROM res_partner_display_name_of(id);
+
+        -- Pickers search this column with ilike; without an index that is a
+        -- sequential scan on every keystroke.
+        CREATE INDEX IF NOT EXISTS res_partner_display_name_lower_idx
+            ON res_partner (lower(display_name) varchar_pattern_ops);
+    )SQL"});
+
 }
 
 } // namespace cerp::modules::base

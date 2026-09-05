@@ -1747,7 +1747,8 @@ private:
         const int off = call.offset();
         auto conn = db_->acquire(); pqxx::work txn{conn.get()};
         std::string sql = R"(
-            SELECT a.id, a.name, a.code, a.partner_id, rp.name AS partner_name,
+            SELECT a.id, a.name, a.code, a.partner_id,
+                   COALESCE(rp.display_name, rp.name) AS partner_name,
                    COALESCE((SELECT SUM(amount) FROM account_analytic_line WHERE account_id=a.id),0) AS balance
             FROM account_analytic_account a
             LEFT JOIN res_partner rp ON rp.id = a.partner_id
@@ -1967,7 +1968,8 @@ private:
         auto conn = db_->acquire(); pqxx::work txn{conn.get()};
         std::string sql = R"(
             SELECT l.id, l.statement_id, l.date, l.name, l.payment_ref, l.amount,
-                   l.is_reconciled, l.partner_id, rp.name AS partner_name, l.reconciled_move_id
+                   l.is_reconciled, l.partner_id,
+                   COALESCE(rp.display_name, rp.name) AS partner_name, l.reconciled_move_id
             FROM account_bank_statement_line l LEFT JOIN res_partner rp ON rp.id = l.partner_id WHERE TRUE )";
         pqxx::params p; int pc = 0;
         if (stmtFilter > 0) { sql += " AND l.statement_id=$1"; p.append(stmtFilter); pc = 1; }

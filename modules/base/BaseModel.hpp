@@ -158,12 +158,77 @@ public:
             if (what.find("violates check constraint") != std::string::npos)
                 throw cerp::infrastructure::ValidationError(
                     "A value is out of the allowed range for this record.");
+            // A UNIQUE violation is the same class of thing: the user typed a
+            // value that is already taken. Left as a raw 500 it reached the
+            // screen as "An internal error occurred" — met while creating a
+            // rental unit whose code already existed, from a dialog that could
+            // then only be cancelled. The COLUMNS are named; the offending
+            // VALUES are not, because SEC-28 keeps database text out of the
+            // response and the user already knows what they typed.
+            if (what.find("violates unique constraint") != std::string::npos) {
+                const auto cols = uniqueKeyColumns_(what);
+                throw cerp::infrastructure::ValidationError(
+                    cols.empty()
+                        ? "Another record already uses this value."
+                        : "Another record already uses this " + cols + ".");
+            }
+            // 23P01 — an EXCLUDE constraint, or a trigger raising with that
+            // code. In this schema that means overlapping date ranges: a
+            // rental unit cannot be let to two tenants over the same days
+            // (migration 820). The message is generic because BaseModel does
+            // not know which resource it is; the screens that create these
+            // check for the clash first and name the dates. Left unmapped this
+            // reached the user as "An internal error occurred".
+            if (what.find("conflicting key value violates exclusion constraint")
+                    != std::string::npos ||
+                what.find("is already let") != std::string::npos) {
+                throw cerp::infrastructure::ValidationError(
+                    "Those dates overlap a period this is already booked for. "
+                    "Choose dates that do not overlap.");
+            }
             throw;   // anything else stays a gated internal error
         }
         auto row = res.one_row();
         txn.commit();
         id_ = row[0].as<int>();
         return id_;
+    }
+
+    /**
+     * The column list out of a Postgres unique-violation DETAIL line:
+     *
+     *     Key (code, company_id)=(A-101, 1) already exists.
+     *              ^^^^^^^^^^^^^^^
+     *
+     * Returns "code" — company_id is dropped because it is the tenant stamp
+     * (docs/094), not something the user chose, and naming it in "already uses
+     * this code and company_id" only confuses. Empty when the message has no
+     * DETAIL, which happens when the server locale or client_min_messages
+     * suppresses it; the caller then falls back to a generic sentence.
+     */
+    static std::string uniqueKeyColumns_(const std::string& msg) {
+        const auto a = msg.find("Key (");
+        if (a == std::string::npos) return {};
+        const auto b = msg.find(')', a + 5);
+        if (b == std::string::npos) return {};
+        const std::string raw = msg.substr(a + 5, b - (a + 5));
+        std::vector<std::string> keep;
+        std::size_t pos = 0;
+        while (pos <= raw.size()) {
+            auto comma = raw.find(',', pos);
+            if (comma == std::string::npos) comma = raw.size();
+            std::string col = raw.substr(pos, comma - pos);
+            while (!col.empty() && col.front() == ' ') col.erase(col.begin());
+            while (!col.empty() && col.back()  == ' ') col.pop_back();
+            if (!col.empty() && col != "company_id") keep.push_back(col);
+            pos = comma + 1;
+        }
+        std::string out;
+        for (std::size_t i = 0; i < keep.size(); ++i) {
+            if (i) out += (i + 1 == keep.size()) ? " and " : ", ";
+            out += keep[i];
+        }
+        return out;
     }
 
     // Extract the column from a Postgres "null value in column \"x\" ... violates
@@ -667,8 +732,13 @@ private:
         for (char c : model) table += (c == '.') ? '_' : c;
         try {
             // Pick the first label-ish column this table actually has.
+            // display_name first: where a table has one it is the label the
+            // rest of the UI shows, and a group header reading "Carol" while
+            // every picker reads "Carol, Big Carrots" is the same record
+            // wearing two names. Only res_partner has the column today, so
+            // nothing else changes.
             static const std::vector<std::string> kCandidates =
-                {"name", "complete_name", "display_name", "code", "login"};
+                {"display_name", "name", "complete_name", "code", "login"};
             std::string labelCol;
             for (const auto& c : kCandidates) {
                 auto r = txn.exec(
@@ -1104,4 +1174,4 @@ private:
     }
 };
 
-} // namespace cerp::core
+} // namespace cerp::core

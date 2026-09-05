@@ -1148,7 +1148,7 @@ private:
         auto conn = db_->acquire(); pqxx::work txn{conn.get()};
         std::string sql = R"(
             SELECT s.id, s.product_id, pp.name AS product_name_,
-                   s.partner_id, rp.name AS partner_name,
+                   s.partner_id, COALESCE(rp.display_name, rp.name) AS partner_name,
                    s.product_name, s.product_code, s.min_qty, s.price, s.delay, s.sequence
             FROM product_supplierinfo s
             LEFT JOIN product_product pp ON pp.id = s.product_id
@@ -2009,7 +2009,8 @@ private:
                 prodFilter = c[2].get<int>(); }
         auto conn = db_->acquire(); pqxx::work txn{conn.get()};
         std::string sql = R"(
-            SELECT m.id, m.product_id, m.manufacturer_id, rp.name AS manufacturer_name,
+            SELECT m.id, m.product_id, m.manufacturer_id,
+                   COALESCE(rp.display_name, rp.name) AS manufacturer_name,
                    m.part_number, m.notes
             FROM part_manufacturer_info m LEFT JOIN res_partner rp ON rp.id = m.manufacturer_id )";
         pqxx::params p;

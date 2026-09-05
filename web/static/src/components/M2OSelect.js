@@ -40,6 +40,24 @@
  *   onSelect receives (id, displayName). id is 0 when cleared.
  */
 
+/**
+ * Models that carry a STORED `display_name` column.
+ *
+ * res.partner's is "Carol, Big Carrots" — the person and the company they work
+ * for — because "Carol" alone does not identify anyone in a customer list, and
+ * picking the wrong Carol files a contract against the wrong company.
+ *
+ * This is a list rather than "just always ask for display_name" because the two
+ * uses of the name are not equally forgiving. Reading it is harmless — the
+ * server drops unregistered columns from a SELECT — but FILTERING on it is not:
+ * a domain naming a column the model has not registered is rejected outright
+ * (S-49), so a blanket `display_name ilike` would break the picker on every
+ * other model in the app.
+ *
+ * Add a model here when it gains a stored display_name, not before.
+ */
+const M2O_DISPLAY_NAME_MODELS = ['res.partner'];
+
 const M2O_PAGE     = 20;   // rows in the inline dropdown
 const M2O_MODAL    = 50;   // rows per page in the browse dialog
 const M2O_DEBOUNCE = 250;  // ms before a keystroke becomes a query
@@ -171,8 +189,13 @@ class M2OSelect extends owl.Component {
         if (!id) { this.state.text = ''; return; }
         // A [id, name] pair from `read` already carries the label, but only the
         // bare name — re-read when this field formats its own label, so the
-        // selected row reads the same as the rows in the dropdown.
-        if (display && typeof p.format !== 'function') { this.state.text = display; return; }
+        // selected row reads the same as the rows in the dropdown. Same for a
+        // model with a stored display_name: a pair built elsewhere may carry
+        // "Carol" while every row in the dropdown reads "Carol, Big Carrots",
+        // and a field that disagrees with its own list looks like a wrong value.
+        if (display && typeof p.format !== 'function' && !this.hasDisplayName) {
+            this.state.text = display; return;
+        }
         try {
             const recs = await RpcService.call(p.model, 'read', [[id], this.readFields()], {});
             const rec = Array.isArray(recs) ? recs[0] : null;
@@ -203,7 +226,11 @@ class M2OSelect extends owl.Component {
         const t = (term || '').trim();
         if (!t) return dom;
         const extra = Array.isArray(this.props.searchFields) ? this.props.searchFields : [];
-        const cols = ['name', ...extra.filter(c => c !== 'name')];
+        // Where the label is stored, search it too: typing "Big Carrots" should
+        // find the people who work there, not just the company itself.
+        const cols = ['name'];
+        if (this.hasDisplayName) cols.push('display_name');
+        for (const c of extra) if (!cols.includes(c)) cols.push(c);
         // Prefix notation: N-1 ORs in front of N leaves.
         for (let i = 0; i < cols.length - 1; i++) dom.push('|');
         for (const c of cols) dom.push([c, 'ilike', t]);
@@ -221,15 +248,33 @@ class M2OSelect extends owl.Component {
      */
     readFields() {
         const extra = Array.isArray(this.props.fields) ? this.props.fields : [];
-        return ['id', 'name', ...extra.filter(f => f !== 'id' && f !== 'name')];
+        const base  = ['id', 'name'];
+        if (this.hasDisplayName) base.push('display_name');
+        return [...base, ...extra.filter(f => !base.includes(f))];
     }
 
+    /** Does this model store the composed label? See M2O_DISPLAY_NAME_MODELS. */
+    get hasDisplayName() {
+        return M2O_DISPLAY_NAME_MODELS.includes(this.props.model);
+    }
+
+    /**
+     * One record, one line of text.
+     *
+     * An explicit `format` still wins — a caller that wants "A-101 — Unit A1"
+     * asked for it. Otherwise the model's own stored display_name is preferred
+     * over the bare name, which is what turns every partner picker in the app
+     * into "Carol, Big Carrots" without touching a single call site. There are
+     * more than forty of them and several render a model chosen at runtime
+     * (`model="f.relation"` on the generic form), so per-site formatting could
+     * never have covered them all.
+     */
     label(rec) {
         if (typeof this.props.format === 'function') {
             const s = this.props.format(rec);
             if (s) return String(s);
         }
-        return rec.name || `#${rec.id}`;
+        return rec.display_name || rec.name || `#${rec.id}`;
     }
 
     async fetch(term, offset, limit) {

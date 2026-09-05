@@ -1426,7 +1426,7 @@ static nlohmann::json financialReport_(pqxx::work& txn,
         out["subtitle"] = "As at " + ymdToDisplay(dateTo);
         out["columns"]  = cols({"Partner", "Not due", "1-30", "31-60", "61-90", "90+", "Total"});
         auto r = txn.exec(
-            "SELECT COALESCE(p.name,'(no partner)') partner, m.amount_residual amt, "
+            "SELECT COALESCE(p.display_name,p.name,'(no partner)') partner, m.amount_residual amt, "
             "GREATEST(0, ($1::date - COALESCE(m.due_date, m.invoice_date))) AS age "
             "FROM " + AM + " m LEFT JOIN res_partner p ON p.id=m.partner_id "
             "WHERE m.move_type='out_invoice' AND m.state='posted' AND m.amount_residual>0 "
@@ -1512,7 +1512,7 @@ static nlohmann::json financialReport_(pqxx::work& txn,
         out["subtitle"] = "As at " + ymdToDisplay(dateTo);
         out["columns"]  = cols({"Vendor", "Not due", "1-30", "31-60", "61-90", "90+", "Total"});
         auto r = txn.exec(
-            "SELECT COALESCE(p.name,'(no vendor)') partner, m.amount_residual amt, "
+            "SELECT COALESCE(p.display_name,p.name,'(no vendor)') partner, m.amount_residual amt, "
             "GREATEST(0, ($1::date - COALESCE(m.due_date, m.invoice_date))) AS age "
             "FROM " + AM + " m LEFT JOIN res_partner p ON p.id=m.partner_id "
             "WHERE m.move_type='in_invoice' AND m.state='posted' AND m.amount_residual>0 "
@@ -1543,12 +1543,15 @@ static nlohmann::json financialReport_(pqxx::work& txn,
         out["subtitle"] = ymdToDisplay(dateFrom) + " — " + ymdToDisplay(dateTo);
         out["columns"]  = cols({"Date / Entry", "Debit", "Credit", "Balance"});
         auto partners = txn.exec(
-            "SELECT DISTINCT p.id, p.name FROM res_partner p "
+            "SELECT DISTINCT p.id, COALESCE(p.display_name, p.name) AS name FROM res_partner p "
             "JOIN " + AML + " l ON l.partner_id=p.id "
             "JOIN " + AM + " m ON m.id=l.move_id AND m.state='posted' AND l.date<=$1 "
             "JOIN account_account a ON a.id=l.account_id "
             "WHERE a.account_type IN ('asset_receivable','liability_payable') "
-            "ORDER BY p.name", pqxx::params{dateTo});
+            // ORDER BY the OUTPUT column, by position: with SELECT DISTINCT,
+            // PostgreSQL rejects an ORDER BY expression that is not in the
+            // select list, and the list now holds the COALESCE, not p.name.
+            "ORDER BY 2", pqxx::params{dateTo});
         for (const auto& p : partners) {
             const int pid = p["id"].as<int>();
             long long opening = txn.exec(
@@ -1621,13 +1624,14 @@ static nlohmann::json financialReport_(pqxx::work& txn,
         out["subtitle"] = ymdToDisplay(dateFrom) + " — " + ymdToDisplay(dateTo);
         out["columns"]  = cols({"Customer", "Invoices", "Untaxed", "Tax", "Total", "Outstanding"});
         auto r = txn.exec(
-            "SELECT COALESCE(p.name,'(no customer)') partner, COUNT(*) n, "
+            "SELECT COALESCE(p.display_name,p.name,'(no customer)') partner, COUNT(*) n, "
             "COALESCE(SUM(m.amount_untaxed),0) u, COALESCE(SUM(m.amount_tax),0) t, "
             "COALESCE(SUM(m.amount_total),0) g, COALESCE(SUM(m.amount_residual),0) res "
             "FROM " + AM + " m LEFT JOIN res_partner p ON p.id=m.partner_id "
             "WHERE m.move_type IN ('out_invoice','out_refund') AND m.state='posted' "
             "AND m.date BETWEEN $1 AND $2 "
-            "GROUP BY p.name ORDER BY SUM(m.amount_total) DESC",
+            "GROUP BY COALESCE(p.display_name,p.name,'(no customer)') "
+            "ORDER BY SUM(m.amount_total) DESC",
             pqxx::params{dateFrom, dateTo});
         long long n = 0, u = 0, t = 0, g = 0, res = 0;
         for (const auto& x : r) {

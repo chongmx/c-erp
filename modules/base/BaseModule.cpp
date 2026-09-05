@@ -274,6 +274,9 @@ public:
     int         commercialPartnerId = 0;  // docs/130: the company at the top of the chain
     std::string street2;
     std::string commercialCompanyName;   // docs/130: what the list shows
+    // docs/130 §4. "Carol, Big Carrots" for a person at a company, the
+    // bare name for a company. Trigger-maintained; never written from here.
+    std::string displayName;
     std::string addrType    = "contact";  // contact | invoice | delivery | other
     int         countryId    = 0;
     int         stateId      = 0;
@@ -319,6 +322,13 @@ public:
         // commercial partner's name when that is a company, else the free-text
         // company_name. Trigger-maintained; never written by a client.
         fieldRegistry_.add({"commercial_company_name", core::FieldType::Char, "Company"});
+        // docs/130 §4. The label every picker, list and lookup shows for a
+        // partner: "Carol, Big Carrots" for a person at a company, "Big
+        // Carrots" for the company itself. Stored and registered — stored so
+        // a picker can ORDER and `ilike` on it, registered so search_read
+        // will actually return it (rowsToJson_ projects COLUMNS, so a value
+        // that exists only in serializeFields never reaches a client).
+        fieldRegistry_.add({"display_name", core::FieldType::Char, "Display Name"});
         fieldRegistry_.add({"type",    core::FieldType::Char, "Address Type"});
         fieldRegistry_.add({"street2", core::FieldType::Char, "Street 2"});
         fieldRegistry_.add({"country_id", core::FieldType::Many2one,"Country",
@@ -363,6 +373,9 @@ public:
                              : nlohmann::json(false);
         j["commercial_company_name"] = commercialCompanyName.empty()
                              ? nlohmann::json(false) : nlohmann::json(commercialCompanyName);
+        // Falls back to the bare name so a row written before migration 15
+        // backfilled — or by a test that bypassed the trigger — still labels.
+        j["display_name"] = displayName.empty() ? name : displayName;
         j["type"]          = addrType.empty() ? nlohmann::json("contact") : nlohmann::json(addrType);
         j["street2"]       = street2.empty() ? nlohmann::json(false) : nlohmann::json(street2);
         j["company_id"]    = companyId > 0
@@ -407,9 +420,11 @@ public:
         if (j.contains("parent_id"))   parentId   = m2o(j["parent_id"]);
         if (j.contains("street2"))     street2    = str(j["street2"]);
         if (j.contains("type"))        addrType   = str(j["type"]);
-        // commercial_partner_id is intentionally NOT deserialised: the database
-        // owns it. Accepting it from a client would let the caller claim any
-        // customer's revenue belongs to them.
+        // commercial_partner_id, commercial_company_name and display_name are
+        // intentionally NOT deserialised: the database owns them. Accepting
+        // commercial_partner_id from a client would let the caller claim any
+        // customer's revenue belongs to them; accepting display_name would let
+        // a contact present itself under a company it does not belong to.
         if (j.contains("company_id"))  companyId  = m2o(j["company_id"]);
         if (j.contains("country_id"))  countryId  = m2o(j["country_id"]);
         if (j.contains("state_id"))    stateId    = m2o(j["state_id"]);

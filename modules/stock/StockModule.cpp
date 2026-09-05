@@ -466,7 +466,7 @@ private:
                    sp.location_dest_id,
                    COALESCE(sl_dst.complete_name, sl_dst.name) AS location_dest_name,
                    sp.partner_id,
-                   rp.name AS partner_name,
+                   COALESCE(rp.display_name, rp.name) AS partner_name,
                    sp.purchase_id,
                    sp.sale_id
             FROM stock_picking sp
@@ -2448,7 +2448,7 @@ private:
         std::string sql = R"(
             SELECT o.id, o.product_id, pp.name AS product_name, o.location_id,
                    o.product_min_qty, o.product_max_qty, o.qty_multiple, o.route,
-                   o.supplier_id, rp.name AS supplier_name,
+                   o.supplier_id, COALESCE(rp.display_name, rp.name) AS supplier_name,
                    COALESCE(pp.qty_available,0) AS on_hand
             FROM stock_warehouse_orderpoint o
             LEFT JOIN product_product pp ON pp.id = o.product_id
