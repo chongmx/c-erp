@@ -124,8 +124,19 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     box-shadow: 0 14px 48px rgba(0, 0, 0, .55);
-    overflow: hidden;
+    /* NOT `overflow: hidden`.
+       This card is the shell for every dialog in the app, not just the browse
+       list — "New unit", "Delete contact", and any other that holds a form.
+       Several of those contain an M2OSelect, and clipping here cut its dropdown
+       off at the card's edge: the New-unit dialog showed two of seven unit
+       types and no way to reach the rest.
+       The browse dialog still scrolls internally — that overflow lives on
+       .m2o-modal-list — and the corners are rounded on the head and foot,
+       which is what the clip was for. */
+    overflow: visible;
 }
+.m2o-modal-head { border-radius: 6px 6px 0 0; }
+.m2o-modal-foot { border-radius: 0 0 6px 6px; }
 
 .m2o-modal-head {
     display: flex;

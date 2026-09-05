@@ -606,9 +606,20 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 6px;
-    overflow: hidden;
+    /* NOT `overflow: hidden`.
+       It was here to make border-radius clip the header background, and it
+       also clipped away every m2o dropdown opened inside the table — the list
+       rendered, with real rows and a real height, and the user saw an empty
+       box. That is the whole of "the unit picker never works": a line is the
+       LAST row, so its dropdown opens past the table edge and is cut off
+       entirely. `.o2m-table td { overflow: visible }` in m2oselect.css does
+       not help, because the clip is on the TABLE, not the cell.
+       The corners are rounded on the header cells instead. */
+    overflow: visible;
     table-layout: auto;
 }
+.o2m-table thead tr:first-child th:first-child { border-top-left-radius: 6px; }
+.o2m-table thead tr:first-child th:last-child  { border-top-right-radius: 6px; }
 .o2m-table th {
     text-align: left;
     padding: 7px 10px;
