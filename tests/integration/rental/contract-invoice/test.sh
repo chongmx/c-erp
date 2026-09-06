@@ -161,4 +161,50 @@ OUT=$(call rental.contract action_create_invoice "[[$CD]]")
 t_contains "$OUT" '"invoices":0' "a period 400 days out is not invoiced now"
 t_contains "$OUT" "Nothing is due" "and the reply explains that"
 
+# -------------------------------------------------------------------------
+sec "7. a MANUAL line — the default, and the one that mattered"
+# -------------------------------------------------------------------------
+# billing_mode DEFAULTs to 'manual', so a line gets it whenever nobody chose.
+# The cron needs 'recurring', and the first cut of this action allowed
+# recurring/oneoff/ondemand — so a manual line was billable by NOTHING.
+#
+# Found on the live database: every contract line on it was 'manual', the
+# contract was active and due, and the button answered "nothing is due". The
+# gate breakdown showed state_ok=t, date_gate_ok=t, not_ended=t, mode_ok=f.
+# "Manual" means invoiced by hand, and this button is the hand.
+CE=$(call rental.contract create      "[{\"name\":\"${PFX}-E\",\"partner_id\":$PA,\"state\":\"active\",
+        \"date_start\":\"$TODAY\",\"billing_period\":\"monthly\"}]" | rid)
+U5=$(call rental.unit create "[{\"code\":\"${PFX}-U5\",\"name\":\"${PFX} Five\"}]" | rid)
+# No billing_mode given: it takes the column default, exactly as the real one did.
+# Starting a month ago, so there are genuinely TWO periods to bill and the
+# test never has to reach into the table to manufacture one.
+pg "INSERT INTO rental_contract_line
+      (contract_id, unit_id, partner_id, date_start, unit_price, state, company_id)
+    VALUES ($CE, $U5, $PA, CURRENT_DATE - INTERVAL '1 month', 300000000, 'active', 1)" >/dev/null
+t_eq "manual" "$(pg "SELECT billing_mode FROM rental_contract_line WHERE contract_id=${CE:-0}")"      "the line defaulted to billing_mode = manual"
+t_eq "" "$(pg "SELECT COALESCE(next_period_start::text,'') FROM rental_contract_line WHERE contract_id=${CE:-0}")"      "and has no next_period_start — only recurring lines get one"
+
+OUT=$(call rental.contract action_create_invoice "[[$CE]]")
+t_contains "$OUT" '"invoices":1' "a manual line CAN be invoiced from the contract"
+
+# -------------------------------------------------------------------------
+sec "8. …and again next month, not once ever"
+# -------------------------------------------------------------------------
+# The period has to move on. rental_next_period(NULL, …) is NULL, so without
+# seeding from date_start a manual monthly contract could be invoiced exactly
+# once in its life — and the second press would say "already invoiced" for a
+# month that had never been billed.
+NPS=$(pg "SELECT COALESCE(next_period_start::text,'') FROM rental_contract_line WHERE contract_id=${CE:-0}")
+t_ne "$NPS" "" "invoicing it set a next period"
+t_eq "1" "$(pg "SELECT count(*) FROM rental_contract_line
+                 WHERE contract_id=${CE:-0} AND next_period_start > date_start")"      "and moved it PAST the period just billed"
+
+# The line began a month ago, so a SECOND period is already due. Pressing
+# again bills it — which is what "monthly, invoiced by hand" has to mean.
+OUT=$(call rental.contract action_create_invoice "[[$CE]]")
+t_contains "$OUT" '"invoices":1' "the next period invoices too"
+t_eq "2" "$(pg "SELECT count(*) FROM rental_invoice_link WHERE contract_id=${CE:-0}")"      "two invoices for two periods — a monthly contract billed by hand"
+t_eq "2" "$(pg "SELECT count(DISTINCT period_start) FROM rental_invoice_link
+                 WHERE contract_id=${CE:-0}")"      "and they are for DIFFERENT periods, not the same one twice"
+
 verdict

@@ -53,6 +53,7 @@ plan.md
 &1
 backups/
 build-native/
+build-docker/
 
 # log files
 log/

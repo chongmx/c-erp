@@ -123,8 +123,12 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
         // contract is a person saying "bill this now", which is the only thing
         // that may reach a oneoff or on-demand line — see RentalBilling.hpp.
         if (contractId > 0) {
-            sql += "   AND l.contract_id = $2 "
-                   "   AND l.billing_mode IN ('recurring','oneoff','ondemand') ";
+            // Every billing mode, including 'manual' — which is the column
+            // DEFAULT, so it is what a line gets when nobody chose. "Manual"
+            // means "invoiced by hand", and this button IS the hand; excluding
+            // it left those lines billable by nothing at all, which is what a
+            // real contract hit: monthly, active, due, and "nothing is due".
+            sql += "   AND l.contract_id = $2 ";
         } else {
             sql += "   AND l.billing_mode = 'recurring' "
                    "   AND l.next_period_start IS NOT NULL "
@@ -367,7 +371,20 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
                     // The 4-argument form advances by (interval, unit) so a
                     // weekly or daily tenancy moves by the right amount; the
                     // 3-argument form it replaces could only step whole months.
-                    "   SET next_period_start = rental_next_period(next_period_start, $2, $3, $4), "
+                    // COALESCE, because only a recurring line HAS a
+                    // next_period_start (migration 819 sets it for those
+                    // alone). Without it rental_next_period(NULL, …) is NULL,
+                    // the period never moves, and a monthly contract billed by
+                    // hand could be invoiced exactly once, ever.
+                    //
+                    // A one-off is the exception and keeps its NULL: it is
+                    // billed once by definition, and UNIQUE (contract_line_id,
+                    // period_start) is what refuses the second attempt.
+                    "   SET next_period_start = CASE WHEN billing_mode = 'oneoff' "
+                    "                                THEN next_period_start "
+                    "                                ELSE rental_next_period( "
+                    "                                       COALESCE(next_period_start, date_start), "
+                    "                                       $2, $3, $4) END, "
                     "       invoiced_through  = $5::date, "
                     "       write_date = now() "
                     " WHERE id = $1",

@@ -201,7 +201,13 @@ try {
     await pause(400);
     await setLineField('date_start', today);
     await setLineField('unit_price', '300');
-    await setLineField('billing_mode', 'recurring');
+    // MANUAL, for two reasons. It is what every line on the live database
+    // actually is — billing_mode DEFAULTs to it — and it is the case that was
+    // broken. It also takes the billing CRON out of the picture: a recurring
+    // line is fair game for the scheduled run, which billed this contract
+    // mid-test and left the button correctly reporting "nothing is due",
+    // failing the test for a reason that had nothing to do with the button.
+    await setLineField('billing_mode', 'manual');
     await setLineField('state', 'active');
     await pause(300);
     await page.evaluate(() => {
