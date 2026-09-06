@@ -142,7 +142,7 @@ class LoginPage extends owl.Component {
     onLoginInput(ev) {
         this.state.login = ev.target.value;
         clearTimeout(this._resolveTimer);
-        this._resolveTimer = setTimeout(() => this.resolveCompanies(), 450);
+        this._resolveTimer = setTimeout(() => this.resolveCompanies(), 200);
     }
 
     async resolveCompanies() {

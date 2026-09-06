@@ -60,7 +60,7 @@ const M2O_DISPLAY_NAME_MODELS = ['res.partner'];
 
 const M2O_PAGE     = 20;   // rows in the inline dropdown
 const M2O_MODAL    = 50;   // rows per page in the browse dialog
-const M2O_DEBOUNCE = 250;  // ms before a keystroke becomes a query
+const M2O_DEBOUNCE = 150;  // ms before a keystroke becomes a query
 
 class M2OSelect extends owl.Component {
     static template = owl.xml`
