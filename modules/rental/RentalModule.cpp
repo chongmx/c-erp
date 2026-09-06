@@ -921,9 +921,44 @@ public:
         : GenericViewModel<RentalContract>(std::move(db))
     {
         REGISTER_MUTATOR("action_create_invoice", handleCreateInvoice)
+        REGISTER_METHOD("action_view_invoices",   handleViewInvoices)
     }
 
 private:
+    /**
+     * What the "Invoices" smart button on the contract form reads, and where
+     * it jumps to.
+     *
+     * The count is a join through rental_invoice_link — the contract does not
+     * carry its invoices, the link table does — so no domain the browser could
+     * send would express it. That is the whole reason this is a server method
+     * rather than a search_count in the client.
+     *
+     * Newest first: on a contract that has been running two years, the invoice
+     * anyone is looking for is almost always the latest one.
+     */
+    nlohmann::json handleViewInvoices(const CallKwArgs& call) {
+        const auto ids = call.ids();
+        if (ids.empty()) return {{"count", 0}, {"ids", nlohmann::json::array()},
+                                 {"res_model", "account.move"}};
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        auto rows = txn.exec(
+            "SELECT DISTINCT l.move_id, m.invoice_date, m.id "
+            "  FROM rental_invoice_link l "
+            "  JOIN account_move m ON m.id = l.move_id "
+            " WHERE l.contract_id = $1 "
+            " ORDER BY m.invoice_date DESC NULLS LAST, m.id DESC",
+            pqxx::params{ids[0]});
+        nlohmann::json moveIds = nlohmann::json::array();
+        for (const auto& r : rows) moveIds.push_back(r["move_id"].as<int>(0));
+        return {
+            {"count",     static_cast<long long>(moveIds.size())},
+            {"ids",       moveIds},
+            {"res_model", "account.move"},
+        };
+    }
+
     nlohmann::json handleCreateInvoice(const CallKwArgs& call) {
         const auto ids = call.ids();
         if (ids.empty())

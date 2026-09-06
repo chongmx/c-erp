@@ -116,6 +116,22 @@ are different answers and only the server can tell them apart. Keep `show`
 strict: a button that appears when it cannot work teaches people to distrust
 the ones that can.
 
+`FORM_SMART_BUTTONS` gives it the **counters** a sales order has in its
+top-right — "4 Invoices", and a click that goes there. Each names a model
+method returning `{ count, ids, res_model }`, because the count is usually the
+server's to compute: "the invoices for this contract" is a join through
+`rental_invoice_link`, which no domain the browser could send would express.
+
+The **stage bar** needs no configuration at all. It reads the status field's
+own `selection` — which `get_views` backfills from the field registry — so any
+model whose `state` is a `FieldType::Selection` gets a stepper for free.
+Terminal values (`cancel`, `cancelled`, `closed`) appear only once the record
+is in them, since they are not steps on the way anywhere.
+
+All three reuse the sales order's own classes — `.so-statusbar`, `.so-stepper`,
+`.so-stat-btns` — rather than a lookalike that drifts the first time one of
+them is restyled.
+
 `CONDITIONAL_FIELDS` near the top of `app.js` hides a field for some values of
 another — the whole of this form's `attrs` support, currently one entry:
 rental contracts show "Every X" and its unit only when the billing period is

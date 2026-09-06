@@ -257,6 +257,29 @@ try {
     if (await page.$('[data-action="action_create_invoice"]'))
         ok('the contract form offers "Create Invoice", like a sales order');
     else { no('there is no Create Invoice button on the contract'); throw new Error('no button'); }
+
+    // The same furniture a sales order has, from the same CSS: a stepper of
+    // stages and a smart-button counter, not a lookalike rebuilt per model.
+    const chrome = await page.evaluate(() => ({
+        stages: [...document.querySelectorAll('.so-statusbar .so-step')]
+                    .map(s => ({ label: s.textContent.trim(),
+                                 active: s.className.includes('active') })),
+        smart:  [...document.querySelectorAll('[data-smart]')]
+                    .map(b => ({ key: b.dataset.smart,
+                                 num: (b.querySelector('.so-stat-num') || {}).textContent,
+                                 lbl: (b.querySelector('.so-stat-lbl') || {}).textContent })),
+    }));
+    if (chrome.stages.length) ok(`the contract shows its stages: ${chrome.stages.map(s => s.label).join(' → ')}`);
+    else no('the contract form has no stage bar');
+    const active = chrome.stages.find(s => s.active);
+    if (active && /active/i.test(active.label)) ok(`and highlights the current one ("${active.label}")`);
+    else no(`the highlighted stage is ${JSON.stringify(active)}`);
+
+    const inv = chrome.smart.find(b => b.key === 'invoices');
+    if (inv) ok(`an Invoices smart button is present, reading ${inv.num}`);
+    else no(`no Invoices smart button — found ${JSON.stringify(chrome.smart)}`);
+    if (inv && inv.num.trim() === '0') ok('and it reads 0 before anything is invoiced');
+    else no(`it reads "${inv && inv.num}" before any invoice exists`);
     await page.screenshot({ path: `${SHOTDIR}/1-contract-form.png` });
 
     // ---- 4. press it ------------------------------------------------------
@@ -264,6 +287,15 @@ try {
     if (msg === null) { no('the button could not be pressed'); throw new Error('press'); }
     if (/invoice created/i.test(msg)) ok(`pressing it reports: "${msg}"`);
     else no(`the first press reported "${msg}"`);
+
+    // The counter has to MOVE. A smart button that shows a stale zero is worse
+    // than none: it says the invoice was not created when it was.
+    const after = await page.evaluate(() => {
+        const b = document.querySelector('[data-smart="invoices"] .so-stat-num');
+        return b ? b.textContent.trim() : null;
+    });
+    if (after === '1') ok('the Invoices counter moved to 1');
+    else no(`the Invoices counter reads "${after}" after invoicing`);
     await page.screenshot({ path: `${SHOTDIR}/2-invoiced.png` });
 
     // ---- 5. press it again ------------------------------------------------

@@ -305,6 +305,25 @@ const CONDITIONAL_FIELDS = {
  *   show     record -> boolean. Keep it strict: a button that appears when it
  *            cannot work teaches people to distrust the ones that can.
  */
+/**
+ * Smart buttons — the counters in a form's top-right that jump to the records
+ * this one produced, as sale.order has for Delivery and Invoices.
+ *
+ * A contract that has raised four invoices should say so and take you to them;
+ * before this you had to know the customer's name and go and search the
+ * invoice list yourself.
+ *
+ *   method  a model method returning { count, ids, res_model }. The SERVER
+ *           decides what "related" means — for a rental contract that is a
+ *           join through rental_invoice_link, which no client-side domain
+ *           could express.
+ */
+const FORM_SMART_BUTTONS = {
+    'rental.contract': [
+        { key: 'invoices', label: 'Invoices', method: 'action_view_invoices' },
+    ],
+};
+
 const FORM_ACTIONS = {
     'rental.contract': [
         {
@@ -354,18 +373,6 @@ class FormView extends Component {
                     <span class="gf-bc-cur" t-esc="recordTitle"/>
                 </div>
                 <div class="gf-actions">
-                    <!-- Workflow actions first: they are what the record is FOR.
-                         Only on a saved record — an action on a form that has
-                         never been written has no id to act on. -->
-                    <t t-if="!state.isNew">
-                        <t t-foreach="formActions" t-as="act" t-key="act.method">
-                            <button t-attf-class="btn gf-wf-btn{{ act.primary ? ' btn-primary' : '' }}"
-                                    t-att-data-action="act.method"
-                                    t-att-disabled="state.actionBusy ? true : undefined"
-                                    t-on-click="() => this.runFormAction(act)"
-                                    t-esc="act.label"/>
-                        </t>
-                    </t>
                     <button t-if="state.isNew"  class="btn btn-primary" t-on-click="onCreate">Create</button>
                     <button t-if="!state.isNew" class="btn btn-primary" t-on-click="onSave">Save</button>
                     <button t-if="!state.isNew" class="btn btn-danger" t-on-click="onDelete">Delete</button>
@@ -386,12 +393,47 @@ class FormView extends Component {
                 <div class="error" t-esc="state.error"/>
             </t>
             <t t-else="">
+                <!-- The same furniture a sales order has, from the SAME classes
+                     rather than a lookalike: workflow buttons on the left, the
+                     stages on the right. The stages come from the status
+                     field's own selection, so a model gets them by declaring
+                     FieldType::Selection and nothing else. -->
+                <div class="so-statusbar" t-if="!state.isNew and (formActions.length or stages.length)">
+                    <div class="so-sb-left">
+                        <t t-foreach="formActions" t-as="act" t-key="act.method">
+                            <button t-attf-class="btn so-wf-btn{{ act.primary ? ' btn-primary' : '' }}"
+                                    t-att-data-action="act.method"
+                                    t-att-disabled="state.actionBusy ? true : undefined"
+                                    t-on-click.stop="() => this.runFormAction(act)"
+                                    t-esc="act.label"/>
+                        </t>
+                    </div>
+                    <div class="so-stepper" t-if="stages.length">
+                        <t t-foreach="stages" t-as="st" t-key="st.value">
+                            <div t-attf-class="so-step{{ st.done ? ' done' : '' }}{{ st.current ? ' active' : '' }}"
+                                 t-att-data-stage="st.value" t-esc="st.label"/>
+                        </t>
+                    </div>
+                </div>
+
                 <!-- What the last workflow action did. Without it, pressing
                      "Create Invoice" on a contract with nothing due looks
                      exactly like pressing it on one that worked. -->
                 <div class="gf-action-msg" t-if="state.actionMsg" t-esc="state.actionMsg"/>
                 <div class="gf-card" t-on-change="onFormChange" t-on-input="onFormInput" t-on-click="onFormClick">
-                    <h1 class="gf-title" t-esc="recordTitle"/>
+                    <div class="so-card-head">
+                        <h1 class="gf-title" t-esc="recordTitle"/>
+                        <div class="so-stat-btns" t-if="smartButtons.length">
+                            <t t-foreach="smartButtons" t-as="sb" t-key="sb.key">
+                                <div t-attf-class="so-stat-btn{{ sb.count ? '' : ' so-stat-btn-disabled' }}"
+                                     t-att-data-smart="sb.key"
+                                     t-on-click.stop="() => this.openSmart(sb)">
+                                    <span class="so-stat-num" t-esc="sb.count"/>
+                                    <span class="so-stat-lbl" t-esc="sb.label"/>
+                                </div>
+                            </t>
+                        </div>
+                    </div>
                     <div class="gf-grid">
                         <t t-foreach="visibleScalarFields" t-as="f" t-key="f.name">
                             <div t-attf-class="gf-field{{ f.type === 'text' ? ' gf-field-wide' : '' }}{{ f.type === 'boolean' ? ' gf-field-bool' : '' }}">
@@ -561,7 +603,7 @@ class FormView extends Component {
     setup() {
         this.state = useState({
             loading: true, record: {}, isNew: !this.props.recordId, error: '',
-            actionBusy: false, actionMsg: '',
+            actionBusy: false, actionMsg: '', smart: {},
             conflictError: '',
             o2mLines:   {},
             o2mMeta:    {},
@@ -660,6 +702,75 @@ class FormView extends Component {
             // Some models need more than a name; say so rather than failing silently.
             ctx.error = (e && e.message) || 'Could not create this record here — open its own menu to add all details.';
         }
+    }
+
+    /**
+     * The stages across the top, from the status field's OWN selection.
+     *
+     * Nothing is declared per model: `state` is a Selection, the server sends
+     * its choices with the view (get_views backfills them from the field
+     * registry), and the order they were registered in is the order of the
+     * workflow. Cancelled/closed values are not "steps" on the way anywhere,
+     * so they only appear once the record is actually in them.
+     */
+    get stages() {
+        const f = this.formFields.find(x => x.name === 'state');
+        if (!f || !Array.isArray(f.selection) || !f.selection.length) return [];
+        const cur = this.state.record.state;
+        const terminal = new Set(['cancel', 'cancelled', 'closed']);
+        const list = f.selection.filter(([v]) => !terminal.has(v) || v === cur);
+        const at = list.findIndex(([v]) => v === cur);
+        return list.map(([value, label], i) => ({
+            value, label,
+            current: value === cur,
+            done:    at >= 0 && i < at,
+        }));
+    }
+
+    /** The smart buttons this model declares, with the counts loaded. */
+    get smartButtons() {
+        const defs = FORM_SMART_BUTTONS[(this.props.action || {}).res_model] || [];
+        return defs.map(d => ({ ...d, ...(this.state.smart[d.key] || { count: 0, ids: [] }) }));
+    }
+
+    /**
+     * Ask the server what each smart button should read.
+     *
+     * One call per button, and only for a saved record. The counts are the
+     * server's to compute: "the invoices for this contract" is a join through
+     * rental_invoice_link, which no domain the client could send would express.
+     */
+    async loadSmartButtons() {
+        const defs = FORM_SMART_BUTTONS[(this.props.action || {}).res_model] || [];
+        if (!defs.length || !this.props.recordId) return;
+        const out = {};
+        await Promise.all(defs.map(async d => {
+            try {
+                const r = await RpcService.call(
+                    (this.props.action || {}).res_model, d.method,
+                    [[this.props.recordId]], {});
+                const one = Array.isArray(r) ? r[0] : r;
+                out[d.key] = {
+                    count:     (one && one.count) || 0,
+                    ids:       (one && one.ids) || [],
+                    res_model: one && one.res_model,
+                };
+            } catch (_) {
+                // A counter that cannot be computed shows zero rather than
+                // taking the form down with it.
+                out[d.key] = { count: 0, ids: [] };
+            }
+        }));
+        this.state.smart = out;
+    }
+
+    /** Jump to what a smart button counted. */
+    openSmart(sb) {
+        if (!sb.count || !sb.res_model || !window.ErpNav) return;
+        // One record opens itself; several open their list. The shell has no
+        // way to carry a domain, so a filtered list is not on offer — landing
+        // on the right record when there IS one matters more.
+        window.ErpNav.openRecord(sb.res_model, sb.ids.length === 1 ? sb.ids[0] : 0);
     }
 
     /** The workflow buttons this model declares, filtered for this record. */
@@ -824,6 +935,7 @@ class FormView extends Component {
                 }
             }
             await this.loadO2mData();
+            await this.loadSmartButtons();
         } catch (e) {
             this.state.error = e.message;
         } finally {
