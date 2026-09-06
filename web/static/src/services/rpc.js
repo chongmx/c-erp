@@ -80,6 +80,9 @@ const RpcService = (() => {
     async function logout() {
         await call('res.users', 'logout', [], {}).catch(() => {});
         Object.assign(_session, { uid: 0, login: '', sessionId: '', context: {} });
+        // Views can differ by user — a group the next login lacks may hide a
+        // field — so the cache must not outlive the session that filled it.
+        _viewCache.clear();
     }
 
     // --------------------------------------------------------
@@ -125,10 +128,28 @@ const RpcService = (() => {
         return data.result;
     }
 
+    // A view definition is static for the life of a session: it comes from the
+    // views registered at boot, not from data. Fetching it on every screen
+    // change cost a whole round trip before anything could paint — which is
+    // the "Loading views…" you see, and on a remote server it is the slowest
+    // part of opening a list. Cached per model+shape, so the second visit to a
+    // screen paints from memory.
+    //
+    // Cleared on logout with the rest of the session state; a server restart
+    // that changed a view needs a page reload, which is already true of every
+    // other file the browser holds.
+    const _viewCache = new Map();
+
     async function getViews(model, views) {
         // views = [[false, 'list'], [false, 'form']]
-        return call(model, 'get_views', [views], {});
+        const key = model + '|' + JSON.stringify(views);
+        if (_viewCache.has(key)) return _viewCache.get(key);
+        const result = await call(model, 'get_views', [views], {});
+        _viewCache.set(key, result);
+        return result;
     }
+
+    function clearViewCache() { _viewCache.clear(); }
 
     // --------------------------------------------------------
     // Convenience helpers
@@ -274,7 +295,7 @@ const RpcService = (() => {
 
     return { call, authenticate, logout, restoreSession,
              isAuthenticated, getSession,
-             loadMenus, loadAction, getViews,
+             loadMenus, loadAction, getViews, clearViewCache,
              health, sessionInfo,
              listCompanies, switchCompany, lookupCompanies, controlAdmin,
              dbList, dbBackup, dbRestore, dbDelete, dbUpload, dbDownloadUrl,

@@ -1782,6 +1782,51 @@ private:
     }
 
     // ----------------------------------------------------------
+    /**
+     * Fill in what a hand-written view left out, from the model itself.
+     *
+     * Views in this codebase carry a type and a label and little else. That is
+     * fine for a char column and useless for a relation: "many2one" without a
+     * `relation` tells a client the cell is a link but not to what, so it can
+     * only draw the raw id. `selection` without its choices is the same problem
+     * — a combobox with nothing to offer.
+     *
+     * The model already knows both, in its FieldRegistry, so ask it once and
+     * merge. Only ABSENT keys are written: a view that deliberately narrows a
+     * domain, renames a field or marks it readonly keeps saying so.
+     *
+     * One fields_get per get_views, in-process, no extra round trip for the
+     * browser. A model with no ViewModel registered simply keeps the view's own
+     * metadata rather than failing the whole request — a screen with raw ids is
+     * poor, a screen that will not open is worse.
+     */
+    void backfillFieldMetadata_(const std::string& model, nlohmann::json& flds) {
+        if (!vmFactory_ || !flds.is_object() || flds.empty()) return;
+        nlohmann::json known;
+        try {
+            auto vm = vmFactory_->create(model, core::Lifetime::Transient);
+            core::CallKwArgs fg;
+            fg.model  = model;
+            fg.method = "fields_get";
+            fg.args   = nlohmann::json::array();
+            fg.kwargs = nlohmann::json::object();
+            known = vm->callKw(fg);
+        } catch (const std::exception&) {
+            return;
+        }
+        if (!known.is_object()) return;
+
+        static const char* kFillable[] = {"relation", "selection", "relation_field"};
+        for (auto& [name, meta] : flds.items()) {
+            if (!meta.is_object() || !known.contains(name)) continue;
+            const auto& src = known[name];
+            if (!src.is_object()) continue;
+            for (const char* key : kFillable)
+                if (!meta.contains(key) && src.contains(key)) meta[key] = src[key];
+        }
+    }
+
+    // ----------------------------------------------------------
     // get_views — builds view descriptor from ViewFactory
     // args[0] = [[view_id_or_false, view_type], ...]
     // ----------------------------------------------------------
@@ -1811,6 +1856,18 @@ private:
             if (viewFactory_ && viewFactory_->hasView(model, vtype)) {
                 auto view  = viewFactory_->getView(model, vtype);
                 auto flds  = view->fields();   // must be a named variable — items() holds a ref
+                // A view says WHICH fields to show and what to call them; the
+                // MODEL is the authority on what they ARE. Every hand-written
+                // view in the codebase declares {"type","many2one"} and stops
+                // there, so a client was told a column is a relation but never
+                // to WHAT — and the generic list rendered a customer as "1766"
+                // because it had no model to read the name from.
+                //
+                // Backfilled here rather than in 144 view declarations: one
+                // place, and a view added tomorrow gets it for free. Only keys
+                // the view did NOT set are filled, so a view can still narrow a
+                // domain or relabel a field and be obeyed.
+                backfillFieldMetadata_(model, flds);
                 viewEntry["arch"]   = view->arch();
                 viewEntry["fields"] = flds;
                 for (auto& [k,v] : flds.items())

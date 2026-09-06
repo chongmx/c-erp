@@ -76,7 +76,7 @@ class ListView extends Component {
                         <t t-foreach="state.records" t-as="rec" t-key="rec.id">
                             <tr class="list-row" t-on-click="() => this.onRowClick(rec.id)">
                                 <t t-foreach="columns" t-as="col" t-key="col.name">
-                                    <td><t t-esc="formatCell(rec[col.name])"/></td>
+                                    <td><t t-esc="formatCell(rec[col.name], col)"/></td>
                                 </t>
                             </tr>
                         </t>
@@ -94,6 +94,7 @@ class ListView extends Component {
             loading: true, records: [], error: '',
             importMsg: '', importOk: false,
             showArchived: false,
+            m2oLabels: {},          // relation -> { id: label }
         });
         onMounted(() => this.load());
         onWillUpdateProps((np) => {
@@ -111,8 +112,15 @@ class ListView extends Component {
         const fields  = viewDef.fields || {};
         return archOrder(viewDef.arch, Object.keys(fields)).map(name => ({
             name,
-            label: (fields[name] || {}).string || name,
+            label:    (fields[name] || {}).string   || name,
+            type:     (fields[name] || {}).type     || 'char',
+            relation: (fields[name] || {}).relation || null,
         }));
+    }
+
+    /** The many2one columns, which need their ids turned into names. */
+    get m2oColumns() {
+        return this.columns.filter(c => c.type === 'many2one' && c.relation);
     }
 
     async load(action) {
@@ -137,6 +145,7 @@ class ListView extends Component {
                 action.res_model, 'search_read',
                 [domain], { fields: cols, limit: 80 });
             this.state.records = Array.isArray(recs) ? recs : [];
+            await this.resolveM2oLabels(this.state.records);
         } catch (e) {
             this.state.error = e.message;
         } finally {
@@ -144,10 +153,64 @@ class ListView extends Component {
         }
     }
 
-    formatCell(val) {
+    /**
+     * One cell.
+     *
+     * A many2one arrives as a bare id, because read/search_read project
+     * COLUMNS (rowsToJson_), not the [id, name] pairs the reference ERP
+     * returns. Rendering that raw put a customer on screen as "1766" — a
+     * number nobody can act on. `col` carries the relation, so the id is
+     * looked up in the label map fetched by resolveM2oLabels().
+     */
+    formatCell(val, col) {
         if (val === null || val === undefined || val === false) return '';
         if (Array.isArray(val)) return val[1] ?? val[0] ?? '';
+        if (col && col.type === 'many2one' && col.relation) {
+            const id = typeof val === 'object' ? val.id : val;
+            const m  = this.state.m2oLabels[col.relation];
+            if (m && m[id] !== undefined) return m[id];
+            return id ? '#' + id : '';
+        }
         return String(val);
+    }
+
+    /**
+     * Turn every many2one id on the page into a label, in ONE read per
+     * relation — not one per row, which is what makes a 80-row list with three
+     * relations 240 round trips.
+     *
+     * display_name is asked for first and used when the model has one, so a
+     * customer reads "Carol, Big Carrots" here exactly as it does in the
+     * picker. A model without one falls back to `name`; buildSelectCols_ drops
+     * the column it does not have rather than erroring, so one request shape
+     * serves both.
+     */
+    async resolveM2oLabels(records) {
+        const cols = this.m2oColumns;
+        if (!cols.length || !records.length) return;
+        const wanted = {};                       // relation -> Set of ids
+        for (const c of cols) {
+            for (const r of records) {
+                const v  = r[c.name];
+                const id = Array.isArray(v) ? v[0] : (v && typeof v === 'object' ? v.id : v);
+                if (!id || typeof id !== 'number') continue;
+                (wanted[c.relation] ||= new Set()).add(id);
+            }
+        }
+        const labels = { ...this.state.m2oLabels };
+        await Promise.all(Object.entries(wanted).map(async ([relation, ids]) => {
+            try {
+                const rows = await RpcService.call(
+                    relation, 'read', [[...ids], ['id', 'name', 'display_name']], {});
+                const map = labels[relation] || (labels[relation] = {});
+                for (const row of (rows || []))
+                    map[row.id] = row.display_name || row.name || ('#' + row.id);
+            } catch (_) {
+                // A relation the user cannot read must not blank the whole
+                // list; those cells fall back to "#id".
+            }
+        }));
+        this.state.m2oLabels = labels;
     }
 
     /** Does this model carry an archive flag? Read from the view's own fields. */

@@ -60,7 +60,32 @@ const M2O_DISPLAY_NAME_MODELS = ['res.partner'];
 
 const M2O_PAGE     = 20;   // rows in the inline dropdown
 const M2O_MODAL    = 50;   // rows per page in the browse dialog
-const M2O_DEBOUNCE = 150;  // ms before a keystroke becomes a query
+
+/**
+ * Every timing in the UI, in one place.
+ *
+ * There are NO artificial delays in this application — nothing sleeps, nothing
+ * holds a spinner open for a minimum time. The "Loading…" you see is a render
+ * state while a real request is in flight, so setting these to 0 does not make
+ * a screen appear faster; it only changes how requests are batched.
+ *
+ *   debounce   ms after the last keystroke before a search is sent. 0 means a
+ *              request PER CHARACTER — five round trips to type "carol" — so
+ *              zero is slower, not faster, on any real network.
+ *   blurGuard  ms a dropdown stays open after blur so a mousedown on an option
+ *              wins the race. 0 breaks clicking an option entirely.
+ *
+ * A test that needs to observe an intermediate state can raise them:
+ *     window.UI_TIMING.debounce = 400;
+ * Committed at the values we deploy with.
+ */
+const UI_TIMING = (typeof window !== 'undefined' && window.UI_TIMING) || {
+    debounce:  150,
+    blurGuard: 150,
+};
+if (typeof window !== 'undefined') window.UI_TIMING = UI_TIMING;
+
+const M2O_DEBOUNCE = UI_TIMING.debounce;
 
 class M2OSelect extends owl.Component {
     static template = owl.xml`
@@ -339,7 +364,7 @@ class M2OSelect extends owl.Component {
                 this.state.open = false;
                 this.syncValue();  // restore the label if they typed and gave up
             }
-        }, 150);
+        }, UI_TIMING.blurGuard);
     }
 
     // --- choosing ----------------------------------------------------------
