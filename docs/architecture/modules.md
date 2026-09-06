@@ -381,6 +381,30 @@ at both month edges, open-ended lets, unions, retired units);
 `tests/functional/rental/booking-calendar` books from the screen and proves
 both halves of the guard — sequential lets allowed, overlapping lets refused.
 
+### Invoicing one contract
+
+`rental.contract.action_create_invoice` is the **Create Invoice** button on the
+contract form, the shape `sale.order.action_create_invoices` has. It runs
+`RentalBilling::run(db, "", contractId)` — the cron's code path, scoped — not a
+second implementation, because a manual path that drifts from the scheduled one
+is how double-billing is discovered in production.
+
+Asking for one contract relaxes exactly two filters, and nothing else may:
+
+| | |
+|---|---|
+| a **one-off / on-demand contract** | skipped by the cron by design. "On demand" means nothing happens until somebody demands it; this is the demand. |
+| a **line with `billing_mode` one-off** | the Booking calendar writes dated bookings that way so the recurring engine leaves them alone — and nothing else billed them, so a booking could not be invoiced at all. |
+
+The lead-day period gate and idempotency are **not** relaxed. Pressing twice is
+safe, and the reply says which of the two honest outcomes applies: a recurring
+line has advanced `next_period_start`, so the answer is "nothing is due yet"; a
+one-off line's period start does not move, so `UNIQUE (contract_line_id,
+period_start)` rejects the repeat and the answer is "already invoiced".
+
+`tests/integration/rental/contract-invoice` pins the scope, the gate and the
+idempotency; `tests/functional/rental/contract-invoice` presses the button.
+
 ### The billing period
 
 A contract's cadence is one **preset** plus a derived `(interval, unit)` pair:

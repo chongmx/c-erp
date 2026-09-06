@@ -64,7 +64,8 @@ std::string today_() {
 } // namespace
 
 BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
-                                 const std::string& asOfIn) {
+                                 const std::string& asOfIn,
+                                 int contractId) {
     BillingResult out;
     const std::string asOf = asOfIn.empty() ? today_() : asOfIn;
 
@@ -100,7 +101,7 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
         auto conn = db->acquire();
         pqxx::work txn{conn.get()};
 
-        auto rows = txn.exec(
+        std::string sql =
             "SELECT l.id, l.partner_id, l.unit_id, l.contract_id, "
             "       l.unit_price, l.discount_pct, l.tax_ids_json, "
             "       l.billing_anchor_day, l.billing_months, l.company_id, "
@@ -109,28 +110,48 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             // "what cadence is this line on" answerable in one SQL query.
             "       COALESCE(l.billing_interval, c.billing_interval, 1) AS billing_interval, "
             "       COALESCE(l.billing_unit,     c.billing_unit, 'month') AS billing_unit, "
-            "       to_char(l.next_period_start, 'YYYY-MM-DD') AS period_start, "
+            "       to_char(COALESCE(l.next_period_start, l.date_start), 'YYYY-MM-DD') AS period_start, "
             "       COALESCE(u.code, '')  AS unit_code, "
             "       COALESCE(u.name, '')  AS unit_name, "
             "       c.currency_id, c.journal_id "
             "  FROM rental_contract_line l "
             "  LEFT JOIN rental_unit     u ON u.id = l.unit_id "
             "  LEFT JOIN rental_contract c ON c.id = l.contract_id "
-            " WHERE l.state = 'active' "
-            "   AND l.billing_mode = 'recurring' "
-            "   AND l.next_period_start IS NOT NULL "
-            "   AND l.next_period_start - l.billing_lead_days <= $1::date "
-            // A line that has been ended stops billing even if its
-            // next_period_start is still in the past.
-            "   AND (l.date_end IS NULL OR l.next_period_start <= l.date_end) "
-            // A one-off or on-demand CONTRACT is never scheduled, whatever its
-            // lines say. Without this the COALESCE above would quietly fall
-            // back to monthly and invoice a contract the user marked as billed
-            // only when asked.
-            "   AND (c.id IS NULL OR c.billing_period NOT IN ('oneoff','ondemand')) "
-            " ORDER BY l.partner_id, l.next_period_start, l.id "
-            " LIMIT 1000",                       // PERF-F
-            pqxx::params{asOf});
+            " WHERE l.state = 'active' ";
+
+        // The scheduled run bills only what is SCHEDULED. Asking for one
+        // contract is a person saying "bill this now", which is the only thing
+        // that may reach a oneoff or on-demand line — see RentalBilling.hpp.
+        if (contractId > 0) {
+            sql += "   AND l.contract_id = $2 "
+                   "   AND l.billing_mode IN ('recurring','oneoff','ondemand') ";
+        } else {
+            sql += "   AND l.billing_mode = 'recurring' "
+                   "   AND l.next_period_start IS NOT NULL "
+                   // A one-off or on-demand CONTRACT is never scheduled,
+                   // whatever its lines say. Without this the COALESCE above
+                   // would quietly fall back to monthly and invoice a contract
+                   // the user marked as billed only when asked.
+                   "   AND (c.id IS NULL OR c.billing_period NOT IN ('oneoff','ondemand')) ";
+        }
+
+        sql +=
+            // The period gate holds either way: nothing is invoiced before its
+            // lead days, however it was asked for.
+            "   AND COALESCE(l.next_period_start, l.date_start) IS NOT NULL "
+            "   AND COALESCE(l.next_period_start, l.date_start) - l.billing_lead_days "
+            "       <= $1::date "
+            // A line that has been ended stops billing even if its period start
+            // is still in the past.
+            "   AND (l.date_end IS NULL "
+            "        OR COALESCE(l.next_period_start, l.date_start) <= l.date_end) "
+            " ORDER BY l.partner_id, COALESCE(l.next_period_start, l.date_start), l.id "
+            " LIMIT 1000";                       // PERF-F
+
+        pqxx::params params;
+        params.append(asOf);
+        if (contractId > 0) params.append(contractId);
+        auto rows = txn.exec(sql, params);
 
         for (const auto& r : rows) {
             GroupKey key;

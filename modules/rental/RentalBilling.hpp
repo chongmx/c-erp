@@ -46,8 +46,29 @@ public:
      * Each (partner, period) group runs in its OWN transaction, so a
      * failure on one customer cannot half-bill another or abort the run.
      */
+    /**
+     * @param contractId 0 = everything due (the cron, and the "Generate
+     *        invoices now" button). Non-zero = ONE contract, because an
+     *        operator asked for it on that contract's form.
+     *
+     * Asking for one contract also RELAXES two filters, and it is the only
+     * thing that may:
+     *
+     *   * a contract billed `oneoff` or `ondemand` is skipped by the scheduled
+     *     run on purpose — "on demand" means nothing happens until somebody
+     *     demands it. This IS that demand, so those contracts bill here.
+     *   * a line whose billing_mode is oneoff/ondemand likewise. Without this a
+     *     dated booking made on the calendar could never be invoiced by
+     *     anything at all: it is written billing_mode='oneoff' so the recurring
+     *     engine leaves it alone, and nothing else billed it.
+     *
+     * What it does NOT relax is the period gate or idempotency. A period still
+     * has to be within its lead days, and UNIQUE (contract_line_id,
+     * period_start) still makes a second press a no-op.
+     */
     static BillingResult run(std::shared_ptr<infrastructure::DbConnection> db,
-                             const std::string& asOf = "");
+                             const std::string& asOf = "",
+                             int contractId = 0);
 
     /// Register the cron handler and activate the job.
     static void registerCron(std::shared_ptr<infrastructure::DbConnection> db);

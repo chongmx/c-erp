@@ -290,6 +290,33 @@ const CONDITIONAL_FIELDS = {
 };
 
 /**
+ * Workflow buttons on a generic form — the statusbar sale.order has, for
+ * models that do not justify a hand-written screen of their own.
+ *
+ * A record you can only edit and delete is a filing cabinet. The thing an
+ * operator wants to DO to a rental contract is invoice it, and before this
+ * there was nowhere to do that from: the billing cron ran on its own schedule
+ * and skipped one-off and on-demand contracts entirely by design.
+ *
+ *   method   a model method called as method([[id]]). The reply's `message`
+ *            is shown if there is one, so the server decides the wording —
+ *            "Already invoiced for this period" is a different outcome from
+ *            "Nothing is due yet", and only the server knows which.
+ *   show     record -> boolean. Keep it strict: a button that appears when it
+ *            cannot work teaches people to distrust the ones that can.
+ */
+const FORM_ACTIONS = {
+    'rental.contract': [
+        {
+            label:   'Create Invoice',
+            method:  'action_create_invoice',
+            primary: true,
+            show:    r => r.state === 'active',
+        },
+    ],
+};
+
+/**
  * Which columns a one2many line table shows, and in what order.
  *
  * Without an entry a line table shows every field the child model has, which
@@ -327,6 +354,18 @@ class FormView extends Component {
                     <span class="gf-bc-cur" t-esc="recordTitle"/>
                 </div>
                 <div class="gf-actions">
+                    <!-- Workflow actions first: they are what the record is FOR.
+                         Only on a saved record — an action on a form that has
+                         never been written has no id to act on. -->
+                    <t t-if="!state.isNew">
+                        <t t-foreach="formActions" t-as="act" t-key="act.method">
+                            <button t-attf-class="btn gf-wf-btn{{ act.primary ? ' btn-primary' : '' }}"
+                                    t-att-data-action="act.method"
+                                    t-att-disabled="state.actionBusy ? true : undefined"
+                                    t-on-click="() => this.runFormAction(act)"
+                                    t-esc="act.label"/>
+                        </t>
+                    </t>
                     <button t-if="state.isNew"  class="btn btn-primary" t-on-click="onCreate">Create</button>
                     <button t-if="!state.isNew" class="btn btn-primary" t-on-click="onSave">Save</button>
                     <button t-if="!state.isNew" class="btn btn-danger" t-on-click="onDelete">Delete</button>
@@ -347,6 +386,10 @@ class FormView extends Component {
                 <div class="error" t-esc="state.error"/>
             </t>
             <t t-else="">
+                <!-- What the last workflow action did. Without it, pressing
+                     "Create Invoice" on a contract with nothing due looks
+                     exactly like pressing it on one that worked. -->
+                <div class="gf-action-msg" t-if="state.actionMsg" t-esc="state.actionMsg"/>
                 <div class="gf-card" t-on-change="onFormChange" t-on-input="onFormInput" t-on-click="onFormClick">
                     <h1 class="gf-title" t-esc="recordTitle"/>
                     <div class="gf-grid">
@@ -518,6 +561,7 @@ class FormView extends Component {
     setup() {
         this.state = useState({
             loading: true, record: {}, isNew: !this.props.recordId, error: '',
+            actionBusy: false, actionMsg: '',
             conflictError: '',
             o2mLines:   {},
             o2mMeta:    {},
@@ -615,6 +659,44 @@ class FormView extends Component {
         } catch (e) {
             // Some models need more than a name; say so rather than failing silently.
             ctx.error = (e && e.message) || 'Could not create this record here — open its own menu to add all details.';
+        }
+    }
+
+    /** The workflow buttons this model declares, filtered for this record. */
+    get formActions() {
+        const acts = FORM_ACTIONS[(this.props.action || {}).res_model] || [];
+        const rec  = this.state.record || {};
+        return acts.filter(a => (typeof a.show === 'function' ? a.show(rec) : true));
+    }
+
+    /**
+     * Run one, then reload.
+     *
+     * The reload is not optional: an action changes the record on the server —
+     * an invoice moves next_period_start — and a form still showing the old
+     * values invites the operator to press it again.
+     */
+    async runFormAction(act) {
+        if (this.state.actionBusy) return;
+        this.state.actionBusy = true;
+        this.state.error      = '';
+        this.state.actionMsg  = '';
+        try {
+            const res = await RpcService.call(
+                (this.props.action || {}).res_model, act.method,
+                [[this.props.recordId]], {});
+            // The server phrases the outcome: "Already invoiced for this
+            // period" and "Nothing is due yet" are different answers and only
+            // it can tell them apart.
+            const r = Array.isArray(res) ? res[0] : res;
+            this.state.actionMsg = (r && r.message) || 'Done.';
+            if (r && Array.isArray(r.errors) && r.errors.length)
+                this.state.error = r.errors[0];
+            await this.load();
+        } catch (e) {
+            this.state.error = (e && e.message) || String(e);
+        } finally {
+            this.state.actionBusy = false;
         }
     }
 

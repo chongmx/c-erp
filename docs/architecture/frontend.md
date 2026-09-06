@@ -106,6 +106,16 @@ The blank option means *unset* and is sent as `null`, never `''`: an empty
 string is not one of the allowed values and fails the CHECK with a raw SQL
 error instead of taking the column default.
 
+`FORM_ACTIONS`, beside it, gives a model **workflow buttons** without a
+hand-written screen: `{ label, method, show }` per action, rendered in the form
+header, called as `method([[id]])`. A record you can only edit and delete is a
+filing cabinet — the thing an operator wants to DO to a rental contract is
+invoice it. The **server** phrases the outcome and the form shows its
+`message`, because "Already invoiced for this period" and "Nothing is due yet"
+are different answers and only the server can tell them apart. Keep `show`
+strict: a button that appears when it cannot work teaches people to distrust
+the ones that can.
+
 `CONDITIONAL_FIELDS` near the top of `app.js` hides a field for some values of
 another — the whole of this form's `attrs` support, currently one entry:
 rental contracts show "Every X" and its unit only when the billing period is

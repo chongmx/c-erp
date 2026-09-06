@@ -2886,3 +2886,17 @@ body.ct-resizing { cursor:col-resize; user-select:none; }
 .wp-note-err { color: #ff8f9a; }
 .wp-empty { display: flex; align-items: center; justify-content: center;
             height: 100%; color: var(--muted); }
+
+/* What a workflow action reported. Not an error and not a permanent state —
+   a sentence from the server about what just happened, sitting above the
+   record it happened to. */
+.gf-action-msg {
+    margin: 0 0 12px;
+    padding: 8px 12px;
+    border-radius: 4px;
+    border: 1px solid var(--accent);
+    background: rgba(255, 255, 255, .04);
+    color: var(--text);
+    font-size: .85rem;
+}
+.gf-wf-btn { margin-right: 6px; }

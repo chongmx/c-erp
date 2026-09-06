@@ -893,6 +893,73 @@ void RentalModule::registerModels() {
 
 void RentalModule::registerServices() {}
 
+// ----------------------------------------------------------------
+// RentalContractViewModel — the contract, plus the one thing you can DO to it
+//
+// "Create Invoice" on the contract form, the same shape sale.order has with
+// action_create_invoices. It runs RentalBilling scoped to this contract rather
+// than a second implementation: a manual path that drifts from the scheduled
+// one is how double-billing is discovered in production, and the header of
+// RentalBilling.hpp says so.
+//
+// It is also the ONLY way to invoice two things:
+//
+//   * a contract whose billing period is One off or On demand. The cron skips
+//     those by design — "on demand" means nothing happens until somebody
+//     demands it, and until now there was nowhere to do the demanding.
+//   * a dated booking made on the Booking calendar, which is written
+//     billing_mode='oneoff' so the recurring engine leaves it alone. Nothing
+//     else billed those either.
+//
+// Pressing it twice is safe: UNIQUE (contract_line_id, period_start) on
+// rental_invoice_link turns the second press into a no-op, and the reply says
+// how many were skipped rather than pretending they were created.
+// ----------------------------------------------------------------
+class RentalContractViewModel : public GenericViewModel<RentalContract> {
+public:
+    explicit RentalContractViewModel(std::shared_ptr<DbConnection> db)
+        : GenericViewModel<RentalContract>(std::move(db))
+    {
+        REGISTER_MUTATOR("action_create_invoice", handleCreateInvoice)
+    }
+
+private:
+    nlohmann::json handleCreateInvoice(const CallKwArgs& call) {
+        const auto ids = call.ids();
+        if (ids.empty())
+            throw ValidationError("Open a contract before creating its invoice.");
+
+        nlohmann::json out = nlohmann::json::array();
+        for (int id : ids) {
+            const auto r = RentalBilling::run(db_, "", id);
+            nlohmann::json one = {
+                {"contract_id", id},
+                {"invoices",    r.invoicesCreated},
+                {"lines",       r.linesBilled},
+                {"skipped",     r.groupsSkipped},
+                {"failed",      r.groupsFailed},
+                {"move_ids",    r.moveIds},
+            };
+            // Say WHY nothing happened. "0 invoices" on its own sends the
+            // operator hunting through the contract for a mistake that is not
+            // there — the usual answer is that the period is not due yet, or
+            // that it was already billed.
+            if (r.invoicesCreated == 0) {
+                one["message"] = r.groupsSkipped > 0
+                    ? "Already invoiced for this period."
+                    : (r.groupsFailed > 0
+                        ? "Nothing could be invoiced — see the errors."
+                        : "Nothing is due to invoice yet on this contract.");
+            } else {
+                one["message"] = "Invoice created.";
+            }
+            if (!r.errors.empty()) one["errors"] = r.errors;
+            out.push_back(one);
+        }
+        return ids.size() == 1 ? out[0] : out;
+    }
+};
+
 void RentalModule::registerViewModels() {
     auto db = services_.db();
     // GenericViewModel throughout for now. Per docs/040 §1.2 the module
@@ -904,7 +971,7 @@ void RentalModule::registerViewModels() {
     // lifecycle actions; those will still derive from the audited base.
     viewModels_.registerCreator("rental.unit.type",        [db]{ return std::make_shared<GenericViewModel<RentalUnitType>>(db); });
     viewModels_.registerCreator("rental.unit",             [db]{ return std::make_shared<GenericViewModel<RentalUnit>>(db); });
-    viewModels_.registerCreator("rental.contract",         [db]{ return std::make_shared<GenericViewModel<RentalContract>>(db); });
+    viewModels_.registerCreator("rental.contract",         [db]{ return std::make_shared<RentalContractViewModel>(db); });
     viewModels_.registerCreator("rental.contract.line",    [db]{ return std::make_shared<GenericViewModel<RentalContractLine>>(db); });
     viewModels_.registerCreator("rental.expense.category", [db]{ return std::make_shared<GenericViewModel<RentalExpenseCategory>>(db); });
     viewModels_.registerCreator("rental.expense",          [db]{ return std::make_shared<GenericViewModel<RentalExpense>>(db); });
