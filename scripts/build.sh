@@ -166,11 +166,17 @@ fi
 echo
 echo "[build] done:"
 rc=0
+# $BUILD_DIR, not a hardcoded ./build. The cross-build sets BUILD_DIR to
+# build-docker, so this summary was reporting on a directory it had not
+# written to: it printed the size of the HOST's stale ./build/c-erp as if it
+# were the artefact just produced, and "MISSING: build/erp-admin" for one that
+# had linked successfully a line earlier. Between them they made a working
+# build look like a failed one.
 case "${ACTION}:${TARGETS}" in
-    run-admin:*) want="build/erp-admin" ;;
-    *:server)    want="build/c-erp" ;;
-    *:admin)     want="build/erp-admin" ;;
-    *)           want="build/c-erp build/erp-admin" ;;
+    run-admin:*) want="$BUILD_DIR/erp-admin" ;;
+    *:server)    want="$BUILD_DIR/c-erp" ;;
+    *:admin)     want="$BUILD_DIR/erp-admin" ;;
+    *)           want="$BUILD_DIR/c-erp $BUILD_DIR/erp-admin" ;;
 esac
 for b in $want; do
     if [ -x "$b" ]; then

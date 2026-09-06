@@ -125,14 +125,28 @@ echo "======================================================="
 echo "[deploy] Step 1: Compiling inside Docker container ($DOCKER_IMAGE)..."
 echo "======================================================="
 
-# Run as the host uid:gid so ./build stays yours, not root's. The image sets
-# HOME=/tmp because that uid has no passwd entry, and both git (for the
-# vendored submodules) and cmake insist on a writable home.
+# Run as the host uid:gid so the build output stays yours, not root's. The
+# image sets HOME=/tmp because that uid has no passwd entry, and both git (for
+# the vendored submodules) and cmake insist on a writable home.
+#
+# -e BUILD_DIR is NOT optional. build.sh defaults to ./build, and without this
+# the cross-build wrote its Debian binaries there — the very directory
+# tests/run.sh owns, which is the collision BUILD_DIR was introduced to end.
+# Two things then went wrong at once and neither announced itself:
+#
+#   * deploy looked in ./$BUILD_DIR, found nothing, and refused to ship. The
+#     build had SUCCEEDED, so the output read "Built target c-erp" followed by
+#     "No compiled binaries found" — easy to mistake for a build failure rather
+#     than a misplaced artefact, and the deploy silently did nothing at all.
+#   * the host's ./build/c-erp was replaced by a binary linked against Debian
+#     13's glibc and libjsoncpp.so.26, so the LOCAL server stopped starting,
+#     with a missing-shared-library error that has nothing to do with the code.
 mkdir -p "$CCACHE_DIR"
 docker run --rm \
     -u "$(id -u):$(id -g)" \
     -v "$(pwd):/workspace" \
     -v "$CCACHE_DIR:/tmp/ccache" \
+    -e "BUILD_DIR=$BUILD_DIR" \
     "$DOCKER_IMAGE" \
     ./scripts/build.sh "${BUILD_ARGS[@]}"
 
@@ -142,7 +156,9 @@ BINARIES=()
 [ -f "./$BUILD_DIR/erp-admin" ] && BINARIES+=("./$BUILD_DIR/erp-admin")
 
 if [ ${#BINARIES[@]} -eq 0 ]; then
-    echo "ERROR: No compiled binaries found in ./build to deploy." >&2
+    echo "ERROR: No compiled binaries found in ./$BUILD_DIR to deploy." >&2
+    echo "  The build may have written somewhere else — check that BUILD_DIR" >&2
+    echo "  reached the container (docker run -e BUILD_DIR=...)." >&2
     exit 1
 fi
 
