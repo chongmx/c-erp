@@ -1065,6 +1065,33 @@ private:
             fdef.type != FieldType::Boolean)
             return nlohmann::json(nullptr);
 
+        // "" → NULL where a blank cannot be a value.
+        //
+        // Clearing a date input sends an empty string, and the column is DATE:
+        // PostgreSQL rejects '' outright, so removing a rental line's end date
+        // — making the let open-ended, the ordinary case — came back as
+        // "An internal error occurred". Setting no end date at creation worked,
+        // which is what made it look like a data problem rather than a bug.
+        //
+        // Only the types where PostgreSQL itself rejects '': a DATE, a
+        // TIMESTAMP, an integer FK.
+        //
+        // Char and Text are excluded because there an empty string IS a value,
+        // and nulling it would change what a cleared text box means.
+        //
+        // Selection is excluded too, and that one was learned rather than
+        // reasoned: including it broke account/expenses and money-string-write,
+        // because a blank Selection became NULL and violated a NOT NULL column
+        // on create. The generic form already sends `null` for a blank
+        // selection (onFormChange), so there was nothing to fix here — the
+        // coercion was speculative, and speculative coercions on a write path
+        // are how data quietly changes shape.
+        if (val.is_string() && val.get<std::string>().empty() &&
+            (fdef.type == FieldType::Date     ||
+             fdef.type == FieldType::Datetime ||
+             fdef.type == FieldType::Many2one))
+            return nlohmann::json(nullptr);
+
         // 0 → NULL for Many2one fields (0 is not a valid FK id)
         if (fdef.type == FieldType::Many2one &&
             val.is_number_integer() && val.get<int>() == 0)

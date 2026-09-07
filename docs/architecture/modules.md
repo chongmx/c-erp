@@ -381,6 +381,34 @@ at both month edges, open-ended lets, unions, retired units);
 `tests/functional/rental/booking-calendar` books from the screen and proves
 both halves of the guard — sequential lets allowed, overlapping lets refused.
 
+### Whole calendar months
+
+`rental_contract.whole_month_billing` (migration 821) changes what a period
+**is**:
+
+| | anniversary (default) | whole month |
+|---|---|---|
+| a contract begun on the 7th | 7 Aug – 6 Sep | **1 – 31 Aug** |
+| the invoice line reads | `2026-08-07 to 2026-09-06` | **`August 2026`** |
+
+Most storage businesses charge for *August*; the day someone moved in is a
+detail of that month, not the start of a new calendar. The setting is **off by
+default** because it changes what an invoice covers, so an existing contract
+bills exactly as it did until somebody ticks the box.
+
+The snap happens in SQL, in the same statement as the anchor arithmetic, so the
+period that is printed, the period that is stored, and the next due date cannot
+drift apart. Only the FIRST period differs between the two modes anyway —
+`rental_next_period` anchors to `billing_anchor_day`, which defaults to 1, so
+every later period already landed on the 1st.
+
+An end date is optional and always was: a line with `date_end` NULL runs until
+it is terminated. *Clearing* one was the part that failed — an emptied date
+input sends `""`, `DATE` rejects it, and the operator met "An internal error
+occurred". `normalizeForDb_` now maps an empty string to NULL for Date,
+Datetime and Many2one — and deliberately not for Char, Text or Selection,
+where a blank is either a real value or already sent as null.
+
 ### Invoicing one contract
 
 `rental.contract.action_create_invoice` is the **Create Invoice** button on the

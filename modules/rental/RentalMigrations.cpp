@@ -1038,6 +1038,39 @@ void registerRentalMigrations(MigrationRunner& runner) {
             WHERE state IN ('pending','active');
     )SQL"});
 
+    // --------------------------------------------------------
+    // 821 — bill whole calendar months
+    //
+    // A contract starting on the 7th billed 7 Aug - 6 Sep, 7 Sep - 6 Oct, and
+    // the invoice said so. That is correct for a locker hired by the month
+    // from the 7th, and wrong for how most storage businesses actually bill:
+    // they charge for AUGUST, and the day someone moved in is a detail of that
+    // month, not a new calendar.
+    //
+    // Reported as "I want the monthly bill to just specify the month and year,
+    // instead of specific start end date".
+    //
+    // Off by default, because it changes what a period IS and therefore what
+    // an invoice covers. An existing contract keeps billing exactly as it did
+    // until somebody ticks the box.
+    //
+    // It changes two things and nothing else:
+    //   * the period START snaps to the 1st of its month, so the first period
+    //     of a contract begun on the 7th is 1-31 August;
+    //   * the invoice line reads "August 2026" instead of a date range.
+    // The advance already lands on the 1st — rental_next_period anchors to
+    // billing_anchor_day, which defaults to 1 — so from the second period on
+    // the two modes agree anyway. This makes the FIRST one agree too.
+    // --------------------------------------------------------
+    runner.registerMigration({821, "rental_contract_whole_month_billing", R"SQL(
+        ALTER TABLE rental_contract
+            ADD COLUMN IF NOT EXISTS whole_month_billing BOOLEAN NOT NULL DEFAULT FALSE;
+
+        COMMENT ON COLUMN rental_contract.whole_month_billing IS
+            'Bill calendar months: periods run 1st to month end and the invoice '
+            'line reads "August 2026" rather than a date range.';
+    )SQL"});
+
 }
 
 } // namespace cerp::modules::rental

@@ -207,4 +207,63 @@ t_eq "2" "$(pg "SELECT count(*) FROM rental_invoice_link WHERE contract_id=${CE:
 t_eq "2" "$(pg "SELECT count(DISTINCT period_start) FROM rental_invoice_link
                  WHERE contract_id=${CE:-0}")"      "and they are for DIFFERENT periods, not the same one twice"
 
+# -------------------------------------------------------------------------
+sec "9. an end date can be REMOVED — the let becomes open-ended"
+# -------------------------------------------------------------------------
+# Creating a line without one always worked; CLEARING one did not. A cleared
+# date input sends "", the column is DATE, PostgreSQL rejects '' — and the
+# operator met "An internal error occurred" with no clue that the empty string
+# was the problem. Reported as "I want the option of not specifying the end
+# date", which is what it looks like from the outside.
+CF=$(call rental.contract create      "[{\"name\":\"${PFX}-F\",\"partner_id\":$PA,\"state\":\"active\",
+        \"date_start\":\"$TODAY\",\"billing_period\":\"monthly\"}]" | rid)
+U6=$(call rental.unit create "[{\"code\":\"${PFX}-U6\",\"name\":\"${PFX} Six\"}]" | rid)
+LF=$(call rental.contract.line create      "[{\"contract_id\":$CF,\"unit_id\":$U6,\"partner_id\":$PA,
+        \"date_start\":\"$TODAY\",\"date_end\":\"$TODAY\"}]" | rid)
+t_nonempty "$LF" "a line with an end date"
+
+OUT=$(call rental.contract.line write "[[$LF],{\"date_end\":\"\"}]")
+t_lacks "$OUT" "internal error" "clearing it is not an internal error"
+t_eq "" "$(pg "SELECT COALESCE(date_end::text,'') FROM rental_contract_line WHERE id=${LF:-0}")"      "and the end date is now empty — the let runs until terminated"
+
+# -------------------------------------------------------------------------
+sec "10. whole-month billing: the invoice says a MONTH, not two dates"
+# -------------------------------------------------------------------------
+# Off by default, so every existing contract bills exactly as before; this
+# proves both halves of that.
+t_eq "f" "$(pg "SELECT whole_month_billing FROM rental_contract WHERE id=${CF:-0}")"      "a new contract does NOT bill whole months unless asked"
+
+CG=$(call rental.contract create      "[{\"name\":\"${PFX}-G\",\"partner_id\":$PA,\"state\":\"active\",
+        \"date_start\":\"$TODAY\",\"billing_period\":\"monthly\",
+        \"whole_month_billing\":true}]" | rid)
+U7=$(call rental.unit create "[{\"code\":\"${PFX}-U7\",\"name\":\"${PFX} Seven\"}]" | rid)
+# Mid-month on purpose: the 7th is where anniversary and calendar periods differ.
+pg "INSERT INTO rental_contract_line
+      (contract_id, unit_id, partner_id, date_start, unit_price, state, company_id)
+    VALUES ($CG, $U7, $PA, date_trunc('month', CURRENT_DATE)::date + 6, 120000000, 'active', 1)" >/dev/null
+t_eq "t" "$(pg "SELECT whole_month_billing FROM rental_contract WHERE id=${CG:-0}")"      "the contract is set to bill whole months"
+# pg() swallows stderr, so a fixture INSERT that fails on a TYPE error is
+# silent — and reads downstream as "billing is broken". It did exactly that
+# here: date_trunc() returns a timestamp and `timestamp + 6` has no operator,
+# so no line was ever inserted and there was nothing to invoice.
+t_eq "1" "$(pg "SELECT count(*) FROM rental_contract_line WHERE contract_id=${CG:-0}")"      "and its line was actually inserted"
+
+OUT=$(call rental.contract action_create_invoice "[[$CG]]")
+t_contains "$OUT" '"invoices":1' "it invoices"
+
+# The period must START on the 1st even though the line starts on the 7th.
+PS=$(pgv "SELECT period_start FROM rental_invoice_link WHERE contract_id=${CG:-0}" | tr -d ' ')
+t_eq "$PS" "$(pgv "SELECT date_trunc('month', CURRENT_DATE)::date" | tr -d ' ')"      "the period starts on the 1st, not on the line's own start day"
+PE=$(pgv "SELECT period_end FROM rental_invoice_link WHERE contract_id=${CG:-0}" | tr -d ' ')
+t_eq "$PE" "$(pgv "SELECT (date_trunc('month', CURRENT_DATE) + INTERVAL '1 month - 1 day')::date" | tr -d ' ')"      "and ends on the last day of that month"
+
+# …and the invoice READS as a month, which is the visible point of the setting.
+MG=$(pg "SELECT move_id FROM rental_invoice_link WHERE contract_id=${CG:-0} LIMIT 1")
+MONTH=$(pgv "SELECT to_char(CURRENT_DATE,'FMMonth YYYY')" | sed 's/^ *//;s/ *$//')
+LBL=$(pgv "SELECT name FROM account_move_line WHERE move_id=${MG:-0} AND name LIKE '%${PFX}-U7%' LIMIT 1")
+case "$LBL" in
+    *"$MONTH"*) ok "the invoice line reads \"$MONTH\" rather than a date range" ;;
+    *) no "the invoice line reads: $LBL" ;;
+esac
+
 verdict

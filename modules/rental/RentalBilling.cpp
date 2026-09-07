@@ -51,6 +51,9 @@ struct DueGroup {
     int         companyId  = 1;
     int         currencyId = 0;
     int         journalId  = 0;
+    /// Contract setting: the period is a calendar month, and the invoice says
+    /// "August 2026" rather than a date range (migration 821).
+    bool        wholeMonth = false;
     std::vector<DueLine> lines;
 };
 
@@ -110,7 +113,15 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             // "what cadence is this line on" answerable in one SQL query.
             "       COALESCE(l.billing_interval, c.billing_interval, 1) AS billing_interval, "
             "       COALESCE(l.billing_unit,     c.billing_unit, 'month') AS billing_unit, "
-            "       to_char(COALESCE(l.next_period_start, l.date_start), 'YYYY-MM-DD') AS period_start, "
+            // Whole-month billing snaps the period to the 1st. Done in SQL so
+            // the period the invoice PRINTS and the one it is keyed on
+            // (UNIQUE contract_line_id, period_start) can never diverge.
+            "       to_char(CASE WHEN COALESCE(c.whole_month_billing, FALSE) "
+            "                    THEN date_trunc('month', "
+            "                           COALESCE(l.next_period_start, l.date_start))::date "
+            "                    ELSE COALESCE(l.next_period_start, l.date_start) END, "
+            "               'YYYY-MM-DD') AS period_start, "
+            "       COALESCE(c.whole_month_billing, FALSE) AS whole_month, "
             "       COALESCE(u.code, '')  AS unit_code, "
             "       COALESCE(u.name, '')  AS unit_name, "
             "       c.currency_id, c.journal_id "
@@ -169,6 +180,7 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             g.periodStart = key.periodStart;
             g.companyId   = key.companyId;
             g.currencyId  = key.currencyId;
+            g.wholeMonth  = !r["whole_month"].is_null() && r["whole_month"].as<bool>(false);
             // The journal is not part of the key: it is a routing choice
             // rather than an accounting attribute of the invoice, and
             // falls back to the company's sale journal when unset.
@@ -235,11 +247,24 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             // period_end is the day before the NEXT period starts, using
             // the same anchor arithmetic the advance below uses — so the
             // printed period and the next due date can never disagree.
+            // The end of the period, and — when the contract bills calendar
+            // months — the name to print for it. Both come from PostgreSQL in
+            // the same statement as the anchor arithmetic, so the printed
+            // period, the stored period and the next due date cannot disagree.
             auto pe = txn.exec(
-                "SELECT to_char(rental_next_period($1::date, $2, $3, $4) - 1, 'YYYY-MM-DD')",
+                "SELECT to_char(rental_next_period($1::date, $2, $3, $4) - 1, 'YYYY-MM-DD'), "
+                "       to_char(($1::date + INTERVAL '1 month - 1 day')::date, 'YYYY-MM-DD'), "
+                "       to_char($1::date, 'FMMonth YYYY')",
                 pqxx::params{g.periodStart, g.lines[0].anchorDay,
                              g.lines[0].interval, g.lines[0].unit});
-            const std::string periodEnd = pe[0][0].c_str();
+            const std::string periodEnd = g.wholeMonth ? pe[0][1].c_str()
+                                                       : pe[0][0].c_str();
+            // "August 2026", or the range. This is the whole visible point of
+            // the setting: the tenant reads a month, not two dates that happen
+            // to be a month apart.
+            const std::string periodLabel = g.wholeMonth
+                ? std::string(pe[0][2].c_str())
+                : (g.periodStart + " to " + periodEnd);
 
             // Invoice number from ir.sequence inside this transaction —
             // never COUNT(*)+1, which P4 removed from three other places.
@@ -282,7 +307,7 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             mp.append(g.partnerId);
             mp.append(g.companyId);
             if (g.currencyId > 0) mp.append(g.currencyId); else mp.append(nullptr);
-            mp.append("Rental " + g.periodStart + " to " + periodEnd);
+            mp.append("Rental " + periodLabel);
             mp.append(origin);
             if (contractId > 0) mp.append(contractId); else mp.append(nullptr);
 
@@ -321,7 +346,7 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
                 const std::string label =
                     (dl.unitCode.empty() ? std::string("Rental") : "Unit " + dl.unitCode)
                     + (dl.unitName.empty() ? "" : " (" + dl.unitName + ")")
-                    + " — " + g.periodStart + " to " + periodEnd;
+                    + " — " + periodLabel;
 
                 // account_move_line has no `discount` column, so the NET
                 // rate is written as price_unit rather than the standard

@@ -254,6 +254,8 @@ public:
            journalId = 0, companyId = 1, billingLeadDays = 7;
     double depositAmount = 0.0;
     bool   active = true;
+    // Bill calendar months rather than anniversary periods (migration 821).
+    bool   wholeMonthBilling = false;
 
     explicit RentalContract(std::shared_ptr<DbConnection> db) : BaseModel(std::move(db)) {}
 
@@ -299,6 +301,10 @@ public:
             fieldRegistry_.add(bu);
         }
         fieldRegistry_.add({"billing_lead_days", FieldType::Integer,  "Invoice Lead Days"});
+        // "Disregard the days" — the box that makes a period a MONTH.
+        // Labelled for what it does to the invoice, not for the column.
+        fieldRegistry_.add({"whole_month_billing", FieldType::Boolean,
+                            "Bill whole calendar months"});
         fieldRegistry_.add({"payment_term_id",   FieldType::Many2one, "Payment Terms", false, false, true, false, "account.payment.term"});
         fieldRegistry_.add({"deposit_amount",    FieldType::Monetary, "Deposit"});
         // Both of these are CHECK-constrained to a fixed list, so they are
@@ -345,6 +351,7 @@ public:
         j["billing_unit"]      = billingUnit.empty() ? nlohmann::json(nullptr)
                                                      : nlohmann::json(billingUnit);
         j["billing_lead_days"] = billingLeadDays;
+        j["whole_month_billing"] = wholeMonthBilling;
         j["payment_term_id"]   = paymentTermId > 0 ? nlohmann::json(paymentTermId) : nlohmann::json(false);
         j["deposit_amount"]    = depositAmount;
         j["deposit_state"]     = depositState;
@@ -371,6 +378,8 @@ public:
         applyPeriodPreset_();
         if (j.contains("billing_lead_days") && j["billing_lead_days"].is_number())
             billingLeadDays = j["billing_lead_days"].get<int>();
+        if (j.contains("whole_month_billing") && j["whole_month_billing"].is_boolean())
+            wholeMonthBilling = j["whole_month_billing"].get<bool>();
         if (j.contains("payment_term_id"))                                   paymentTermId = m2oToId_(j["payment_term_id"]);
         if (j.contains("deposit_amount") && j["deposit_amount"].is_number()) depositAmount = j["deposit_amount"].get<double>();
         if (j.contains("deposit_state")  && j["deposit_state"].is_string())  depositState  = j["deposit_state"].get<std::string>();
