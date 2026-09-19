@@ -603,14 +603,14 @@ public:
         // Resolve column positions once. Indexing a row by name inside this
         // template also makes `as<>` a dependent name, which is a needless
         // fight with the compiler for something that is faster done by index.
-        struct KeyCol { std::size_t idx; std::size_t endIdx; bool hasEnd; };
+        struct KeyCol { pqxx::row_size_type idx; pqxx::row_size_type endIdx; bool hasEnd; };
         std::vector<KeyCol> keyCols;
         for (const auto& k : keys) {
             KeyCol kc{res.column_number(k.alias), 0, !k.interval.empty()};
             if (kc.hasEnd) kc.endIdx = res.column_number(k.alias + "_end");
             keyCols.push_back(kc);
         }
-        std::vector<std::size_t> measureCols;
+        std::vector<pqxx::row_size_type> measureCols;
         for (const auto& m : measures) measureCols.push_back(res.column_number(m.alias));
         const auto countCol = res.column_number("__count");
 

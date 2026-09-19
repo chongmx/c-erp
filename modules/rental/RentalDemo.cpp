@@ -131,10 +131,11 @@ nlohmann::json RentalDemo::seed(std::shared_ptr<DbConnection> db) {
         auto ty = txn.exec("SELECT id FROM rental_unit_type WHERE code = $1 LIMIT 1",
                            pqxx::params{std::string(z.typeCode)});
         for (int i = 1; i <= z.count; ++i) {
-            char code[8];
-            std::snprintf(code, sizeof(code), "%s%02d", z.prefix, i);
+            // Zero-padded to two digits, exactly as kActive above spells them.
+            const std::string code = std::string(z.prefix) +
+                                     (i < 10 ? "0" : "") + std::to_string(i);
             pqxx::params p;
-            p.append(std::string(code));
+            p.append(code);
             if (ty.empty()) p.append(nullptr); else p.append(ty[0][0].as<int>());
             p.append(std::string(kSite));
             p.append(std::string(z.zone));
