@@ -12297,6 +12297,7 @@ const CUSTOM_VIEWS = {
     'barcode.scan':       BarcodeScan,
     'bank.reconcile':     BankReconcile,
     'company.admin':      CompanyAdmin,
+    'api.keys':           ApiKeys,        // Settings → Users & Access → API Keys
     'db.backups':         DbBackups,
     'website.page':       WebsitePages,
     'db.studio':          DbStudio,

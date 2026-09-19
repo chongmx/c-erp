@@ -43,6 +43,7 @@ seeded by exactly one module.
 | 30–32 | `ir` | **Settings** and its children |
 | 50, 52–53 | `uom` | **Products** root, units of measure |
 | 51, 54–57, 75–79, 86 | `product` | products, categories, parts catalogue |
+| 87 | `api` | Settings → Users & Access → API Keys |
 | 60–62 | `sale` | **Sales** |
 | 67–68, 80–85 | `hr` | **Employees** |
 | 69, 90–99, 200–210 | `stock` | **Inventory** |
@@ -78,6 +79,7 @@ seeded by exactly one module.
 | 114–115 | `help` |
 | 116 | `bom` |
 | 123–126 | `website` |
+| 129 | `api` |
 
 Both spaces have gaps. **Do not fill them by hand** — take the next free id the
 test prints. A gap usually means an id was retired, and reusing it resurrects a

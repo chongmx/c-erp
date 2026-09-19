@@ -1,10 +1,11 @@
 # HTTP API
 
-One server, five surfaces:
+One server, six surfaces:
 
 | Prefix | Audience | Auth |
 |---|---|---|
 | `/web/...` | the ERP application | `session_id` cookie |
+| `/api/v1/...` | scripts, CI, AI agents | `Authorization: Bearer` API key, scoped — see [api-v1.md](api-v1.md) |
 | `/portal/...` | customers | `portal_sid` cookie (separate store, 8 h) |
 | `/kiosk/...` | a shared HR tablet | none — device-scoped |
 | `/site/...` | the public | none |

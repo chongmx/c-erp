@@ -106,6 +106,7 @@ after the table appears here too.
 | `res_groups` | 7 | `id`, `name`, `full_name`, `share`, `permissions`, `create_date`, `write_date` |
 | `res_groups_users_rel` | 2 | `gid`, `uid` |
 | `res_users` | 11 | `id`, `login`, `password`, `partner_id`, `company_id`, `lang`, `tz`, `active`, `share`, `create_date`, `write_date` |
+| `res_users_apikey` | 14 | `id`, `user_id`, `name`, `token_prefix`, `token_hash`, `scopes`, `project_ids`, `expires_at`, `revoked_at`, `last_used_at`, `last_used_ip`, `use_count`, `created_by`, `create_date` |
 
 ### ir — the technical registry
 

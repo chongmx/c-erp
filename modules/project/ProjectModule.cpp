@@ -512,6 +512,7 @@ public:
         REGISTER_MUTATOR("set_tags",       handleSetTags)
         REGISTER_MUTATOR("set_watchers",   handleSetWatchers)
         REGISTER_MUTATOR("watch",          handleWatch)
+        REGISTER_METHOD("search_tickets",  handleSearchTickets)
     }
 private:
     std::shared_ptr<DbConnection> db_;
@@ -1012,6 +1013,139 @@ private:
         txn.commit();
         return true;
     }
+    /**
+     * Tickets matching filters, newest-most-urgent first — the list behind
+     * GET /api/v1/tickets.
+     *
+     * The candidate ids come from the ORM (searchRead with the caller's
+     * context), so record rules and the company boundary decide what is
+     * visible exactly as they do for `read`; only then is SQL used to fill in
+     * the ticket fields. Filters:
+     *   project_ids [int]   only these projects (an API key's restriction)
+     *   issue_type  str     task | bug | feature | chore
+     *   status      str     a stage name, ignoring case
+     *   state       str     open (default) | closed | all
+     *   assignee_id int     a user; -1 = unassigned
+     *   label       str     a label name, ignoring case
+     *   q           str     key or title contains (matched literally)
+     *   limit / offset      at most 200 per page
+     */
+    nlohmann::json handleSearchTickets(const core::CallKwArgs& call) {
+        const auto v = call.arg(0).is_object() ? call.arg(0) : nlohmann::json::object();
+        const auto ctx = extractContext_(call);
+        const int limit  = std::clamp(v.value("limit", 50), 1, 200);
+        const int offset = std::max(0, v.value("offset", 0));
+
+        nlohmann::json dom = nlohmann::json::array({nlohmann::json::array({"active", "=", true})});
+        if (v.contains("project_ids") && v["project_ids"].is_array())
+            dom.push_back({"project_id", "in", intsOf_(v["project_ids"])});
+        const std::string type = jstr(v, "issue_type");
+        if (!type.empty()) dom.push_back({"issue_type", "=", type});
+        if (v.contains("assignee_id") && v["assignee_id"].is_number_integer()) {
+            const int a = v["assignee_id"].get<int>();
+            if (a < 0) dom.push_back({"user_id", "=", nullptr});
+            else if (a > 0) dom.push_back({"user_id", "=", a});
+        }
+
+        auto empty = [&]() { return nlohmann::json{{"total", 0}, {"tickets", nlohmann::json::array()}}; };
+        {
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            const std::string status = jstr(v, "status");
+            if (!status.empty()) {
+                std::vector<int> ids;
+                for (const auto& r : txn.exec("SELECT id FROM project_task_type "
+                                              "WHERE lower(name) = lower($1)", pqxx::params{status}))
+                    ids.push_back(r[0].as<int>());
+                if (ids.empty()) return empty();
+                dom.push_back({"stage_id", "in", ids});
+            }
+            const std::string state = v.value("state", std::string("open"));
+            if (state == "open" || state == "closed") {
+                std::vector<int> closed;
+                for (const auto& r : txn.exec("SELECT id FROM project_task_type WHERE is_closed"))
+                    closed.push_back(r[0].as<int>());
+                if (state == "closed") dom.push_back({"stage_id", "in", closed});
+                else if (!closed.empty()) {
+                    dom.push_back("|");
+                    dom.push_back({"stage_id", "=", nullptr});
+                    dom.push_back({"stage_id", "not in", closed});
+                }
+            }
+            const std::string label = jstr(v, "label");
+            if (!label.empty()) {
+                std::vector<int> ids;
+                for (const auto& r : txn.exec(
+                        "SELECT x.task_id FROM project_task_tag_rel x JOIN project_tag g ON g.id = x.tag_id "
+                        "WHERE lower(g.name) = lower($1)", pqxx::params{label}))
+                    ids.push_back(r[0].as<int>());
+                if (ids.empty()) return empty();
+                dom.push_back({"id", "in", ids});
+            }
+        }
+        std::string q = jstr(v, "q");
+        if (!q.empty()) {
+            // The domain wraps the value in %...%; what was typed is literal.
+            std::string esc;
+            for (char c : q) { if (c == '%' || c == '_' || c == '\\') esc += '\\'; esc += c; }
+            dom.push_back("|");
+            dom.push_back({"key", "ilike", esc});
+            dom.push_back({"name", "ilike", esc});
+        }
+
+        ProjectTask proto(db_);
+        proto.setUserContext(ctx);
+        const auto page = proto.searchRead(dom, {"id"}, limit, offset, "priority DESC, id DESC");
+        const long total = proto.searchCount(dom);
+        std::vector<int> ids;
+        for (const auto& r : page) if (r.contains("id")) ids.push_back(r["id"].get<int>());
+        if (ids.empty()) return {{"total", total}, {"tickets", nlohmann::json::array()}};
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        std::map<int, nlohmann::json> byId;
+        for (const auto& row : txn.exec(
+                "SELECT t.id, t.key, t.name, COALESCE(t.issue_type,'task') AS issue_type, t.priority, "
+                "       COALESCE(s.name,'') AS status, COALESCE(s.is_closed,false) AS closed, "
+                "       (t.kanban_state = 'blocked') AS blocked, "
+                "       COALESCE(p.task_prefix,'') AS project, COALESCE(p.name,'') AS project_name, "
+                "       t.user_id, COALESCE(u.login,'') AS user_login, "
+                "       COALESCE(NULLIF(up.name,''), u.login, '') AS user_name, "
+                "       COALESCE(to_char(t.date_deadline,'YYYY-MM-DD'),'') AS due, "
+                "       to_char(t.create_date,'YYYY-MM-DD\"T\"HH24:MI:SS') AS created, "
+                "       to_char(t.write_date, 'YYYY-MM-DD\"T\"HH24:MI:SS') AS updated, "
+                "       COALESCE((SELECT json_agg(g.name ORDER BY lower(g.name)) "
+                "                  FROM project_task_tag_rel x JOIN project_tag g ON g.id = x.tag_id "
+                "                 WHERE x.task_id = t.id), '[]')::text AS labels "
+                "FROM project_task t "
+                "LEFT JOIN project_task_type s ON s.id = t.stage_id "
+                "LEFT JOIN project_project p ON p.id = t.project_id "
+                "LEFT JOIN res_users u ON u.id = t.user_id "
+                "LEFT JOIN res_partner up ON up.id = u.partner_id "
+                "WHERE t.id = ANY($1::int[])", pqxx::params{intArray(ids)})) {
+            const int id = row["id"].as<int>();
+            const int prio = row["priority"].as<int>(0);
+            byId[id] = {
+                {"id", id}, {"key", row["key"].is_null() ? "" : row["key"].c_str()},
+                {"title", row["name"].c_str()}, {"type", row["issue_type"].c_str()},
+                {"priority", labelOf(kPriorities, std::to_string(prio))}, {"priority_value", prio},
+                {"status", row["status"].c_str()}, {"closed", row["closed"].as<bool>(false)},
+                {"blocked", row["blocked"].as<bool>(false)},
+                {"project", row["project"].c_str()}, {"project_name", row["project_name"].c_str()},
+                {"assignee", row["user_id"].is_null() ? nlohmann::json(nullptr)
+                              : nlohmann::json{{"id", row["user_id"].as<int>()},
+                                               {"login", row["user_login"].c_str()},
+                                               {"name", row["user_name"].c_str()}}},
+                {"labels", nlohmann::json::parse(row["labels"].c_str(), nullptr, false)},
+                {"due", row["due"].c_str()},
+                {"created_at", row["created"].is_null() ? "" : row["created"].c_str()},
+                {"updated_at", row["updated"].is_null() ? "" : row["updated"].c_str()}};
+        }
+        nlohmann::json out = nlohmann::json::array();
+        for (const int id : ids) if (byId.count(id)) out.push_back(byId[id]);   // the ORM's order
+        return {{"total", total}, {"tickets", out}};
+    }
+
     /// Watch or stop watching, as the signed-in user.
     nlohmann::json handleWatch(const core::CallKwArgs& call) {
         const auto v = call.arg(0);

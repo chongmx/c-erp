@@ -18,6 +18,7 @@
 #include "modules/report/ReportModule.hpp"
 #include "modules/portal/PortalModule.hpp"
 #include "modules/website/WebsiteModule.hpp"
+#include "modules/api/ApiModule.hpp"
 #include "modules/rental/RentalModule.hpp"
 #include <csignal>
 #include <iostream>
@@ -82,6 +83,9 @@ int main(int argc, char** argv) {
     g_container->addModule<cerp::modules::portal::PortalModule>();
     g_container->addModule<cerp::modules::rental::RentalModule>();
     g_container->addModule<cerp::modules::website::WebsiteModule>();
+    // Last: its menu hangs under Settings → Users & Access (IrModule) and its
+    // routes call the project view models.
+    g_container->addModule<cerp::modules::api::ApiModule>();
 
     try {
         std::cout << "[c-erp] Booting modules...\n";

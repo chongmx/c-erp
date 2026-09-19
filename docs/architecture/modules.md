@@ -309,6 +309,18 @@ development is managed in. Migrations 1100–1101 (range 1100–1199):
   rules and the company boundary apply as they do to `read`. Deleting a ticket
   deletes its comments and history.
 
+## api
+
+API keys and the REST API at `/api/v1` — for scripts, CI and AI agents
+([../reference/api-v1.md](../reference/api-v1.md)). `res_users_apikey`
+(migration 1200; range 1200–1299) holds keys as SHA-256 hashes with scopes,
+optional project limits, expiry and revocation; `api.key` (JSON-RPC, session
+only) creates, lists and revokes them; Settings → Users & Access → API Keys is
+the screen (`ApiKeys.js`). The first area is the issue tracker: its routes
+resolve tickets by key and call the `project.task` view model as the key's
+owner, so every rule and history line is the screen's. Registered last in
+`main.cpp`: its menu hangs under IrModule's Settings tree.
+
 ## help
 
 `help.article` — one row per article or section, with a stable slug, title,

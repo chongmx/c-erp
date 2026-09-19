@@ -167,6 +167,29 @@ There is no self-service signup path in normal operation.
   creates an empty per-request store and every lookup returns `nullopt`. Take
   the shared one from `services_.sessions()`.
 
+## API keys (`/api/v1`)
+
+`modules/api` — reference in [../reference/api-v1.md](../reference/api-v1.md).
+
+- A key is `cerp_` + 48 hex characters from `RAND_bytes()`. Only its SHA-256 is
+  stored (`res_users_apikey.token_hash`); the token exists once, in the create
+  response. The list never returns it.
+- Every request re-reads the key and its owner: revocation, expiry, a
+  deactivated owner, or a lost Internal User group takes effect on the next
+  call. The owner's groups and companies are loaded the way a login loads them.
+- **Scopes** gate each route; **project limits** answer 404, not 403, so a key
+  cannot discover tickets outside its projects.
+- A key authenticates `/api/v1` only. `/web/*` ignores the header, so a key can
+  never create or revoke keys (`api.key` needs a real session) and cannot reach
+  any model its scopes do not name.
+- Writes go through the same view models as the screens (`callVm`), with the
+  owner's context and the ambient `CurrentUser` set — record rules, the company
+  boundary and comment authorship are identical to the browser.
+- 300 requests a minute per key. Uploads use `modules/ir/AttachmentStore` —
+  the same size cap, allowlist and basename rule as the browser upload.
+- Downloads are always `Content-Disposition: attachment` with `nosniff`, so an
+  uploaded SVG is never rendered from this origin.
+
 ## Rate limiting
 
 `authenticate` is limited to **10 failed attempts per client IP per 5-minute
@@ -238,6 +261,11 @@ Before saving an uploaded file:
 3. Extension — lowercase, allowlisted (`.pdf`, `.jpg`, `.jpeg`, `.png`).
 4. Path — `data/upload_dir/{id}_{timestamp}_{baseName}`.
 5. Store the basename in the database, never the raw filename.
+
+`ir.attachment` uploads — the browser's `/web/attachment/upload` and the API's
+`/api/v1/tickets/{key}/attachments` — both go through
+`modules/ir/AttachmentStore::storeAttachment`: 25 MB, basename only, the type
+allowlist, classification. One implementation, so neither door is the weaker.
 
 Attachment **bytes** go through `core/Filestore`, which is content-addressed:
 the path is `data/filestore/<sha256[:2]>/<sha256>`. The hash *is* the name, so

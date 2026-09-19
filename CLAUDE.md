@@ -113,9 +113,10 @@ as a failure — so a test that dies early can never be scored as a pass.
   DB pool, DI container, migration runner) plus the cross-cutting engines:
   `Money`, `TaxEngine`, `RuleEngine`, `StockQuant`, `IrCron`, `IrSequence`,
   `ControlPlane`, `Filestore`, `DbExplorer`, `DbBackup`, `AuditService`
-- `modules/` — 20 feature modules: account, auth, base, bom, help, hr, ir, mail,
-  mrp, portal, product, project, purchase, rental, report, sale, stock, uom,
-  website (`auth` supplies two: `AuthModule` and `AuthSignupModule`)
+- `modules/` — 21 feature modules: account, api, auth, base, bom, help, hr, ir,
+  mail, mrp, portal, product, project, purchase, rental, report, sale, stock,
+  uom, website (`auth` supplies two: `AuthModule` and `AuthSignupModule`).
+  `api` is API keys plus the REST API at `/api/v1` (docs/reference/api-v1.md)
 - `web/static/` — the browser code, no build step. `src/app.js` is the ERP shell
   and its custom forms; `src/components/` one screen each; `portal.html`,
   `kiosk.html` and `website-editor.js` are separate front ends
