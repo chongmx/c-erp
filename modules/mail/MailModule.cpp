@@ -248,6 +248,9 @@ void MailModule::ensureSchema_() {
     txn.exec(
         "CREATE INDEX IF NOT EXISTS mail_message_target_idx "
         "ON mail_message (res_model, res_id)");
+    // Set when a comment is edited, so the feed can say "(edited)" rather than
+    // silently rewriting what was said.
+    txn.exec("ALTER TABLE mail_message ADD COLUMN IF NOT EXISTS write_date TIMESTAMPTZ");
     txn.commit();
 }
 

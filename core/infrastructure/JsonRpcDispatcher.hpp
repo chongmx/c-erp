@@ -984,7 +984,9 @@ public:
             "purchase_order_line", "purchase_order",
             // manufacturing
             "mrp_workorder", "mrp_production", "mrp_production_schedule", "mrp_forecast",
-            // project
+            // project — the label and watcher links reference project_task, so
+            // they must be named or the TRUNCATE (no CASCADE) is refused
+            "project_task_tag_rel", "project_task_watcher_rel",
             "project_timesheet", "project_task",
             // rental
             "rental_event", "rental_expense", "rental_contract",

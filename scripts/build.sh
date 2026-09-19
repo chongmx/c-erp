@@ -40,7 +40,31 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-JOBS="$(nproc 2>/dev/null || echo 4)"
+# How many compilers to run at once: the SMALLER of the core count and what
+# memory allows.
+#
+# nproc alone crashed the machine. WSL here has 8 cores and ~7 GiB, and the
+# heaviest translation unit peaks at 1.6 GiB (see deploy.sh) — eight of them
+# at once is ~13 GiB, WSL runs out, and the whole VM goes down: the Docker
+# build, the local server, the database, every open terminal. Budget
+# MEM_PER_JOB_MIB per compiler against what is AVAILABLE right now, so a
+# running server and database are left their share.
+#
+# Override with --jobs N / -j N, or BUILD_JOBS=N in the environment (deploy.sh
+# passes it into the container).
+MEM_PER_JOB_MIB="${MEM_PER_JOB_MIB:-2048}"
+default_jobs() {
+    local cores avail_mib by_mem
+    cores="$(nproc 2>/dev/null || echo 4)"
+    avail_mib="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)"
+    if [ "${avail_mib:-0}" -gt 0 ]; then
+        by_mem=$(( avail_mib / MEM_PER_JOB_MIB ))
+        [ "$by_mem" -lt 1 ] && by_mem=1
+        [ "$by_mem" -lt "$cores" ] && cores="$by_mem"
+    fi
+    echo "$cores"
+}
+JOBS="${BUILD_JOBS:-$(default_jobs)}"
 
 # Which build tree to use. Defaults to ./build; deploy.sh sets
 # BUILD_DIR=build-docker so the Docker cross-build gets its own cmake cache.
@@ -147,7 +171,9 @@ else
 fi
 
 build_one() {
-    echo "[build] building $1 (-j $JOBS) ..."
+    echo "[build] building $1 (-j $JOBS; $(nproc 2>/dev/null) cores," \
+         "$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null) MiB available," \
+         "${MEM_PER_JOB_MIB} MiB per job) ..."
     cmake --build "./$BUILD_DIR" --target "$1" -j "$JOBS"
 }
 

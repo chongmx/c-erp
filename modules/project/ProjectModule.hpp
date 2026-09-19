@@ -52,6 +52,7 @@ public:
     void registerViews()      override;
     void registerRoutes()     override;
     void initialize()         override;
+    void registerMigrations(cerp::infrastructure::MigrationRunner& runner) override;
 
 private:
     core::ModelFactory&     models_;

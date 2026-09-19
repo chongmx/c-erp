@@ -56,7 +56,28 @@ generic:
 | Settings | `ERPSettingsView`, `ReportSettingsView`, `DocumentLayoutEditor` |
 
 `CUSTOM_VIEWS` is the map that lets a model replace the generic `ActionView`
-entirely.
+entirely. `CUSTOM_FORMS` replaces only the **form** and keeps the generic
+list: `project.task` → `TaskForm` (components/TaskForm.js), the ticket screen.
+A custom form receives `recordId` (null for a new record), `defaults` and
+`onBack`.
+
+`window.ErpNav.openRecord(model, id, defaults)` opens a record from anywhere;
+`id` may be `'new'` for an empty form, and `defaults` reaches a `CUSTOM_FORMS`
+screen as its `defaults` prop. The task board opens a ticket with
+`{from: 'board'}` so the ticket's Back returns to the board, and "+ Create"
+with the board's project.
+
+### The ticket screen (`TaskForm.js`)
+
+Sidebar fields (status, assignee, reporter, type, priority, labels, blocked,
+due date, estimate, project, parent) save on change; the server writes the
+history line, so the screen re-reads after every save. Pasting or dropping an
+image into the description or a comment uploads it onto the ticket and inserts
+`![name](/web/content/<id>)`; `TicketRich` renders only that URL shape as an
+`<img>`, links `http(s)` URLs and ticket keys of real projects, and puts
+everything else through `t-esc`. On a new ticket the pasted images are stored
+unlinked and attached to the ticket when it is created. `window.TicketUI`
+holds the type and priority vocabulary shared with the board.
 
 ### What the generic `FormView` renders
 

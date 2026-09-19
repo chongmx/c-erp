@@ -268,8 +268,46 @@ Subcontracting backflushes through `StockQuant` like any other move.
 ## project
 
 `project.project`, `project.task`, `project.task.type` (kanban stages),
-`project.timesheet`. The task board and the timesheet grid are dedicated
-frontend components.
+`project.timesheet`, `project.tag` (labels). The task board, the ticket
+screen and the timesheet grid are dedicated frontend components.
+
+**The issue tracker.** A task is a ticket — this is what c-erp's own
+development is managed in. Migrations 1100–1101 (range 1100–1199):
+
+- **Keys.** Every project has a `task_prefix` (typed, or derived from the name:
+  "c-erp" → CERP, "Easy Locker Space" → ELS; unique, 2–10 letters/digits). A
+  task takes the project's next number on insert — `CERP-12` — from
+  `UPDATE project_project SET task_seq = task_seq + 1 … RETURNING`, which
+  row-locks the project, so concurrent creates never share a number. The
+  trigger `project_task_key_trg` is the **only** writer of `number`, `key`
+  and `display_name` ("CERP-12 Fix the save button"): a client's values are
+  dropped by the view model and overwritten by the trigger. Moving a ticket
+  to another project gives it that project's next key; renaming a prefix
+  re-keys the project's tickets.
+- **Type** (`task`/`bug`/`feature`/`chore`) and **priority** (-1 Low, 0 Normal,
+  1 High, 2 Urgent — an integer, so `priority DESC` is urgency order; the old
+  star was 1) are CHECK-constrained and checked in `write`, which does not run
+  `validate()`.
+- **Reporter** defaults to whoever created it. **Watchers**
+  (`project_task_watcher_rel`): the reporter, the assignee and anyone who
+  comments are added automatically. **Labels** (`project_task_tag_rel`) are
+  shared across projects; `set_tags` takes ids or names and creates a label
+  from a name, matched ignoring case.
+- **History.** `create`, `write`, `move_stage` and `set_tags` write a
+  `mail_message` with subtype `tracking` — "Status: New → In Progress" — with
+  values captured as labels, not ids, so it still reads right after a stage
+  is renamed. A write that changes nothing writes nothing.
+- **Comments** (`post_comment`, `edit_comment`, `delete_comment`) are authored
+  by the session's user — `mail.message create` takes `author_id` from the
+  client and is not used for them. Only the author, or an admin, may edit or
+  delete one; `write_date` on `mail_message` marks it edited. Screenshots are
+  ordinary attachments on the ticket, referenced in text as
+  `![name](/web/content/<id>)`.
+- `task_detail` and `activity` feed the ticket screen; `board` takes
+  `issue_type`, `tag_id` and `q` (key or title, matched literally). Every raw-SQL
+  method first reads the ticket through the ORM (`requireTask_`), so record
+  rules and the company boundary apply as they do to `read`. Deleting a ticket
+  deletes its comments and history.
 
 ## help
 

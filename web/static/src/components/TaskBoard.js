@@ -36,6 +36,25 @@ class TaskBoard extends owl.Component {
                         <option t-att-value="u.id" t-att-selected="u.id === state.userId" t-esc="u.login"/>
                     </t>
                 </select>
+                <select class="tb-sel" data-tb="type" t-on-change="onType">
+                    <option value="">All types</option>
+                    <t t-foreach="ui.types" t-as="ty" t-key="ty.value">
+                        <option t-att-value="ty.value" t-att-selected="ty.value === state.type"
+                                t-esc="ty.icon + '  ' + ty.label"/>
+                    </t>
+                </select>
+                <select class="tb-sel" data-tb="label" t-on-change="onTag">
+                    <option value="0">All labels</option>
+                    <t t-foreach="state.tags" t-as="g" t-key="g.id">
+                        <option t-att-value="g.id" t-att-selected="g.id === state.tagId" t-esc="g.name"/>
+                    </t>
+                </select>
+                <!-- Uncontrolled on purpose: the board re-renders when each
+                     search returns, and re-binding the value mid-typing can
+                     swallow a keystroke. The remembered query is set once. -->
+                <input class="tb-sel tb-search" data-tb="search" placeholder="Search key or title…"
+                       t-ref="search" t-on-input="onSearch"/>
+                <button class="tb-btn primary" data-tb="create" t-on-click="createTicket">+ Create</button>
                 <div class="tb-spacer"/>
                 <t t-if="state.stats">
                     <span class="tb-stat"><b t-esc="state.stats.open"/> open</span>
@@ -72,16 +91,35 @@ class TaskBoard extends owl.Component {
                                      t-on-dragstart="(ev) => this.onDragStart(ev, t)"
                                      t-on-dragend="onDragEnd"
                                      t-on-drop.stop="(ev) => this.onDrop(ev, st.id, t_index)"
+                                     t-att-data-key="t.key"
                                      t-on-click="() => this.open(t.id)">
+                                    <div class="tb-card-k">
+                                        <span t-attf-class="tf-type sm tf-type-{{ t.issue_type }}"
+                                              t-att-title="ui.type(t.issue_type).label"
+                                              t-esc="ui.type(t.issue_type).icon"/>
+                                        <span class="tb-key" t-esc="t.key"/>
+                                        <span t-if="t.priority" t-attf-class="tb-prio p{{ t.priority }}"
+                                              t-att-title="ui.priority(t.priority).label + ' priority'"
+                                              t-esc="ui.priority(t.priority).icon"/>
+                                    </div>
                                     <div class="tb-card-t">
-                                        <span class="tb-prio" t-if="t.priority" title="High priority">★</span>
                                         <span t-esc="t.name"/>
                                     </div>
                                     <div class="tb-card-m" t-if="!state.projectId" t-esc="t.project_name"/>
+                                    <div class="tb-tags" t-if="t.tags and t.tags.length">
+                                        <t t-foreach="t.tags" t-as="g" t-key="g.id">
+                                            <span class="tb-tag" t-esc="g.name"/>
+                                        </t>
+                                    </div>
                                     <div class="tb-card-f">
-                                        <span class="tb-who" t-if="t.user_login" t-esc="t.user_login"/>
+                                        <span class="tb-av" t-if="t.user_id" t-att-title="t.user_name"
+                                              t-esc="ui.initials(t.user_name)"/>
                                         <span class="tb-due" t-if="t.date_deadline"
                                               t-att-class="{late: isLate(t)}" t-esc="t.date_deadline"/>
+                                        <span class="tb-cnt" t-if="t.comment_count" title="Comments"
+                                              t-esc="'💬 ' + t.comment_count"/>
+                                        <span class="tb-cnt" t-if="t.attachment_count" title="Attachments"
+                                              t-esc="'📎 ' + t.attachment_count"/>
                                         <span class="tb-hrs" t-if="t.planned_hours or t.logged_hours"
                                               t-esc="fmtH(t.logged_hours) + '/' + fmtH(t.planned_hours) + 'h'"/>
                                     </div>
@@ -122,23 +160,38 @@ class TaskBoard extends owl.Component {
         </div>`;
 
     setup() {
+        this.ui = window.TicketUI;
+        // The filters come back as you left them: open a ticket, press Back,
+        // and you are looking at the same board, not "All projects" again.
+        const saved = this.loadFilters();
         this.state = owl.useState({
-            projects: [], users: [], stages: [], tasks: [],
-            projectId: 0, userId: 0, stats: null,
+            projects: [], users: [], stages: [], tasks: [], tags: [],
+            projectId: saved.projectId || 0, userId: saved.userId || 0,
+            type: saved.type || '', tagId: saved.tagId || 0, q: saved.q || '',
+            stats: null,
             dragId: 0, dropStage: 0,
             newIn: 0, newName: '',
             loading: false, error: '', busy: false,
         });
+        this.searchRef = owl.useRef('search');
+        owl.onMounted(() => { if (this.searchRef.el) this.searchRef.el.value = this.state.q; });
         owl.onWillStart(async () => {
             try {
-                const [projects, users] = await Promise.all([
+                const [projects, users, tags] = await Promise.all([
                     RpcService.call('project.project', 'search_read', [[]],
                                     { fields: ['name', 'display_name'], limit: 200 }),
                     RpcService.call('res.users', 'search_read', [[]],
                                     { fields: ['login'], limit: 100 }),
+                    RpcService.call('project.tag', 'search_read', [[['active', '=', true]]],
+                                    { fields: ['name'], limit: 500 }),
                 ]);
                 this.state.projects = projects || [];
                 this.state.users = users || [];
+                this.state.tags = (tags || []).sort((a, b) => a.name.localeCompare(b.name));
+                // A remembered project that no longer exists would show an
+                // empty board with no way to tell why.
+                if (this.state.projectId && !this.state.projects.some(p => p.id === this.state.projectId))
+                    this.state.projectId = 0;
             } catch (e) { /* the pickers are a convenience; the board still loads */ }
             await this.reload();
         });
@@ -148,7 +201,21 @@ class TaskBoard extends owl.Component {
         const f = {};
         if (this.state.projectId) f.project_id = this.state.projectId;
         if (this.state.userId) f.user_id = this.state.userId;
+        if (this.state.type) f.issue_type = this.state.type;
+        if (this.state.tagId) f.tag_id = this.state.tagId;
+        if (this.state.q.trim()) f.q = this.state.q.trim();
         return f;
+    }
+    loadFilters() {
+        try { return JSON.parse(window.localStorage.getItem('tb.filters') || '{}') || {}; }
+        catch (e) { return {}; }
+    }
+    saveFilters() {
+        const s = this.state;
+        try {
+            window.localStorage.setItem('tb.filters', JSON.stringify(
+                { projectId: s.projectId, userId: s.userId, type: s.type, tagId: s.tagId, q: s.q }));
+        } catch (e) { /* a convenience, never required */ }
     }
 
     async reload() {
@@ -284,8 +351,24 @@ class TaskBoard extends owl.Component {
     }
 
     // ---- top controls ------------------------------------------------------
-    async onProject(ev) { this.state.projectId = parseInt(ev.target.value, 10) || 0; await this.reload(); }
-    async onUser(ev)    { this.state.userId    = parseInt(ev.target.value, 10) || 0; await this.reload(); }
+    async onProject(ev) { this.state.projectId = parseInt(ev.target.value, 10) || 0; await this.refilter(); }
+    async onUser(ev)    { this.state.userId    = parseInt(ev.target.value, 10) || 0; await this.refilter(); }
+    async onType(ev)    { this.state.type      = ev.target.value || '';              await this.refilter(); }
+    async onTag(ev)     { this.state.tagId     = parseInt(ev.target.value, 10) || 0; await this.refilter(); }
+    onSearch(ev) {
+        this.state.q = ev.target.value;
+        clearTimeout(this._qT);
+        const wait = (window.UI_TIMING && window.UI_TIMING.debounce) || 150;
+        this._qT = setTimeout(() => this.refilter(), wait);
+    }
+    async refilter() { this.saveFilters(); await this.reload(); }
+
+    /** A new ticket, in the project being looked at. */
+    createTicket() {
+        if (window.ErpNav && window.ErpNav.openRecord)
+            window.ErpNav.openRecord('project.task', 'new',
+                                     { from: 'board', project_id: this.state.projectId || 0 });
+    }
 
     fmtH(h) {
         const v = Number(h || 0);
@@ -296,11 +379,12 @@ class TaskBoard extends owl.Component {
      * it worked — the previous `location.hash` version failed silently because
      * this app has no hash router at all.
      */
-    openRecord(model, id) {
-        if (window.ErpNav && window.ErpNav.openRecord) return window.ErpNav.openRecord(model, id);
+    openRecord(model, id, defaults) {
+        if (window.ErpNav && window.ErpNav.openRecord) return window.ErpNav.openRecord(model, id, defaults);
         console.warn('Cannot navigate: the shell is not mounted.');
         return false;
     }
 
-    open(id) { return this.openRecord('project.task', id); }
+    // from: 'board' makes the ticket's Back return here rather than to the list.
+    open(id) { return this.openRecord('project.task', id, { from: 'board' }); }
 }

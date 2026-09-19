@@ -56,7 +56,9 @@
  *
  * Add a model here when it gains a stored display_name, not before.
  */
-const M2O_DISPLAY_NAME_MODELS = ['res.partner'];
+// project.task's is "CERP-12 Fix the save button" (migration 1100), so a
+// parent-ticket picker finds a ticket by its key as well as its title.
+const M2O_DISPLAY_NAME_MODELS = ['res.partner', 'project.task'];
 
 const M2O_PAGE     = 20;   // rows in the inline dropdown
 const M2O_MODAL    = 50;   // rows per page in the browse dialog

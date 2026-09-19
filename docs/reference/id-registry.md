@@ -50,7 +50,7 @@ seeded by exactly one module.
 | 73 | `portal` | portal users |
 | 74, 101–103, 105, 131–132 | `report` | documents and reporting |
 | 104, 110–120 | `mrp` | **Manufacturing** |
-| 130, 137–142 | `project` | **Project** |
+| 130, 137–143 | `project` | **Project** |
 | 150 | `bom` | BOM editor |
 | 300, 309–315, 320–322, 330 | `rental` | **Rental** |
 | 400–402 | `help` | **Help Centre** |
@@ -74,7 +74,7 @@ seeded by exactly one module.
 | 48 | `sale` |
 | 49 | `purchase` |
 | 100 | `portal` |
-| 108–113 | `project` |
+| 108–113, 128 | `project` |
 | 114–115 | `help` |
 | 116 | `bom` |
 | 123–126 | `website` |

@@ -115,6 +115,7 @@ class ListView extends Component {
             label:    (fields[name] || {}).string   || name,
             type:     (fields[name] || {}).type     || 'char',
             relation: (fields[name] || {}).relation || null,
+            selection: (fields[name] || {}).selection || null,
         }));
     }
 
@@ -170,6 +171,13 @@ class ListView extends Component {
             const m  = this.state.m2oLabels[col.relation];
             if (m && m[id] !== undefined) return m[id];
             return id ? '#' + id : '';
+        }
+        // A selection shows its label ("Bug", "High"), not its stored value.
+        // Compared as strings: an integer-backed selection (priority) comes
+        // back from the server as a number.
+        if (col && Array.isArray(col.selection)) {
+            const opt = col.selection.find(o => String(o[0]) === String(val));
+            if (opt) return opt[1];
         }
         return String(val);
     }
@@ -12309,6 +12317,16 @@ const CUSTOM_VIEWS = {
 };
 
 // ----------------------------------------------------------------
+// CUSTOM_FORMS — models whose FORM is a screen of its own, while their list
+// stays the generic one. Same reasoning as CUSTOM_VIEWS: a key/value fact,
+// not another t-elif rung plus an isXxxModel getter. Each receives
+// recordId (null for a new record), defaults and onBack.
+// ----------------------------------------------------------------
+const CUSTOM_FORMS = {
+    'project.task':       TaskForm,     // the ticket (components/TaskForm.js)
+};
+
+// ----------------------------------------------------------------
 // ActionView — orchestrates list ↔ form switching
 // ----------------------------------------------------------------
 class ActionView extends Component {
@@ -12396,7 +12414,11 @@ class ActionView extends Component {
                 </t>
             </t>
             <t t-elif="state.mode === 'form'">
-                <t t-if="isSaleOrderModel">
+                <t t-if="customForm">
+                    <t t-component="customForm" recordId="state.recordId"
+                       defaults="props.initialDefaults" onBack.bind="backToList"/>
+                </t>
+                <t t-elif="isSaleOrderModel">
                     <SaleOrderFormView action="props.action"
                                        recordId="state.recordId"
                                        onBack.bind="backToList"/>
@@ -12525,6 +12547,7 @@ class ActionView extends Component {
 
     // Use overrideAction when navigateTo() has been called, else fall back to props.action
     get currentAction()          { return this.state.overrideAction || this.props.action; }
+    get customForm()             { return CUSTOM_FORMS[this.currentAction.res_model] || null; }
 
     get isSaleOrderModel()       { return this.currentAction.res_model === 'sale.order'; }
     get isPurchaseOrderModel()   { return this.currentAction.res_model === 'purchase.order'; }
@@ -12629,8 +12652,9 @@ class ActionView extends Component {
             this.state.listView = result.views?.list || null;
             // Arrived here by clicking a record elsewhere: go straight to its
             // form rather than dropping the user on a list they must search.
+            // 'new' opens an empty form — the task board's "Create" button.
             if (this.props.initialRecordId) {
-                this.state.recordId = this.props.initialRecordId;
+                this.state.recordId = this.props.initialRecordId === 'new' ? null : this.props.initialRecordId;
                 this.state.mode     = 'form';
             }
             this.state.formView = result.views?.form || null;
@@ -12820,7 +12844,8 @@ class MainApp extends Component {
                     </t>
                     <t t-elif="state.action">
                         <ActionView action="state.action" initialRecordId="state.pendingRecordId"
-                                    t-key="state.action.id + ':' + (state.pendingRecordId || 0)"/>
+                                    initialDefaults="state.pendingDefaults"
+                                    t-key="state.action.id + ':' + (state.pendingRecordId || 0) + ':' + state.navSeq"/>
                     </t>
                     <t t-else="">
                         <div class="welcome">
@@ -12846,6 +12871,8 @@ class MainApp extends Component {
             action:        null,
             loadingAction: false,
             pendingRecordId: null,
+            pendingDefaults: null,
+            navSeq:        0,       // re-opening the same record still rebuilds the screen
         });
         onMounted(() => {
             this.loadMenus();
@@ -12855,8 +12882,11 @@ class MainApp extends Component {
             // clicking menus — so `location.hash = '#action=...'` did nothing at
             // all. Three screens used it to open a record and silently failed.
             // A registered hook is honest about the coupling and works.
+            //
+            // id 'new' opens an empty form; `defaults` reaches a CUSTOM_FORMS
+            // screen as its `defaults` prop (the board passes its project).
             window.ErpNav = {
-                openRecord: (model, id) => this.openRecord(model, id),
+                openRecord: (model, id, defaults) => this.openRecord(model, id, defaults),
                 available: true,
             };
         });
@@ -12870,7 +12900,7 @@ class MainApp extends Component {
      * action id — a component that shows products should not have to know which
      * menu entry happens to point at them.
      */
-    async openRecord(model, recordId) {
+    async openRecord(model, recordId, defaults) {
         if (!model) return false;
         try {
             const acts = await RpcService.call('ir.actions.act_window', 'search_read',
@@ -12883,6 +12913,8 @@ class MainApp extends Component {
             this.state.mode            = 'app';
             this.state.action          = action;
             this.state.pendingRecordId = recordId || null;
+            this.state.pendingDefaults = defaults || null;
+            this.state.navSeq         += 1;
             return true;
         } catch (e) {
             console.error('openRecord failed:', e);
@@ -12933,11 +12965,13 @@ class MainApp extends Component {
         this.state.activeApp       = null;
         this.state.action          = null;
         this.state.pendingRecordId = null;
+        this.state.pendingDefaults = null;
     }
 
     async activateLeaf(leaf) {
         this.state.activeMenuId    = leaf.id;
         this.state.pendingRecordId = null;
+        this.state.pendingDefaults = null;
         if (!leaf.action_id) return;
 
         this.state.loadingAction = true;

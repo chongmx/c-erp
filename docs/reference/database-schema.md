@@ -131,7 +131,7 @@ after the table appears here too.
 
 | Table | Cols | Columns |
 |---|---:|---|
-| `mail_message` | 7 | `id`, `res_model`, `res_id`, `author_id`, `body`, `subtype`, `date` |
+| `mail_message` | 8 | `id`, `res_model`, `res_id`, `author_id`, `body`, `subtype`, `date`, `write_date` |
 
 ### account — accounting
 
@@ -280,9 +280,12 @@ after the table appears here too.
 
 | Table | Cols | Columns |
 |---|---:|---|
-| `project_project` | 15 | `id`, `name`, `code`, `description`, `partner_id`, `user_id`, `company_id`, `date_start`, `date_end`, `sequence`, `color`, `allow_timesheets`, `active`, `create_date`, `write_date` |
-| `project_task` | 18 | `id`, `name`, `description`, `project_id`, `stage_id`, `user_id`, `partner_id`, `parent_id`, `company_id`, `date_deadline`, `date_end`, `kanban_state`, `sequence`, `priority`, `planned_hours`, `active`, `create_date`, `write_date` |
+| `project_project` | 17 | `id`, `name`, `code`, `description`, `partner_id`, `user_id`, `company_id`, `date_start`, `date_end`, `sequence`, `color`, `allow_timesheets`, `active`, `create_date`, `write_date`, `task_prefix`, `task_seq` |
+| `project_tag` | 6 | `id`, `name`, `color`, `active`, `create_date`, `write_date` |
+| `project_task` | 23 | `id`, `name`, `description`, `project_id`, `stage_id`, `user_id`, `partner_id`, `parent_id`, `company_id`, `date_deadline`, `date_end`, `kanban_state`, `sequence`, `priority`, `planned_hours`, `active`, `create_date`, `write_date`, `number`, `key`, `display_name`, `issue_type`, `reporter_id` |
+| `project_task_tag_rel` | 2 | `task_id`, `tag_id` |
 | `project_task_type` | 9 | `id`, `name`, `project_id`, `sequence`, `fold`, `is_closed`, `active`, `create_date`, `write_date` |
+| `project_task_watcher_rel` | 2 | `task_id`, `user_id` |
 | `project_timesheet` | 11 | `id`, `name`, `date`, `project_id`, `task_id`, `employee_id`, `user_id`, `company_id`, `unit_amount`, `create_date`, `write_date` |
 
 ### help

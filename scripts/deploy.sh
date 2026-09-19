@@ -25,6 +25,11 @@
 #   ./scripts/deploy.sh --dry-run       build and check, but do not ship
 #
 # All build flags (--server, --admin, --clean, -j N) go through to build.sh.
+#
+# PARALLELISM. build.sh runs min(cores, available memory / 2 GiB) compilers —
+# not one per core: eight at once needed ~13 GiB and took the whole WSL VM
+# down with it. Force a number with -j N (or BUILD_JOBS=N ./scripts/deploy.sh),
+# or change the budget with MEM_PER_JOB_MIB=1536.
 # =============================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -147,6 +152,8 @@ docker run --rm \
     -v "$(pwd):/workspace" \
     -v "$CCACHE_DIR:/tmp/ccache" \
     -e "BUILD_DIR=$BUILD_DIR" \
+    -e "BUILD_JOBS=${BUILD_JOBS:-}" \
+    -e "MEM_PER_JOB_MIB=${MEM_PER_JOB_MIB:-2048}" \
     "$DOCKER_IMAGE" \
     ./scripts/build.sh "${BUILD_ARGS[@]}"
 

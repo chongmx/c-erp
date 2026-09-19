@@ -268,8 +268,9 @@ pg "DELETE FROM project_project WHERE id=$P2" >/dev/null
   && ok "timesheets cascade with the project" || no "timesheets survived the project"
 
 echo "############ menus ############"
-[ "$(pg "SELECT count(*) FROM ir_ui_menu WHERE parent_id=130")" = "6" ] \
-  && ok "6 menu entries under the Project app" || no "unexpected Project menu count"
+# Seven since the issue tracker added Labels (menu 143).
+[ "$(pg "SELECT count(*) FROM ir_ui_menu WHERE parent_id=130")" = "7" ] \
+  && ok "7 menu entries under the Project app" || no "unexpected Project menu count"
 [ "$(pg "SELECT count(*) FROM ir_ui_menu WHERE id BETWEEN 131 AND 136 AND action_id BETWEEN 108 AND 113")" = "0" ] \
   && ok "no stale menus left in ReportModule's 131-136 range" || no "stale project menus in 131-136"
 for M in project.board project.timegrid; do
