@@ -1609,22 +1609,41 @@ class InvoiceFormView extends Component {
                                 </t>
                             </select>
                         </div>
+                        <!-- The amount always says WHICH currency it is in.
+                             "Amount 300" beside "Received (USD)" left the payer
+                             guessing which of the two the 300 was. -->
                         <div class="so-field-row" style="margin-bottom:4px;">
-                            <label class="so-field-lbl">Amount</label>
+                            <label class="so-field-lbl"
+                                   t-esc="'Amount' + (state.payInvCode ? ' (' + state.payInvCode + ')' : '')"/>
                             <input class="form-input" type="number" step="0.01" min="0.01"
                                    t-att-value="state.payAmount"
                                    t-on-input="onPayAmountInput"/>
                         </div>
-                        <!-- P1/FX: only for a foreign-currency invoice.
-                             The bank converts on receipt, so we ask for the
-                             base-currency amount that actually landed rather
-                             than a rate — the bank's spread makes any quoted
-                             rate wrong, and the statement figure is the one
-                             the user can actually verify. -->
+
+                        <!-- Whether this is a cross-currency receipt is now a
+                             CHOICE, not something inferred silently. It still
+                             defaults to what the data implies — the invoice
+                             currency differing from the company's — but an
+                             operator paid in the invoice's own currency can say
+                             so, and one paid in another can say that too. -->
+                        <div class="so-field-row" style="margin-bottom:4px;">
+                            <label class="so-field-lbl">Different currency?</label>
+                            <label class="pay-check">
+                                <input type="checkbox" data-pay="foreign"
+                                       t-att-checked="state.payIsForeign"
+                                       t-on-change="onPayForeignToggle"/>
+                                <span t-esc="foreignHint"/>
+                            </label>
+                        </div>
+
+                        <!-- The bank converts on receipt, so we ask for the
+                             amount that actually LANDED rather than a rate: the
+                             bank's spread makes any quoted rate wrong, and the
+                             statement figure is the one the user can verify. -->
                         <t t-if="state.payIsForeign">
                             <div class="so-field-row" style="margin-bottom:4px;">
                                 <label class="so-field-lbl"
-                                       t-esc="'Received (' + state.payBaseCode + ')'"/>
+                                       t-esc="'Banked (' + state.payBaseCode + ')'"/>
                                 <input class="form-input" type="number" step="0.01" min="0"
                                        t-att-value="state.payReceivedBase"
                                        t-att-placeholder="state.payExpectedBase"
@@ -1648,6 +1667,16 @@ class InvoiceFormView extends Component {
                             <input class="form-input" type="text"
                                    t-att-value="state.payMemo"
                                    t-on-input="onPayMemoInput"/>
+                        </div>
+                        <!-- Always visible. Which currency the books are kept
+                             in decides what "foreign" even means, and it was
+                             nowhere on this screen. -->
+                        <div class="pay-dialog-note">
+                            Books kept in <strong t-esc="state.payBaseCode || '—'"/>.
+                            <t t-if="state.payIsForeign">
+                                This invoice is in <strong t-esc="state.payInvCode"/>, so
+                                enter what your bank actually credited.
+                            </t>
                         </div>
                         <t t-if="state.payError">
                             <div class="pay-dialog-error" t-esc="state.payError"/>
@@ -1965,7 +1994,8 @@ class InvoiceFormView extends Component {
             payAmount:      '',
             // P1/FX (docs/048 §4.6)
             payIsForeign:    false,
-            payBaseCode:     '',
+            payBaseCode:     '',   // the company's currency — what the books are in
+            payInvCode:      '',   // this invoice's currency
             payReceivedBase: '',
             payExpectedBase: '',
             payBookedRate:   1,
@@ -2335,6 +2365,28 @@ class InvoiceFormView extends Component {
     onPayJournalChange(ev)     { this.state.payJournalId    = parseInt(ev.target.value) || null; }
     onPayAmountInput(ev)       { this.state.payAmount       = ev.target.value; }
     onPayReceivedBaseInput(ev) { this.state.payReceivedBase = ev.target.value; }
+
+    /**
+     * Turn the cross-currency fields on or off by hand.
+     *
+     * It still defaults to what the data implies, so nothing changes for
+     * anyone who does not touch it. But "is this a foreign receipt" is a fact
+     * about the PAYMENT, not about the invoice: a customer can settle an MYR
+     * invoice from a USD account, or a foreign invoice in its own currency,
+     * and only the person looking at the bank statement knows which happened.
+     */
+    onPayForeignToggle(ev) {
+        this.state.payIsForeign = !!ev.target.checked;
+        if (!this.state.payIsForeign) this.state.payReceivedBase = '';
+    }
+
+    /** Says what ticking the box means, in this invoice's actual currencies. */
+    get foreignHint() {
+        const inv  = this.state.payInvCode  || 'the invoice currency';
+        const base = this.state.payBaseCode || 'the company currency';
+        if (!this.state.payIsForeign) return `Paid in ${inv}`;
+        return `Converted to ${base} on receipt`;
+    }
     onPayMemoInput(ev)         { this.state.payMemo         = ev.target.value; }
 
     async onOpenPayDialog() {
@@ -2351,6 +2403,7 @@ class InvoiceFormView extends Component {
         // "amount received in base currency" field.
         this.state.payIsForeign     = false;
         this.state.payBaseCode      = '';
+        this.state.payInvCode       = '';
         this.state.payReceivedBase  = '';
         this.state.payExpectedBase  = '';
         this.state.payBookedRate    = 1;
@@ -2392,6 +2445,10 @@ class InvoiceFormView extends Component {
 
             const invRaw = this.state.record.currency_id;
             const invId  = Array.isArray(invRaw) ? invRaw[0] : invRaw;
+            const inv    = currencies.find(c => c.id === invId);
+            // Falls back to the base code: an invoice with no currency of its
+            // own is in the company's, and saying so beats saying nothing.
+            this.state.payInvCode = inv ? inv.name : this.state.payBaseCode;
 
             if (invId && baseId && invId !== baseId) {
                 this.state.payIsForeign  = true;

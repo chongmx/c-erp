@@ -2900,3 +2900,23 @@ body.ct-resizing { cursor:col-resize; user-select:none; }
     font-size: .85rem;
 }
 .gf-wf-btn { margin-right: 6px; }
+
+/* Register Payment: the currency facts, and the cross-currency switch.
+   Which currency the books are kept in decides what "foreign" even means,
+   and it used to be nowhere on the dialog. */
+.pay-dialog-note {
+    margin: 6px 0 4px;
+    font-size: .76rem;
+    line-height: 1.5;
+    color: var(--muted);
+}
+.pay-dialog-note strong { color: var(--text); }
+.pay-check {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: .8rem;
+    color: var(--muted);
+    cursor: pointer;
+}
+.pay-check input { cursor: pointer; }

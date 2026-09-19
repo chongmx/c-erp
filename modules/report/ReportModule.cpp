@@ -964,6 +964,10 @@ static std::string renderDoc_(
 
     int companyId = 1;
     int partnerId = 0;
+    // The currency of the DOCUMENT, when it has one of its own. Applied
+    // after CompanyIdentity::fillVars, which would otherwise overwrite it
+    // with the company's — see below.
+    std::string docCurrency;
 
   if(model == "sale.order") {
                     auto rows = txn.exec(
@@ -974,13 +978,20 @@ static std::string renderDoc_(
                         "COALESCE(so.amount_tax::TEXT,'0') AS amount_tax, "
                         "COALESCE(so.amount_total::TEXT,'0') AS amount_total, "
                         "COALESCE(so.note,'') AS note, "
-                        "so.partner_id, so.company_id "
-                        "FROM sale_order so WHERE so.id=$1",
+                        "so.partner_id, so.company_id, "
+                        "COALESCE(cur.name, '') AS doc_currency "
+                        "FROM sale_order so "
+                        "LEFT JOIN res_currency cur ON cur.id = so.currency_id "
+                        "WHERE so.id=$1",
                         pqxx::params{recordId});
                     if (rows.empty()) throw std::runtime_error("Sale order not found: " + std::to_string(recordId));
                     const auto& r = rows[0];
                     companyId = r["company_id"].is_null() ? 1 : r["company_id"].as<int>();
                     partnerId = r["partner_id"].is_null() ? 0 : r["partner_id"].as<int>();
+
+                    // Same rule as the invoice below: a quotation states ITS
+                    // currency, not the company's.
+                    docCurrency = safeStr(r["doc_currency"]);
 
                     std::string soState = safeStr(r["state"]);
                     vars["document_title"] = proforma
@@ -1031,13 +1042,31 @@ static std::string renderDoc_(
                         "COALESCE(am.amount_untaxed::TEXT,'0') AS amount_untaxed, "
                         "COALESCE(am.amount_tax::TEXT,'0') AS amount_tax, "
                         "COALESCE(am.amount_total::TEXT,'0') AS amount_total, "
-                        "am.partner_id, am.company_id "
-                        "FROM account_move am WHERE am.id=$1",
+                        "am.partner_id, am.company_id, "
+                        // The DOCUMENT's currency, not the company's.
+                        "COALESCE(cur.name, '') AS doc_currency "
+                        "FROM account_move am "
+                        "LEFT JOIN res_currency cur ON cur.id = am.currency_id "
+                        "WHERE am.id=$1",
                         pqxx::params{recordId});
                     if (rows.empty()) throw std::runtime_error("Invoice not found: " + std::to_string(recordId));
                     const auto& r = rows[0];
                     companyId = r["company_id"].is_null() ? 1 : r["company_id"].as<int>();
                     partnerId = r["partner_id"].is_null() ? 0 : r["partner_id"].as<int>();
+
+                    // An invoice states the currency IT is in.
+                    //
+                    // {{currency_code}} comes from CompanyIdentity, which reads
+                    // res_company.currency_id — so every document printed the
+                    // COMPANY's currency whatever the document was actually in.
+                    // An MYR invoice came out saying USD, and with the company
+                    // set to MYR a USD invoice would say MYR: wrong in both
+                    // directions, and on the one line a customer uses to decide
+                    // what to pay.
+                    //
+                    // Only overridden when the move has a currency of its own;
+                    // otherwise the company's remains the honest answer.
+                    docCurrency = safeStr(r["doc_currency"]);
 
                     std::string moveType = safeStr(r["move_type"]);
                     vars["document_title"]   = (moveType == "in_invoice") ? "Vendor Bill" :
@@ -1085,13 +1114,18 @@ static std::string renderDoc_(
                         "COALESCE(po.amount_untaxed::TEXT,'0') AS amount_untaxed, "
                         "COALESCE(po.amount_tax::TEXT,'0') AS amount_tax, "
                         "COALESCE(po.amount_total::TEXT,'0') AS amount_total, "
-                        "po.partner_id, po.company_id "
-                        "FROM purchase_order po WHERE po.id=$1",
+                        "po.partner_id, po.company_id, "
+                        "COALESCE(cur.name, '') AS doc_currency "
+                        "FROM purchase_order po "
+                        "LEFT JOIN res_currency cur ON cur.id = po.currency_id "
+                        "WHERE po.id=$1",
                         pqxx::params{recordId});
                     if (rows.empty()) throw std::runtime_error("Purchase order not found: " + std::to_string(recordId));
                     const auto& r = rows[0];
                     companyId = r["company_id"].is_null() ? 1 : r["company_id"].as<int>();
                     partnerId = r["partner_id"].is_null() ? 0 : r["partner_id"].as<int>();
+
+                    docCurrency = safeStr(r["doc_currency"]);   // see account.move
 
                     std::string poState = safeStr(r["state"]);
                     vars["document_title"] = (poState == "purchase" || poState == "done") ? "Purchase Order" : "Request for Quotation";
@@ -1192,6 +1226,11 @@ static std::string renderDoc_(
                 // a document and its preview can never disagree about who the
                 // company is.
                 core::CompanyIdentity::load(txn, companyId).fillVars(vars);
+                // …and then let the document speak for itself. fillVars sets
+                // currency_code from res_company.currency_id, so this MUST come
+                // after it — setting it inside the branch above looked right and
+                // was silently overwritten a hundred lines later.
+                if (!docCurrency.empty()) vars["currency_code"] = docCurrency;
 
                 // ---- Partner info ----
   if(partnerId > 0) {
