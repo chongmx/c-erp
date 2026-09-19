@@ -426,6 +426,24 @@ with plain words or single quotes, and never with backticks.
 
 `node --check web/static/src/components/<file>.js` catches it in a second.
 
+### A template expression sees the component, not the browser's globals
+
+OWL compiles every name in a template expression as a lookup on the component
+unless it is one of a short list — `Math`, `Array`, `Object`, `Date`, `RegExp`,
+`console`, `window` and the literals (`RESERVED_WORDS` in `owl.iife.js`).
+`parseInt`, `parseFloat`, `Number`, `String`, `isNaN` and `JSON` are **not** on
+it, so
+
+```xml
+<select t-on-change="(ev)=>{ this.state.x = parseInt(ev.target.value, 10); }">
+```
+
+compiles to a call of `undefined`. It fails only when the event fires — the
+screen renders fine — and the page logs `v8 is not a function`. The ERP
+Settings currency combo box shipped like that and dropped every pick. Put the
+logic in a component method (`t-on-change="onPick"`) and convert there.
+`node --check` cannot catch this; only a browser test that uses the control can.
+
 ### Event delegation inside `t-foreach` — mandatory
 
 A named method in `t-on-*` inside a `t-foreach` cannot resolve in the IIFE

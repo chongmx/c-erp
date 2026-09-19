@@ -1641,6 +1641,17 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 
 .erp-field-input:focus { border-color: var(--accent); }
 
+/* Explanatory text under a settings section — was unstyled, so it ran full
+   width in body type, flush against the section edge. */
+.erp-hint {
+    padding: 10px 16px 12px;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    color: var(--muted);
+    border-top: 1px solid var(--border);
+}
+.erp-hint b { color: var(--text); font-weight: 600; }
+
 .erp-save-row {
     display: flex;
     align-items: center;

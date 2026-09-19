@@ -137,3 +137,35 @@ where is it, what is its bank account". Before it existed, the invoice PDF, the
 template preview and the portal each answered differently — the preview showed
 different details from the document it was previewing. Read company details
 from here, never from `res_company` or `ir_config_parameter` directly.
+
+### Where it is edited
+
+**Settings → ERP Settings**, tabs General and Banking, edit the company the
+session is working in — `res.company` through the ordinary `write`. Only the
+fields that changed are sent. Documents, Email and Precision & Currency hold
+installation-wide settings and stay in `ir_config_parameter`.
+
+Those two tabs used to read and write `ir_config_parameter` too. Nothing had
+read those rows since identity moved onto `res_company`, and startup deletes
+them (`AuthModule::migrateCompanyIdentity_`), so the screen opened blank and an
+edit never reached a document.
+
+### The home currency
+
+`res_company.currency_id` is the currency the books are kept in: every debit
+and credit is counted in it, and a payment in any other currency is converted
+into it. It is picked from a combo box on General (active currencies only;
+more are activated under Accounting → Configuration → Currencies). Each
+invoice, quotation and order still prints **its own** currency, not this one.
+
+Changing it relabels the ledger's numbers, it does not convert them. So the
+write is **refused while any posted entry is in another currency**, and the
+refusal names them. That still allows the one change that is safe: a company
+left on the default currency whose books were in fact all kept in another.
+
+`res_currency.rate` is "home-currency units per 1 unit of this currency", so on
+a change the new home currency becomes 1.0 and every rate is re-expressed
+against it (`r' = r / r_new`). The rates are one table for the whole
+database, so they are rebased only when no other company is still counting in
+the old currency. `tests/integration/core/company-settings` pins all of this;
+`tests/functional/core/company-settings` drives the screen.

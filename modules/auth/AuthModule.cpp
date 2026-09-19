@@ -6,9 +6,12 @@
 #include "AuthViewModel.hpp"
 #include "AuthViews.hpp"
 #include "DbConnection.hpp"
+#include "Errors.hpp"
+#include "CacheInvalidation.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -63,10 +66,110 @@ private:
         const auto v = call.arg(1);
         if (!v.is_object()) throw std::runtime_error("write: args[1] must be a dict");
         const auto ctx = extractContext_(call);
+        const auto ids = call.ids();
+
+        const int newCur = v.contains("currency_id") && v["currency_id"].is_number_integer()
+                         ? v["currency_id"].get<int>() : 0;
+        const auto moved = newCur > 0 ? guardCurrencyChange_(ids, newCur)
+                                      : std::vector<std::pair<int,int>>{};
+
         ResCompany proto(db_);
         proto.setUserContext(ctx);
-        const auto result = proto.write(call.ids(), v);
+        const auto result = proto.write(ids, v);
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        // The company and its own contact are one legal entity; the company row
+        // is the authority (the same rule migrateCompanyIdentity_ applies at
+        // startup, applied here so a rename shows on documents straight away).
+        if (v.contains("name") && v["name"].is_string())
+            txn.exec("UPDATE res_partner p SET name = c.name FROM res_company c "
+                     "WHERE c.id = ANY($1::int[]) AND c.partner_id = p.id "
+                     "  AND p.name IS DISTINCT FROM c.name",
+                     pqxx::params{idsArray_(ids)});
+        for (const auto& [oldCur, cur] : moved) rebaseRates_(txn, oldCur, cur);
+        txn.commit();
+        if (!moved.empty()) core::CacheInvalidation::currency();
         return result;
+    }
+
+    // The home currency is what every debit and credit in the ledger is
+    // counted in. Changing it relabels those numbers, it does not convert
+    // them — so it is refused while any posted entry is in some OTHER
+    // currency. That still allows the common fix: a company left on the
+    // default currency whose books were in fact all kept in another one.
+    //
+    // Returns (old, new) for each company whose currency really changes.
+    std::vector<std::pair<int,int>> guardCurrencyChange_(const std::vector<int>& ids,
+                                                         int newCur) {
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        auto nc = txn.exec("SELECT name FROM res_currency WHERE id = $1", pqxx::params{newCur});
+        if (nc.empty()) throw infrastructure::ValidationError("That currency does not exist.");
+        const std::string newCode = nc[0][0].c_str();
+
+        std::vector<std::pair<int,int>> moved;
+        for (int id : ids) {
+            auto cr = txn.exec("SELECT COALESCE(currency_id, 0) FROM res_company WHERE id = $1",
+                               pqxx::params{id});
+            if (cr.empty()) continue;
+            const int oldCur = cr[0][0].as<int>();
+            if (oldCur == newCur) continue;
+
+            // An entry with no currency of its own is in the company's.
+            auto bad = txn.exec(
+                "SELECT COALESCE(cur.name, '?') AS code, count(*) AS n "
+                "FROM account_move m "
+                "LEFT JOIN res_currency cur ON cur.id = COALESCE(m.currency_id, $2) "
+                "WHERE m.company_id = $1 AND m.state = 'posted' "
+                "  AND COALESCE(m.currency_id, $2) IS DISTINCT FROM $3 "
+                "GROUP BY 1 ORDER BY 2 DESC",
+                pqxx::params{id, oldCur > 0 ? std::optional<int>(oldCur) : std::nullopt, newCur});
+            if (!bad.empty()) {
+                std::string list;
+                for (const auto& r : bad) {
+                    if (!list.empty()) list += ", ";
+                    list += std::string(r["n"].c_str()) + " in " + r["code"].c_str();
+                }
+                throw infrastructure::ValidationError(
+                    "The home currency cannot change to " + newCode +
+                    ": posted entries are booked in another currency (" + list +
+                    "). Changing it would relabel those amounts, not convert them.");
+            }
+            moved.emplace_back(oldCur, newCur);
+        }
+        txn.commit();
+        return moved;
+    }
+
+    // res_currency.rate is "home-currency units per 1 unit of this currency",
+    // so the new home currency must become 1.0 and every other rate is
+    // re-expressed against it: r' = r / r_new. The rates are one table shared
+    // by every company in the database, so they are only rebased when no
+    // other company is still counting in the old currency — otherwise the
+    // rates would be wrong for that company instead.
+    void rebaseRates_(pqxx::work& txn, int oldCur, int newCur) {
+        if (oldCur > 0) {
+            auto others = txn.exec("SELECT count(*) FROM res_company "
+                                   "WHERE currency_id = $1", pqxx::params{oldCur});
+            if (others[0][0].as<long>() > 0) return;
+        }
+        auto nr = txn.exec("SELECT rate FROM res_currency WHERE id = $1", pqxx::params{newCur});
+        if (nr.empty() || nr[0][0].is_null() || nr[0][0].as<long long>() <= 0) return;
+        const long long rNew = nr[0][0].as<long long>();
+        txn.exec("UPDATE res_currency SET rate = CASE WHEN id = $1 THEN 1000000 "
+                 "ELSE round(rate::numeric * 1000000 / $2)::bigint END "
+                 "WHERE rate IS NOT NULL",
+                 pqxx::params{newCur, rNew});
+    }
+
+    static std::string idsArray_(const std::vector<int>& ids) {
+        std::string s = "{";
+        for (size_t i = 0; i < ids.size(); ++i) {
+            if (i) s += ",";
+            s += std::to_string(ids[i]);
+        }
+        return s + "}";
     }
     nlohmann::json handleUnlink(const core::CallKwArgs& call) {
         const auto ctx = extractContext_(call);

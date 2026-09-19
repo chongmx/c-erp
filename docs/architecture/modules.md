@@ -145,6 +145,11 @@ archived" button gets back to one.
   [../reference/id-registry.md](../reference/id-registry.md).
 - `AuthSignupModule` registers `/web/signup` and `/web/reset_password`.
   Account creation is admin-only; resets are admin-issued.
+- `res.company` registers the letterhead, bank and `payment_term_days` columns
+  that `CompanyIdentity` reads, so Settings edits them with a plain `write`.
+  A rename is copied to the company's own contact. Changing `currency_id` is
+  refused while a posted entry is in another currency, and rebases the rates —
+  see [multi-company.md](multi-company.md#the-home-currency).
 
 ## mail
 

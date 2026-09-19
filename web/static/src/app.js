@@ -6932,53 +6932,67 @@ class ERPSettingsView extends Component {
                             <div class="erp-field-grid">
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Company Name</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['company.name']"/>
+                                    <input class="erp-field-input" type="text" t-model="state.co.name"/>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Registration No.</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.reg_number']"/>
+                                    <input class="erp-field-input" type="text" t-model="state.co.reg_number"/>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Address Line 1</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.addr1']"/>
+                                    <input class="erp-field-input" type="text" t-model="state.co.street"/>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Address Line 2</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.addr2']"/>
+                                    <input class="erp-field-input" type="text" t-model="state.co.street2"/>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Address Line 3</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.addr3']"/>
+                                    <input class="erp-field-input" type="text" t-model="state.co.street3"/>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">City &amp; Country</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.city_country']"/>
+                                    <input class="erp-field-input" type="text" t-model="state.co.city_country"/>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Phone</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['company.phone']"/>
+                                    <input class="erp-field-input" type="text" t-model="state.co.phone"/>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Email</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['company.email']"/>
+                                    <input class="erp-field-input" type="text" t-model="state.co.email"/>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Website</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['company.website']"/>
+                                    <input class="erp-field-input" type="text" t-model="state.co.website"/>
                                 </div>
                             </div>
                         </div>
                         <div class="erp-section">
-                            <div class="erp-section-title">Invoice Defaults</div>
+                            <div class="erp-section-title">Currency &amp; Invoice Defaults</div>
                             <div class="erp-field-grid">
                                 <div class="erp-field-row">
-                                    <label class="erp-field-label">Currency Code</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.currency_code']"/>
+                                    <label class="erp-field-label" for="erp-home-currency">Home Currency</label>
+                                    <select id="erp-home-currency" class="erp-field-input erp-home-currency"
+                                            t-on-change="onHomeCurrency">
+                                        <option value="" t-att-selected="!state.co.currency_id">— choose —</option>
+                                        <t t-foreach="state.homeCurrencies" t-as="c" t-key="c.id">
+                                            <option t-att-value="c.id" t-att-selected="c.id === state.co.currency_id"
+                                                    t-esc="c.name + (c.symbol ? ' (' + c.symbol + ')' : '')"/>
+                                        </t>
+                                    </select>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Payment Terms Days</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.payment_term_days']"/>
+                                    <input class="erp-field-input" type="number" min="0" step="1" t-model.number="state.co.payment_term_days"/>
                                 </div>
+                            </div>
+                            <div class="erp-hint">
+                                The currency your books are kept in; payments in any other currency are
+                                converted into it. Each invoice, quotation and order still prints its own
+                                currency. It can change only while every posted entry is already in the
+                                new currency. Only active currencies are listed — activate more under
+                                <b>Accounting → Configuration → Currencies</b>.
                             </div>
                         </div>
                         <div class="erp-save-row">
@@ -6997,23 +7011,23 @@ class ERPSettingsView extends Component {
                             <div class="erp-field-grid">
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Account Holder Name</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.bank.account_name']"/>
+                                    <input class="erp-field-input" type="text" t-model="state.co.bank_account_name"/>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Account Number</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.bank.account_no']"/>
+                                    <input class="erp-field-input" type="text" t-model="state.co.bank_account_no"/>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Bank Name</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.bank.bank_name']"/>
+                                    <input class="erp-field-input" type="text" t-model="state.co.bank_name"/>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Bank Address</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.bank.bank_address']"/>
+                                    <input class="erp-field-input" type="text" t-model="state.co.bank_address"/>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">SWIFT Code</label>
-                                    <input class="erp-field-input" type="text" t-model="state.cfg['report.bank.swift_code']"/>
+                                    <input class="erp-field-input" type="text" t-model="state.co.bank_swift"/>
                                 </div>
                             </div>
                         </div>
@@ -7209,16 +7223,22 @@ class ERPSettingsView extends Component {
         </div>
     `;
 
+    // Installation-wide settings, kept in ir_config_parameter.
     static ALL_KEYS = [
-        'company.name','company.phone','company.email','company.website',
-        'report.reg_number','report.addr1','report.addr2','report.addr3',
-        'report.city_country','report.currency_code','report.payment_term_days',
-        'report.bank.account_name','report.bank.account_no','report.bank.bank_name',
-        'report.bank.bank_address','report.bank.swift_code',
         'report.paper_format','report.orientation',
         'report.design.font_family','report.design.accent_color',
         'mail.smtp_host','mail.smtp_port','mail.smtp_ssl',
         'mail.from_address','mail.smtp_user','mail.smtp_password',
+    ];
+
+    // Company identity lives on res_company (docs/094) — it is what every
+    // printed document reads. General and Banking used to write these as
+    // ir_config_parameter rows: nothing read them, and startup deleted them,
+    // so the fields showed blank and an edit never reached an invoice.
+    static COMPANY_FIELDS = [
+        'name','reg_number','street','street2','street3','city_country',
+        'phone','email','website','currency_id','payment_term_days',
+        'bank_account_name','bank_account_no','bank_name','bank_address','bank_swift',
     ];
 
     setup() {
@@ -7231,6 +7251,11 @@ class ERPSettingsView extends Component {
             saveError:         '',
             cfg:               {},
             cfgIds:            {},
+            // The company being edited: the one this session is working in.
+            coId:              0,
+            co:                {},
+            coLoaded:          {},   // as read, so a save sends only what changed
+            homeCurrencies:    [],
             // Countries tab
             countries:         [],
             countriesLoading:  false,
@@ -7277,18 +7302,14 @@ class ERPSettingsView extends Component {
         if (this.state.currencies.length === 0) {
             this.state.currLoading = true;
             try {
-                const [rows, companies] = await Promise.all([
-                    RpcService.call('res.currency', 'search_read', [[['active', '=', true]]], {
-                        fields: ['id', 'name', 'symbol', 'rate', 'decimal_places'], order: 'name ASC'
-                    }),
-                    RpcService.call('res.company', 'search_read', [[]], {
-                        fields: ['id', 'currency_id'], limit: 1
-                    }),
-                ]);
+                const rows = await RpcService.call('res.currency', 'search_read',
+                    [[['active', '=', true]]],
+                    { fields: ['id', 'name', 'symbol', 'rate', 'decimal_places'], order: 'name ASC' });
                 // Mark the base currency so its rate is shown read-only — it is
-                // 1.0 by definition and editing it would be meaningless.
-                const baseRaw = companies?.[0]?.currency_id;
-                const baseId  = Array.isArray(baseRaw) ? baseRaw[0] : baseRaw;
+                // 1.0 by definition and editing it would be meaningless. The
+                // base is the SAVED home currency of the company being edited,
+                // not whatever is picked on General and not yet saved.
+                const baseId = this.state.coLoaded.currency_id || 0;
                 this.state.currencies = (Array.isArray(rows) ? rows : [])
                     .map(c => ({ ...c, is_base: c.id === baseId }));
             } catch (e) {
@@ -7396,6 +7417,7 @@ class ERPSettingsView extends Component {
             }
             this.state.cfg    = cfg;
             this.state.cfgIds = cfgIds;
+            await this.loadCompany();
         } catch (e) {
             this.state.error = e.message || 'Failed to load settings';
         } finally {
@@ -7403,11 +7425,71 @@ class ERPSettingsView extends Component {
         }
     }
 
+    // A method, not an inline handler: a template expression resolves free
+    // names against the component, so parseInt there is undefined and the
+    // pick was silently dropped.
+    onHomeCurrency(ev) {
+        this.state.co.currency_id = parseInt(ev.target.value, 10) || false;
+    }
+
+    async loadCompany() {
+        const info = await RpcService.sessionInfo().catch(() => ({}));
+        let coId = info?.user_companies?.current_company || info?.company_id || 0;
+        if (!coId) {
+            const first = await RpcService.call('res.company', 'search_read', [[]],
+                { fields: ['id'], limit: 1 });
+            coId = first?.[0]?.id || 0;
+        }
+        if (!coId) throw new Error('No company to edit.');
+        const [rows, currencies] = await Promise.all([
+            RpcService.call('res.company', 'read', [[coId]], { fields: ERPSettingsView.COMPANY_FIELDS }),
+            RpcService.call('res.currency', 'search_read', [[['active', '=', true]]],
+                { fields: ['id', 'name', 'symbol'], order: 'name ASC' }),
+        ]);
+        const row = rows?.[0] || {};
+        const co  = {};
+        for (const f of ERPSettingsView.COMPANY_FIELDS) {
+            const v = row[f];
+            if (f === 'currency_id')            co[f] = Array.isArray(v) ? v[0] : (v || false);
+            else if (f === 'payment_term_days') co[f] = (v === false || v == null) ? 30 : v;
+            else                                co[f] = (v === false || v == null) ? '' : v;
+        }
+        // The saved currency is always offered, even if it has since been
+        // deactivated — otherwise the combo box would show "— choose —" and
+        // misreport what the books are kept in.
+        const list = Array.isArray(currencies) ? currencies.slice() : [];
+        if (co.currency_id && !list.some(c => c.id === co.currency_id)) {
+            const cur = await RpcService.call('res.currency', 'read',
+                [[co.currency_id]], { fields: ['id', 'name', 'symbol'] }).catch(() => []);
+            if (cur?.[0]) list.push(cur[0]);
+        }
+        this.state.coId           = coId;
+        this.state.co             = co;
+        this.state.coLoaded       = { ...co };
+        this.state.homeCurrencies = list;
+    }
+
     async onSave() {
         this.state.saving    = true;
         this.state.saved     = false;
         this.state.saveError = '';
         try {
+            // Company first: it can be refused (a home-currency change while
+            // posted entries are in another currency), and the message should
+            // arrive before anything else is half-saved.
+            const days = parseInt(this.state.co.payment_term_days, 10);
+            this.state.co.payment_term_days = Number.isFinite(days) && days >= 0 ? days : 30;
+            const changed = {};
+            for (const f of ERPSettingsView.COMPANY_FIELDS) {
+                if (this.state.co[f] !== this.state.coLoaded[f]) changed[f] = this.state.co[f];
+            }
+            if (this.state.coId && Object.keys(changed).length) {
+                await RpcService.call('res.company', 'write', [[this.state.coId], changed], {});
+                this.state.coLoaded = { ...this.state.co };
+                // The base currency and its rates may have moved; the
+                // Precision & Currency tab reloads them next time it opens.
+                if ('currency_id' in changed) this.state.currencies = [];
+            }
             for (const key of ERPSettingsView.ALL_KEYS) {
                 const value = this.state.cfg[key] || '';
                 const id    = this.state.cfgIds[key];
