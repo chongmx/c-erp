@@ -1071,6 +1071,52 @@ void registerRentalMigrations(MigrationRunner& runner) {
             'line reads "August 2026" rather than a date range.';
     )SQL"});
 
+    // --------------------------------------------------------
+    // 822 — a month per LINE, and the rent due on the move-in day
+    //
+    // Reported: "let me have options to specify just the month and year for
+    // the line items instead of a start to end date ... since the user has
+    // different move in date, I will set their due date to be on their move in
+    // date, so their next due will always be the move in date of next month."
+    //
+    // Two settings, because they are two decisions:
+    //
+    //   billing_span (per LINE)  contract | month | dates
+    //       'contract' follows the contract's whole_month_billing, which is
+    //       what every existing line does today. 'month' bills that line as a
+    //       whole calendar month whatever the contract says; 'dates' keeps the
+    //       exact period. A storeroom let for two weeks and a locker let by
+    //       the month can now sit on one contract.
+    //
+    //   due_on_move_in (per CONTRACT)
+    //       The invoice falls due on the tenant's move-in DAY inside the
+    //       period it covers, rather than on the day the period starts. With
+    //       whole-month billing the period starts on the 1st, but the rent is
+    //       owed on the day they moved in — the 5th, say — and on the 5th of
+    //       every month after.
+    //
+    // A move-in day the month does not have (29th-31st) is clamped to the last
+    // day of that month: the reporter avoids those by hand today, and silently
+    // skipping a month would be worse than billing on the 28th of February.
+    // --------------------------------------------------------
+    runner.registerMigration({822, "rental_line_billing_span", R"SQL(
+        ALTER TABLE rental_contract_line
+            ADD COLUMN IF NOT EXISTS billing_span TEXT NOT NULL DEFAULT 'contract';
+        ALTER TABLE rental_contract_line DROP CONSTRAINT IF EXISTS rental_cl_billing_span_chk;
+        ALTER TABLE rental_contract_line ADD CONSTRAINT rental_cl_billing_span_chk
+            CHECK (billing_span IN ('contract', 'month', 'dates'));
+
+        ALTER TABLE rental_contract
+            ADD COLUMN IF NOT EXISTS due_on_move_in BOOLEAN NOT NULL DEFAULT FALSE;
+
+        COMMENT ON COLUMN rental_contract_line.billing_span IS
+            'contract = follow the contract; month = bill whole calendar months; '
+            'dates = bill the exact period.';
+        COMMENT ON COLUMN rental_contract.due_on_move_in IS
+            'Rent falls due on the tenant''s move-in day within each period '
+            '(clamped to the last day of a short month), not on the period start.';
+    )SQL"});
+
 }
 
 } // namespace cerp::modules::rental

@@ -21,21 +21,55 @@ const RpcService = (() => {
     // --------------------------------------------------------
     // Core JSON-RPC call
     // --------------------------------------------------------
+    /**
+     * How long any one call may take before it is given up on.
+     *
+     * A request that never answers — a stalled connection, a CDN holding it
+     * open — leaves the screen that made it waiting for ever: the Save button
+     * on Settings sat on "Saving…" with nothing to show, because the promise
+     * simply never settled. Nothing is retried; the caller gets an error it
+     * can put on screen, and the person can press the button again.
+     */
+    function rpcTimeoutMs() {
+        const t = (typeof window !== 'undefined' && window.UI_TIMING) ? window.UI_TIMING.rpcTimeout : 0;
+        return Number.isFinite(t) && t > 0 ? t : 45000;   // read per call, so a test can shorten it
+    }
+
     async function call(model, method, args = [], kwargs = {}) {
         // Inject session_id into context so the server can resolve the session
         // from the request body (fallback when cookies aren't transmitted).
         const ctx = Object.assign({ session_id: _session.sessionId }, kwargs.context || {});
         const fullKwargs = Object.assign({}, kwargs, { context: ctx });
-        const res = await fetch('/web/dataset/call_kw', {
-            method:      'POST',
-            credentials: 'include',
-            headers:     { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                jsonrpc: '2.0', method: 'call', id: _id++,
-                params:  { model, method, args, kwargs: fullKwargs },
-            }),
-        });
-        const data = await res.json();
+        const limit = rpcTimeoutMs();
+        const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(() => ctrl.abort(), limit) : 0;
+        let res;
+        try {
+            res = await fetch('/web/dataset/call_kw', {
+                method:      'POST',
+                credentials: 'include',
+                headers:     { 'Content-Type': 'application/json' },
+                signal:      ctrl ? ctrl.signal : undefined,
+                body: JSON.stringify({
+                    jsonrpc: '2.0', method: 'call', id: _id++,
+                    params:  { model, method, args, kwargs: fullKwargs },
+                }),
+            });
+        } catch (e) {
+            if (e && e.name === 'AbortError')
+                throw new Error('The server did not answer within ' +
+                                Math.round(limit / 1000) + ' s. Nothing was saved — try again.');
+            throw e;
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+        // A reply that is not JSON is a proxy or CDN page, not the server.
+        let data;
+        try {
+            data = await res.json();
+        } catch (_) {
+            throw new Error('The server sent an unreadable reply (HTTP ' + res.status + ').');
+        }
         if (data.error) {
             const err = new Error(data.error.data?.message || data.error.message);
             err.code  = data.error.code;

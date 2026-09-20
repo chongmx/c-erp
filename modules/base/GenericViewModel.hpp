@@ -61,9 +61,17 @@ protected:
     nlohmann::json handleSearchRead(const CallKwArgs& call) {
         TModel proto(db_);
         proto.setUserContext(extractContext_(call));
+        // Honour the caller's `order`. It used to be hardcoded "id ASC", so
+        // every order a client asked for was dropped on the floor — which is
+        // the defect M2OSelect exists to prevent: it asks for `name ASC` and
+        // was served the OLDEST rows instead, so a dropdown showing the first
+        // 20 of a long table showed the wrong 20. call.order() parses and
+        // rejects anything that is not "col [ASC|DESC], …", and searchRead
+        // then checks each column against the field registry (S-49).
+        const std::string order = call.order();
         return proto.searchRead(call.domain(), call.fields(),
                                 call.limit() > 0 ? call.limit() : 80,
-                                call.offset(), "id ASC");
+                                call.offset(), order.empty() ? "id ASC" : order);
     }
     nlohmann::json handleRead(const CallKwArgs& call) {
         TModel proto(db_);

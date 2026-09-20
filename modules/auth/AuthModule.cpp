@@ -87,7 +87,14 @@ private:
                      "WHERE c.id = ANY($1::int[]) AND c.partner_id = p.id "
                      "  AND p.name IS DISTINCT FROM c.name",
                      pqxx::params{idsArray_(ids)});
-        for (const auto& [oldCur, cur] : moved) rebaseRates_(txn, oldCur, cur);
+        for (const auto& [oldCur, cur] : moved) {
+            // The books cannot be kept in a currency the rest of the app hides:
+            // the picker may offer one that is not switched on yet, so choosing
+            // it switches it on.
+            txn.exec("UPDATE res_currency SET active = TRUE WHERE id = $1 AND NOT active",
+                     pqxx::params{cur});
+            rebaseRates_(txn, oldCur, cur);
+        }
         txn.commit();
         if (!moved.empty()) core::CacheInvalidation::currency();
         return result;

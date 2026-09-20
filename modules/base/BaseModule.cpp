@@ -18,6 +18,8 @@
 #include "MigrationRunner.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
+#include <algorithm>
+#include <cctype>
 #include <memory>
 #include <string>
 #include <vector>
@@ -802,7 +804,40 @@ public:
     explicit CurrencyViewModel(std::shared_ptr<infrastructure::DbConnection> db)
         : core::GenericViewModel<ResCurrency>(std::move(db))
     {
-        REGISTER_MUTATOR("write", handleWriteAndInvalidate)
+        REGISTER_MUTATOR("write",  handleWriteAndInvalidate)
+        REGISTER_MUTATOR("create", handleCreateChecked)
+    }
+
+    /// A currency people will pick from a list: a three-letter code, unique,
+    /// with a rate that can be divided by. Checked here because the screen
+    /// offers "create a new currency" inline, and a typo there would
+    /// otherwise become a permanent entry in every currency picker.
+    nlohmann::json handleCreateChecked(const core::CallKwArgs& call) {
+        auto v = call.arg(0);
+        if (!v.is_object()) throw infrastructure::ValidationError("create: args[0] must be a dict");
+        std::string code = v.value("name", std::string{});
+        for (auto& c : code) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        if (code.size() != 3 || !std::all_of(code.begin(), code.end(),
+                                             [](unsigned char c) { return std::isalpha(c) != 0; }))
+            throw infrastructure::ValidationError(
+                "A currency code is three letters, like MYR or USD.");
+        v["name"] = code;
+        if (v.contains("rate") && v["rate"].is_number() && v["rate"].get<double>() <= 0.0)
+            throw infrastructure::ValidationError(
+                "Rate must be greater than zero. It is how many home-currency "
+                "units equal 1 unit of this currency.");
+        {
+            auto conn = this->db_->acquire();
+            pqxx::work txn{conn.get()};
+            if (!txn.exec("SELECT 1 FROM res_currency WHERE upper(name) = $1", pqxx::params{code}).empty())
+                throw infrastructure::ValidationError(
+                    code + " already exists — search for it instead of creating it.");
+        }
+        core::CallKwArgs c2 = call;
+        c2.args[0] = v;
+        auto result = this->handleCreate(c2);
+        core::CacheInvalidation::currency();
+        return result;
     }
 
     nlohmann::json handleWriteAndInvalidate(const core::CallKwArgs& call) {

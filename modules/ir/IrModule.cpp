@@ -204,6 +204,65 @@ public:
 };
 
 // ----------------------------------------------------------------
+// IrConfigParameterViewModel — the generic model plus set_params.
+//
+// A settings screen holds a page of values and saves them together. Sent one
+// at a time, that is one JSON-RPC round trip PER SETTING — the ERP Settings
+// page made twenty-six, and behind a CDN the Save button sat on "Saving…"
+// for seconds while they queued. Worse, it was not atomic: a failure halfway
+// left half the page saved, and a client's cached row ids could write to rows
+// that no longer existed (startup deletes some keys), which silently lost the
+// edit.
+//
+// set_params takes the whole page and upserts it in ONE statement per key
+// inside ONE transaction. `key` is UNIQUE, so ON CONFLICT is the natural
+// spelling and there are no ids to go stale.
+// ----------------------------------------------------------------
+class IrConfigParameterViewModel : public core::GenericViewModel<IrConfigParameter> {
+public:
+    explicit IrConfigParameterViewModel(std::shared_ptr<infrastructure::DbConnection> db)
+        : core::GenericViewModel<IrConfigParameter>(db), db_(std::move(db)) {
+        REGISTER_MUTATOR("set_params", handleSetParams)
+    }
+
+private:
+    std::shared_ptr<infrastructure::DbConnection> db_;
+
+    nlohmann::json handleSetParams(const core::CallKwArgs& call) {
+        const auto v = call.arg(0);
+        if (!v.is_object())
+            throw infrastructure::ValidationError("set_params expects an object of key/value pairs.");
+        if (v.size() > 200)
+            throw infrastructure::ValidationError("At most 200 settings at a time.");
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        int n = 0;
+        for (auto it = v.begin(); it != v.end(); ++it) {
+            const std::string key = it.key();
+            if (key.empty() || key.size() > 200)
+                throw infrastructure::ValidationError("A setting key is 1-200 characters.");
+            // A value is text. A number or a boolean is accepted and stored as
+            // text, because that is what the column holds and what every
+            // reader expects.
+            std::string value;
+            if (it.value().is_string())        value = it.value().get<std::string>();
+            else if (it.value().is_null())     value = "";
+            else if (it.value().is_boolean())  value = it.value().get<bool>() ? "True" : "False";
+            else if (it.value().is_number())   value = it.value().dump();
+            else throw infrastructure::ValidationError("Setting '" + key + "' must be text, a number or a boolean.");
+
+            txn.exec("INSERT INTO ir_config_parameter (key, value) VALUES ($1, $2) "
+                     "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, write_date = now()",
+                     pqxx::params{key, value});
+            ++n;
+        }
+        txn.commit();
+        return {{"saved", n}};
+    }
+};
+
+// ----------------------------------------------------------------
 // DecimalPrecisionModel — decimal.precision  (P2, docs/048 §2.1)
 //
 // User-configurable DISPLAY precision. Storage is always Money::SCALE
@@ -2905,7 +2964,7 @@ void IrModule::registerViewModels() {
         return std::make_shared<DecimalPrecisionViewModel>(db);
     });
     viewModels_.registerCreator("ir.config.parameter", [db]{
-        return std::make_shared<core::GenericViewModel<IrConfigParameter>>(db);
+        return std::make_shared<IrConfigParameterViewModel>(db);
     });
     viewModels_.registerCreator("ir.model.data", [db]{
         return std::make_shared<core::GenericViewModel<IrModelDataModel>>(db);

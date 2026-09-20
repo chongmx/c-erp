@@ -308,7 +308,10 @@ class M2OSelect extends owl.Component {
         const domain = this.searchDomain(term);
         const [recs, total] = await Promise.all([
             RpcService.call(this.props.model, 'search_read', [domain],
-                { fields: this.readFields(), limit, offset, order: 'name ASC' }),
+                // `order` lets a caller put the rows people want first —
+                // currencies in use before the rest ('active DESC, name ASC').
+                { fields: this.readFields(), limit, offset,
+                  order: typeof this.props.order === 'string' ? this.props.order : 'name ASC' }),
             RpcService.call(this.props.model, 'search_count', [domain], {}),
         ]);
         return {
@@ -356,6 +359,13 @@ class M2OSelect extends owl.Component {
     onFocus() {
         this.state.open  = true;
         this.state.query = '';
+        // Select what is in the box, so typing REPLACES the current label.
+        // Without this the box still read "MYR (RM)" and a keystroke made the
+        // search "MYR (RM)e" — "No match", for a currency that is right there.
+        // Every picker in the app behaved that way; you had to clear the field
+        // by hand before you could search it.
+        const el = this.inputRef.el;
+        if (el && el.value) el.select();
         this.runSearch();          // always fresh: fixes the staleness defect
     }
 

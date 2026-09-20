@@ -169,6 +169,13 @@ tables `ir_ai_provider`, `ir_ai_prompt`, `ir_ai_settings`.
 Menu and action ids are hardcoded and must never be reused; see
 [../reference/id-registry.md](../reference/id-registry.md).
 
+**`ir.config.parameter.set_params`** saves a whole settings page in one call:
+`{key: value, …}`, upserted by key (the column is UNIQUE) in one transaction.
+A screen must not write one setting per call — ERP Settings made twenty-six
+round trips, which behind a CDN left its Save button on "Saving…" for seconds,
+was not atomic, and wrote through row ids that startup could have deleted.
+Values may be text, numbers or booleans; they are stored as text.
+
 **AI settings** configure an external model provider for in-app assistance.
 Three providers are seeded: `anthropic` (Claude), `xai` (Grok), and `mock`
 (no network, for tests). Settings cover the model name, an output-token
@@ -450,6 +457,23 @@ Most storage businesses charge for *August*; the day someone moved in is a
 detail of that month, not the start of a new calendar. The setting is **off by
 default** because it changes what an invoice covers, so an existing contract
 bills exactly as it did until somebody ticks the box.
+
+**Per line** (`rental_contract_line.billing_span`, migration 822):
+`contract` (the default — follow the contract), `month` (bill this line as a
+whole calendar month whatever the contract says) or `dates` (bill its exact
+period). A locker let by the month and a storeroom let for a fortnight can
+share one contract. An invoice is labelled as a month only when **every** line
+in it is.
+
+**When the rent is owed** (`rental_contract.due_on_move_in`, migration 822).
+The due date is normally the day the period starts, which under whole-month
+billing is the 1st. With this on, the invoice falls due on the tenant's
+**move-in day inside that period** — they moved in on the 9th, so each month's
+rent is due on the 9th. The day comes from the line's `billing_anchor_day`,
+else the day its `date_start` falls on. A month without that day (a 31st in
+February) falls back to the **last day of that month**, because skipping the
+month would be worse. Both settings are on the contract form, and
+`tests/integration/rental/contract-invoice` §11 pins all three cases.
 
 The snap happens in SQL, in the same statement as the anchor arithmetic, so the
 period that is printed, the period that is stored, and the next due date cannot

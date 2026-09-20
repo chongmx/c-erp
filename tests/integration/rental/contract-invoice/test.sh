@@ -266,4 +266,53 @@ case "$LBL" in
     *) no "the invoice line reads: $LBL" ;;
 esac
 
+# -------------------------------------------------------------------------
+sec "11. a month per LINE, and rent due on the move-in day"
+# -------------------------------------------------------------------------
+# Reported: "let me have options to specify just the month and year for the
+# line items instead of a start to end date … since the user has different move
+# in date, I will set their due date to be on their move in date."
+t_eq "contract" "$(pg "SELECT billing_span FROM rental_contract_line WHERE id=${LF:-0}")" \
+     "a line follows its contract unless told otherwise"
+
+# A contract that does NOT bill whole months, with one line that does.
+CH=$(call rental.contract create      "[{\"name\":\"${PFX}-H\",\"partner_id\":$PA,\"state\":\"active\",
+        \"date_start\":\"$TODAY\",\"billing_period\":\"monthly\",
+        \"due_on_move_in\":true}]" | rid)
+U8=$(call rental.unit create "[{\"code\":\"${PFX}-U8\",\"name\":\"${PFX} Eight\"}]" | rid)
+# Moved in on the 9th: the day the rent is owed, every month.
+pg "INSERT INTO rental_contract_line
+      (contract_id, unit_id, partner_id, date_start, unit_price, state, company_id,
+       billing_span, billing_anchor_day)
+    VALUES ($CH, $U8, $PA, date_trunc('month', CURRENT_DATE)::date + 8, 90000000, 'active', 1,
+            'month', 9)" >/dev/null
+t_eq "1" "$(pg "SELECT count(*) FROM rental_contract_line WHERE contract_id=${CH:-0}")" "the line was inserted"
+t_eq "f" "$(pg "SELECT whole_month_billing FROM rental_contract WHERE id=${CH:-0}")" \
+     "the contract itself does not bill whole months"
+
+OUT=$(call rental.contract action_create_invoice "[[$CH]]")
+t_contains "$OUT" '"invoices":1' "it invoices"
+PS=$(pgv "SELECT period_start FROM rental_invoice_link WHERE contract_id=${CH:-0}" | tr -d ' ')
+t_eq "$(pgv "SELECT date_trunc('month', CURRENT_DATE)::date" | tr -d ' ')" "$PS" \
+     "the LINE's own setting bills a whole month, whatever the contract says"
+MH=$(pg "SELECT move_id FROM rental_invoice_link WHERE contract_id=${CH:-0} LIMIT 1")
+t_eq "$(pgv "SELECT (date_trunc('month', CURRENT_DATE) + INTERVAL '8 days')::date" | tr -d ' ')" \
+     "$(pgv "SELECT due_date FROM account_move WHERE id=${MH:-0}" | tr -d ' ')" \
+     "and the rent falls due on the 9th — the day they moved in — not the 1st"
+
+# A move-in day the month does not have: the last day of that month, not a
+# skipped month. February is the case the reporter avoids by hand today.
+CI=$(call rental.contract create      "[{\"name\":\"${PFX}-I\",\"partner_id\":$PA,\"state\":\"active\",
+        \"date_start\":\"2026-02-01\",\"billing_period\":\"monthly\",
+        \"whole_month_billing\":true,\"due_on_move_in\":true}]" | rid)
+U9=$(call rental.unit create "[{\"code\":\"${PFX}-U9\",\"name\":\"${PFX} Nine\"}]" | rid)
+pg "INSERT INTO rental_contract_line
+      (contract_id, unit_id, partner_id, date_start, unit_price, state, company_id, billing_anchor_day)
+    VALUES ($CI, $U9, $PA, '2026-02-01', 50000000, 'active', 1, 31)" >/dev/null
+OUT=$(call rental.contract action_create_invoice "[[$CI]]")
+t_contains "$OUT" '"invoices":1' "a February let invoices"
+MI=$(pg "SELECT move_id FROM rental_invoice_link WHERE contract_id=${CI:-0} LIMIT 1")
+t_eq "2026-02-28" "$(pgv "SELECT due_date FROM account_move WHERE id=${MI:-0}" | tr -d ' ')" \
+     "a 31st move-in day falls due on 28 February, not never"
+
 verdict

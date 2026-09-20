@@ -256,6 +256,8 @@ public:
     bool   active = true;
     // Bill calendar months rather than anniversary periods (migration 821).
     bool   wholeMonthBilling = false;
+    // The rent falls due on the move-in day inside the period (migration 822).
+    bool   dueOnMoveIn = false;
 
     explicit RentalContract(std::shared_ptr<DbConnection> db) : BaseModel(std::move(db)) {}
 
@@ -305,6 +307,11 @@ public:
         // Labelled for what it does to the invoice, not for the column.
         fieldRegistry_.add({"whole_month_billing", FieldType::Boolean,
                             "Bill whole calendar months"});
+        // The rent is owed on the day they moved in, not on the day the
+        // period starts — the two differ as soon as months are billed whole
+        // (migration 822).
+        fieldRegistry_.add({"due_on_move_in",      FieldType::Boolean,
+                            "Due on the move-in day"});
         fieldRegistry_.add({"payment_term_id",   FieldType::Many2one, "Payment Terms", false, false, true, false, "account.payment.term"});
         fieldRegistry_.add({"deposit_amount",    FieldType::Monetary, "Deposit"});
         // Both of these are CHECK-constrained to a fixed list, so they are
@@ -352,6 +359,7 @@ public:
                                                      : nlohmann::json(billingUnit);
         j["billing_lead_days"] = billingLeadDays;
         j["whole_month_billing"] = wholeMonthBilling;
+        j["due_on_move_in"]      = dueOnMoveIn;
         j["payment_term_id"]   = paymentTermId > 0 ? nlohmann::json(paymentTermId) : nlohmann::json(false);
         j["deposit_amount"]    = depositAmount;
         j["deposit_state"]     = depositState;
@@ -380,6 +388,8 @@ public:
             billingLeadDays = j["billing_lead_days"].get<int>();
         if (j.contains("whole_month_billing") && j["whole_month_billing"].is_boolean())
             wholeMonthBilling = j["whole_month_billing"].get<bool>();
+        if (j.contains("due_on_move_in") && j["due_on_move_in"].is_boolean())
+            dueOnMoveIn = j["due_on_move_in"].get<bool>();
         if (j.contains("payment_term_id"))                                   paymentTermId = m2oToId_(j["payment_term_id"]);
         if (j.contains("deposit_amount") && j["deposit_amount"].is_number()) depositAmount = j["deposit_amount"].get<double>();
         if (j.contains("deposit_state")  && j["deposit_state"].is_string())  depositState  = j["deposit_state"].get<std::string>();
@@ -445,7 +455,9 @@ public:
 
     std::string dateStart, dateEnd, nextPeriodStart, invoicedThrough,
                 prorationPolicy = "full_period", state = "pending", taxIdsJson = "[]",
-                billingMode = "manual";
+                billingMode = "manual",
+                // contract | month | dates (migration 822)
+                billingSpan = "contract";
     int    contractId = 0, partnerId = 0, unitId = 0, billingAnchorDay = 1,
            billingMonths = 1, billingLeadDays = 7, companyId = 1;
     // 0 / "" mean "inherit the contract's period" and store as NULL
@@ -485,6 +497,16 @@ public:
             bm.selection = { {"recurring", "Recurring"}, {"oneoff", "One off"},
                              {"ondemand", "On demand"},  {"manual", "Manual"} };
             fieldRegistry_.add(bm);
+        }
+        // Per line: bill this one as a whole calendar month, as its exact
+        // dates, or however the contract says (migration 822). A locker let by
+        // the month and a storeroom let for a fortnight can share a contract.
+        {
+            core::FieldDef bs{"billing_span", FieldType::Selection, "Bill as"};
+            bs.selection = { {"contract", "As the contract says"},
+                             {"month",    "Whole calendar month"},
+                             {"dates",    "Exact dates"} };
+            fieldRegistry_.add(bs);
         }
         fieldRegistry_.add({"billing_months",     FieldType::Integer,  "Every (months)"});
         // docs/architecture/modules.md "The billing period": (interval, unit) expresses every period in one shape —
@@ -533,6 +555,7 @@ public:
         j["billing_anchor_day"] = billingAnchorDay;
         j["billing_mode"]       = billingMode;
         j["billing_months"]     = billingMonths;
+        j["billing_span"]       = billingSpan.empty() ? "contract" : billingSpan;
         // NULL = follow the contract. Writing 'month' here instead would make
         // every line an explicit monthly override and the contract's own
         // billing period could never take effect (migration 816).
@@ -563,6 +586,7 @@ public:
         if (j.contains("billing_anchor_day") && j["billing_anchor_day"].is_number()) billingAnchorDay = j["billing_anchor_day"].get<int>();
         if (j.contains("billing_mode")      && j["billing_mode"].is_string())      billingMode     = j["billing_mode"].get<std::string>();
         if (j.contains("billing_months")    && j["billing_months"].is_number())    billingMonths   = j["billing_months"].get<int>();
+        if (j.contains("billing_span")      && j["billing_span"].is_string())      billingSpan     = j["billing_span"].get<std::string>();
         if (j.contains("billing_interval")  && j["billing_interval"].is_number())  billingInterval = j["billing_interval"].get<int>();
         if (j.contains("billing_unit")      && j["billing_unit"].is_string())      billingUnit     = j["billing_unit"].get<std::string>();
         // Keep billing_months in step for month-based periods: the billing run
@@ -1093,6 +1117,11 @@ void RentalModule::registerViews() {
             "<field name=\"billing_period\"/>"
             "<field name=\"billing_interval\"/><field name=\"billing_unit\"/>"
             "<field name=\"billing_lead_days\"/>"
+            // How a period is PRINTED, and when it falls due. The first was
+            // registered on the model but never put on this form, so nobody
+            // could tick it (migrations 821 / 822).
+            "<field name=\"whole_month_billing\"/>"
+            "<field name=\"due_on_move_in\"/>"
             // Money
             "<field name=\"payment_term_id\"/><field name=\"journal_id\"/>"
             "<field name=\"currency_id\"/>"
@@ -1132,6 +1161,10 @@ void RentalModule::registerViews() {
                                         nlohmann::json::array({"month","Month(s)"}),
                                         nlohmann::json::array({"year","Year(s)"})})}}},
                 {"billing_lead_days",{{"type","integer"},{"string","Invoice Lead Days"}}},
+                {"whole_month_billing", {{"type","boolean"},
+                                    {"string","Bill whole calendar months"}}},
+                {"due_on_move_in",  {{"type","boolean"},
+                                    {"string","Due on the move-in day"}}},
                 {"payment_term_id",{{"type","many2one"}, {"string","Payment Terms"},
                                     {"relation","account.payment.term"}}},
                 {"journal_id",     {{"type","many2one"}, {"string","Journal"},

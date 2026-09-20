@@ -364,7 +364,9 @@ const O2M_COLUMNS = {
         // whose records nobody identifies by name.
         { name: 'unit_id', fields: ['code'], searchFields: ['code'],
           format: r => (r.code ? r.code + ' — ' : '') + (r.name || '') },
-        'date_start', 'date_end', 'unit_price', 'billing_mode', 'state',
+        // "Bill as" sits next to the dates because it decides what those dates
+        // MEAN on the invoice: the exact range, or the whole month they fall in.
+        'date_start', 'date_end', 'billing_span', 'unit_price', 'billing_mode', 'state',
     ],
 };
 
@@ -6906,6 +6908,7 @@ class BomFormView extends Component {
 // ERPSettingsView — company / banking / documents / email config
 // ----------------------------------------------------------------
 class ERPSettingsView extends Component {
+    static components = { M2OSelect };
     static template = xml`
         <div class="erp-settings-shell">
             <div class="erp-settings-header">
@@ -6980,27 +6983,65 @@ class ERPSettingsView extends Component {
                             <div class="erp-section-title">Currency &amp; Invoice Defaults</div>
                             <div class="erp-field-grid">
                                 <div class="erp-field-row">
-                                    <label class="erp-field-label" for="erp-home-currency">Home Currency</label>
-                                    <select id="erp-home-currency" class="erp-field-input erp-home-currency"
-                                            t-on-change="onHomeCurrency">
-                                        <option value="" t-att-selected="!state.co.currency_id">— choose —</option>
-                                        <t t-foreach="state.homeCurrencies" t-as="c" t-key="c.id">
-                                            <option t-att-value="c.id" t-att-selected="c.id === state.co.currency_id"
-                                                    t-esc="c.name + (c.symbol ? ' (' + c.symbol + ')' : '')"/>
-                                        </t>
-                                    </select>
+                                    <label class="erp-field-label">Home Currency</label>
+                                    <!-- The same picker as the customer field: type to
+                                         search, browse them all, or ＋ to add one that
+                                         does not exist yet. Currencies already in use
+                                         come first; one that is not switched on is
+                                         offered too, and choosing it switches it on. -->
+                                    <div class="erp-currency-pick">
+                                        <M2OSelect model="'res.currency'" value="homeCurrencyValue"
+                                                   label="'Home Currency'" placeholder="'Search a currency…'"
+                                                   order="'active DESC, name ASC'"
+                                                   fields="['symbol','active']" format.bind="currencyLabel"
+                                                   onSelect.bind="onHomeCurrency"/>
+                                        <button class="erp-add-cur" data-erp="new-currency"
+                                                title="Add a currency c-erp does not know yet"
+                                                t-on-click="openNewCurrency">+</button>
+                                    </div>
                                 </div>
                                 <div class="erp-field-row">
                                     <label class="erp-field-label">Payment Terms Days</label>
                                     <input class="erp-field-input" type="number" min="0" step="1" t-model.number="state.co.payment_term_days"/>
+                                </div>
+                                <!-- A currency c-erp does not know yet. Rare, so it is a
+                                     panel under the picker rather than a screen of its own. -->
+                                <div class="erp-field-row top" t-if="state.newCur">
+                                    <label class="erp-field-label">New currency</label>
+                                    <div class="erp-newcur">
+                                        <div class="erp-newcur-row">
+                                            <input class="erp-field-input sm" data-erp="cur-code" maxlength="3"
+                                                   placeholder="Code (SGD)" t-att-value="state.newCur.name"
+                                                   t-on-input="(ev) => { this.state.newCur.name = ev.target.value.toUpperCase(); }"/>
+                                            <input class="erp-field-input sm" data-erp="cur-symbol" maxlength="8"
+                                                   placeholder="Symbol (S$)" t-att-value="state.newCur.symbol"
+                                                   t-on-input="(ev) => { this.state.newCur.symbol = ev.target.value; }"/>
+                                            <input class="erp-field-input sm" data-erp="cur-rate" type="number"
+                                                   step="0.000001" min="0" placeholder="Rate"
+                                                   t-att-value="state.newCur.rate" t-on-input="onNewCurRate"/>
+                                            <input class="erp-field-input sm" data-erp="cur-decimals" type="number"
+                                                   min="0" max="6" placeholder="Decimals"
+                                                   t-att-value="state.newCur.decimal_places" t-on-input="onNewCurDecimals"/>
+                                        </div>
+                                        <div class="erp-newcur-row">
+                                            <button class="btn btn-primary btn-sm" data-erp="cur-save"
+                                                    t-att-disabled="state.busyCur" t-on-click="createCurrency">Add currency</button>
+                                            <button class="btn btn-sm" t-on-click="() => { this.state.newCur = null; }">Cancel</button>
+                                            <span class="erp-hint inline">
+                                                Rate = how many <b t-esc="homeCode or 'home currency'"/> units equal 1 of it.
+                                            </span>
+                                        </div>
+                                        <div class="erp-save-err" t-if="state.curError" t-esc="state.curError"/>
+                                    </div>
                                 </div>
                             </div>
                             <div class="erp-hint">
                                 The currency your books are kept in; payments in any other currency are
                                 converted into it. Each invoice, quotation and order still prints its own
                                 currency. It can change only while every posted entry is already in the
-                                new currency. Only active currencies are listed — activate more under
-                                <b>Accounting → Configuration → Currencies</b>.
+                                new currency. Type to search any currency — one not in use yet is
+                                offered too, and choosing it switches it on — or press <b>+</b> to add
+                                one c-erp does not know.
                             </div>
                         </div>
                         <div class="erp-save-row">
@@ -7258,12 +7299,14 @@ class ERPSettingsView extends Component {
             saved:             false,
             saveError:         '',
             cfg:               {},
-            cfgIds:            {},
             // The company being edited: the one this session is working in.
             coId:              0,
             co:                {},
             coLoaded:          {},   // as read, so a save sends only what changed
-            homeCurrencies:    [],
+            homeCurrencies:    [],   // labels for the picker's current value
+            newCur:            null, // the "add a currency" panel, when open
+            curError:          '',
+            busyCur:           false,
             // Countries tab
             countries:         [],
             countriesLoading:  false,
@@ -7344,7 +7387,8 @@ class ERPSettingsView extends Component {
             this.state.precSaved = true;
             // The server drops its fields_get cache on write, so re-fetching
             // metadata anywhere in the app now returns the new `digits`.
-            setTimeout(() => { this.state.precSaved = false; }, 4000);
+            clearTimeout(this._precTimer);
+            this._precTimer = setTimeout(() => { if (this.state) this.state.precSaved = false; }, 4000);
         } catch (e) {
             if (row) row.digits = previous;         // roll back the optimistic edit
             this.state.precError = e.message || 'Failed to save';
@@ -7365,7 +7409,8 @@ class ERPSettingsView extends Component {
         try {
             await RpcService.call('res.currency', 'write', [[id], { rate }], {});
             this.state.precSaved = true;
-            setTimeout(() => { this.state.precSaved = false; }, 4000);
+            clearTimeout(this._precTimer);
+            this._precTimer = setTimeout(() => { if (this.state) this.state.precSaved = false; }, 4000);
         } catch (e) {
             if (row) row.rate = previous;
             this.state.precError = e.message || 'Failed to save';
@@ -7397,7 +7442,8 @@ class ERPSettingsView extends Component {
         try {
             await RpcService.call('res.country', 'write', [[id], { active }], {});
             this.state.countrySaved = true;
-            setTimeout(() => { if (this.state) this.state.countrySaved = false; }, 1500);
+            clearTimeout(this._countryTimer);
+            this._countryTimer = setTimeout(() => { if (this.state) this.state.countrySaved = false; }, 1500);
         } catch (e) {
             if (co) co.active = !active; // revert
             this.state.countrySaveError = e.message || 'Save failed';
@@ -7409,22 +7455,17 @@ class ERPSettingsView extends Component {
         this.state.error = '';
         try {
             const keys = ERPSettingsView.ALL_KEYS;
-            // Init defaults
+            // Values only: set_params saves by KEY, so there are no row ids to
+            // keep (and none to go stale when startup rewrites these rows).
             const cfg = {};
-            const cfgIds = {};
             for (const k of keys) cfg[k] = '';
             const params = await RpcService.call(
                 'ir.config.parameter', 'search_read',
                 [[['key', 'in', keys]]],
                 { fields: ['id', 'key', 'value'], limit: 200 });
-            if (Array.isArray(params)) {
-                for (const p of params) {
-                    cfg[p.key]    = p.value || '';
-                    cfgIds[p.key] = p.id;
-                }
-            }
-            this.state.cfg    = cfg;
-            this.state.cfgIds = cfgIds;
+            if (Array.isArray(params))
+                for (const p of params) cfg[p.key] = p.value || '';
+            this.state.cfg = cfg;
             await this.loadCompany();
         } catch (e) {
             this.state.error = e.message || 'Failed to load settings';
@@ -7433,11 +7474,63 @@ class ERPSettingsView extends Component {
         }
     }
 
-    // A method, not an inline handler: a template expression resolves free
-    // names against the component, so parseInt there is undefined and the
-    // pick was silently dropped.
-    onHomeCurrency(ev) {
-        this.state.co.currency_id = parseInt(ev.target.value, 10) || false;
+    // ---- the home currency picker -------------------------------------------
+    /** The picker's current value, as [id, label] so it needs no extra read. */
+    get homeCurrencyValue() {
+        const id = this.state.co.currency_id;
+        if (!id) return 0;
+        const c = this.state.homeCurrencies.find(x => x.id === id);
+        return c ? [id, this.currencyLabel(c)] : id;
+    }
+    get homeCode() {
+        const c = this.state.homeCurrencies.find(x => x.id === this.state.coLoaded.currency_id);
+        return c ? c.name : '';
+    }
+    /** "MYR (RM)", and "EUR (€) — not in use yet" for one that is switched off. */
+    currencyLabel(rec) {
+        if (!rec) return '';
+        const sym = rec.symbol ? ' (' + rec.symbol + ')' : '';
+        const off = rec.active === false ? ' — not in use yet' : '';
+        return (rec.name || '') + sym + off;
+    }
+    onHomeCurrency(id, display) {
+        this.state.co.currency_id = id || false;
+        if (id && !this.state.homeCurrencies.some(c => c.id === id))
+            this.state.homeCurrencies.push({ id, name: (display || '').split(' ')[0], symbol: '', active: true });
+    }
+    openNewCurrency() {
+        this.state.curError = '';
+        // Rate starts EMPTY, not 1: a pre-filled number is something to type
+        // into by accident — click, type 2.5, and you have entered 12.5.
+        this.state.newCur = { name: '', symbol: '', rate: '', decimal_places: 2 };
+    }
+    onNewCurRate(ev)     { this.state.newCur.rate = Number(ev.target.value); }
+    onNewCurDecimals(ev) { this.state.newCur.decimal_places = parseInt(ev.target.value, 10); }
+    /** Create it, then select it — the reason you opened this panel. */
+    async createCurrency() {
+        const c = this.state.newCur;
+        this.state.curError = '';
+        const rate = Number(c.rate);
+        const dec = parseInt(c.decimal_places, 10);
+        if (!/^[A-Za-z]{3}$/.test((c.name || '').trim()))
+            { this.state.curError = 'A currency code is three letters, like SGD.'; return; }
+        if (!Number.isFinite(rate) || rate <= 0)
+            { this.state.curError = 'Give the rate against your home currency — more than zero.'; return; }
+        this.state.busyCur = true;
+        try {
+            const id = await RpcService.call('res.currency', 'create', [{
+                name: c.name.trim().toUpperCase(), symbol: (c.symbol || '').trim() || c.name.trim().toUpperCase(),
+                rate, decimal_places: Number.isFinite(dec) ? Math.min(6, Math.max(0, dec)) : 2,
+                position: 'before', active: true,
+            }], {});
+            this.state.homeCurrencies.push({ id, name: c.name.trim().toUpperCase(),
+                                             symbol: (c.symbol || '').trim(), active: true });
+            this.state.co.currency_id = id;      // selected, saved with the page
+            this.state.newCur = null;
+            this.state.currencies = [];          // the Precision tab reloads its rates
+        } catch (e) {
+            this.state.curError = (e && e.message) || 'Could not add the currency.';
+        } finally { this.state.busyCur = false; }
     }
 
     async loadCompany() {
@@ -7452,7 +7545,7 @@ class ERPSettingsView extends Component {
         const [rows, currencies] = await Promise.all([
             RpcService.call('res.company', 'read', [[coId]], { fields: ERPSettingsView.COMPANY_FIELDS }),
             RpcService.call('res.currency', 'search_read', [[['active', '=', true]]],
-                { fields: ['id', 'name', 'symbol'], order: 'name ASC' }),
+                { fields: ['id', 'name', 'symbol', 'active'], order: 'name ASC' }),
         ]);
         const row = rows?.[0] || {};
         const co  = {};
@@ -7462,13 +7555,13 @@ class ERPSettingsView extends Component {
             else if (f === 'payment_term_days') co[f] = (v === false || v == null) ? 30 : v;
             else                                co[f] = (v === false || v == null) ? '' : v;
         }
-        // The saved currency is always offered, even if it has since been
-        // deactivated — otherwise the combo box would show "— choose —" and
+        // The saved currency must always have a label, even if it has since
+        // been deactivated — otherwise the picker would sit empty and
         // misreport what the books are kept in.
         const list = Array.isArray(currencies) ? currencies.slice() : [];
         if (co.currency_id && !list.some(c => c.id === co.currency_id)) {
             const cur = await RpcService.call('res.currency', 'read',
-                [[co.currency_id]], { fields: ['id', 'name', 'symbol'] }).catch(() => []);
+                [[co.currency_id]], { fields: ['id', 'name', 'symbol', 'active'] }).catch(() => []);
             if (cur?.[0]) list.push(cur[0]);
         }
         this.state.coId           = coId;
@@ -7498,18 +7591,20 @@ class ERPSettingsView extends Component {
                 // Precision & Currency tab reloads them next time it opens.
                 if ('currency_id' in changed) this.state.currencies = [];
             }
-            for (const key of ERPSettingsView.ALL_KEYS) {
-                const value = this.state.cfg[key] || '';
-                const id    = this.state.cfgIds[key];
-                if (id) {
-                    await RpcService.call('ir.config.parameter', 'write', [[id], { value }], {});
-                } else {
-                    const newId = await RpcService.call('ir.config.parameter', 'create', [{ key, value }], {});
-                    this.state.cfgIds[key] = newId;
-                }
-            }
+            // One call for the whole page. It used to be one per setting —
+            // twenty-six round trips, which behind a CDN left the button on
+            // "Saving…" for seconds and could stop half-done. set_params
+            // upserts by key in a single transaction, so there are no row ids
+            // to go stale either.
+            const params = {};
+            for (const key of ERPSettingsView.ALL_KEYS) params[key] = this.state.cfg[key] || '';
+            await RpcService.call('ir.config.parameter', 'set_params', [params], {});
             this.state.saved = true;
-            setTimeout(() => { if (this.state) this.state.saved = false; }, 2500);
+            // ONE timer, cancelled first. Each save used to start its own, so
+            // a save 2 s after the last had its "Saved!" wiped half a second
+            // later by the OLDER timer — press Save, get no answer at all.
+            clearTimeout(this._savedTimer);
+            this._savedTimer = setTimeout(() => { if (this.state) this.state.saved = false; }, 2500);
         } catch (e) {
             this.state.saveError = e.message || 'Save failed';
         } finally {

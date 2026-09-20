@@ -152,4 +152,66 @@ fi
 R=$(call res.company write "[[${CID}], {\"currency_id\": 999999}]")
 has_error "$R" && ok "a currency that does not exist is refused" || no "a nonexistent currency id was accepted"
 
+# -------------------------------------------------------------------------
+sec "4b. a currency can be added, and one not in use can be chosen"
+# -------------------------------------------------------------------------
+# "it should have a drop down ... similar to the customer picker. It displays a
+# list of frequently used currency and then allow user to create new or search."
+pg "DELETE FROM res_currency WHERE name IN ('ZZQ','ZZR')" >/dev/null
+NEW=$(call res.currency create '[{"name":"zzq","symbol":"Z$","rate":2.5,"decimal_places":2,"active":true}]' | rid)
+t_nonempty "$NEW" "a currency is created from the screen's ＋"
+t_eq "ZZQ" "$(pg "SELECT name FROM res_currency WHERE id=${NEW:-0}")" "its code is stored in upper case"
+R=$(call res.currency create '[{"name":"zz","symbol":"x","rate":1}]')
+has_error "$R" && ok "a code that is not three letters is refused" || no "'zz' was accepted as a currency"
+R=$(call res.currency create '[{"name":"ZZQ","symbol":"x","rate":1}]')
+has_error "$R" && ok "a code that already exists is refused" || no "a duplicate currency was created"
+t_contains "$R" "search for it instead" "and says to search for it instead"
+R=$(call res.currency create '[{"name":"ZZR","symbol":"x","rate":0}]')
+has_error "$R" && ok "a rate of zero is refused" || no "a currency with rate 0 was created"
+
+# The picker offers currencies that are not switched on; choosing one switches
+# it on, because the books cannot be kept in a currency the app hides.
+pg "UPDATE res_currency SET active=false WHERE id=${NEW:-0}" >/dev/null
+pg "UPDATE account_move SET state='draft' WHERE company_id=$CID AND state='posted'" >/dev/null
+R=$(call res.company write "[[${CID}], {\"currency_id\": ${NEW:-0}}]")
+has_error "$R" && no "choosing a currency that is not in use failed: $R" || ok "a currency not in use can be chosen as the home currency"
+t_eq "1" "$(pg "SELECT active::int FROM res_currency WHERE id=${NEW:-0}")" "and choosing it switches it on"
+pg "DELETE FROM res_currency WHERE name IN ('ZZQ','ZZR')" >/dev/null 2>&1
+
+# -------------------------------------------------------------------------
+sec "5. the whole settings page saves in one call"
+# -------------------------------------------------------------------------
+# Reported: "Settings -> ALL: After clicking 'Save Changes' the button got
+# stuck at 'Saving'." It wrote one JSON-RPC call PER SETTING — twenty-six
+# round trips, and not atomic: a failure halfway left the page half-saved,
+# and a cached row id could write to a row startup had deleted.
+K1="report.paper_format"
+K2="mail.smtp_host"
+WAS1=$(pgv "SELECT COALESCE(value,'') FROM ir_config_parameter WHERE key='$K1'" | sed 's/^ *//;s/ *$//')
+WAS2=$(pgv "SELECT COALESCE(value,'') FROM ir_config_parameter WHERE key='$K2'" | sed 's/^ *//;s/ *$//')
+pg "DELETE FROM ir_config_parameter WHERE key='ZZCS.made.up'" >/dev/null
+
+R=$(call ir.config.parameter set_params "[{\"$K1\":\"Legal\",\"$K2\":\"smtp.zzcs.test\",\"ZZCS.made.up\":\"42\"}]")
+has_error "$R" && no "set_params failed: $R" || ok "one call saves a page of settings"
+t_eq "Legal"          "$(pg "SELECT value FROM ir_config_parameter WHERE key='$K1'")"        "an existing setting is updated"
+t_eq "smtp.zzcs.test" "$(pg "SELECT value FROM ir_config_parameter WHERE key='$K2'")"        "and another beside it"
+t_eq "42"             "$(pg "SELECT value FROM ir_config_parameter WHERE key='ZZCS.made.up'")" "a setting that did not exist is created"
+t_eq "1" "$(pg "SELECT count(*) FROM ir_config_parameter WHERE key='ZZCS.made.up'")" "exactly once — the key is unique, so saving twice does not duplicate"
+call ir.config.parameter set_params "[{\"ZZCS.made.up\":\"43\"}]" >/dev/null
+t_eq "43" "$(pg "SELECT value FROM ir_config_parameter WHERE key='ZZCS.made.up'")" "saving again overwrites it"
+
+R=$(call ir.config.parameter set_params '[[1,2]]')
+has_error "$R" && ok "a list instead of key/value pairs is refused" || no "set_params took a list"
+R=$(call ir.config.parameter set_params '[{"ZZCS.bad":{"a":1}}]')
+has_error "$R" && ok "a value that is not text, a number or a boolean is refused" || no "an object value was stored"
+t_eq "0" "$(pg "SELECT count(*) FROM ir_config_parameter WHERE key='ZZCS.bad'")" "and nothing was written"
+call ir.config.parameter set_params "[{\"ZZCS.numeric\":7,\"ZZCS.flag\":true}]" >/dev/null
+t_eq "7|True" "$(pg "SELECT (SELECT value FROM ir_config_parameter WHERE key='ZZCS.numeric') || '|' ||
+                            (SELECT value FROM ir_config_parameter WHERE key='ZZCS.flag')")" \
+     "a number and a boolean are stored as text"
+
+pg "DELETE FROM ir_config_parameter WHERE key LIKE 'ZZCS.%'" >/dev/null
+[ -n "$WAS1" ] && call ir.config.parameter set_params "[{\"$K1\":\"$WAS1\"}]" >/dev/null
+[ -n "$WAS2" ] && call ir.config.parameter set_params "[{\"$K2\":\"$WAS2\"}]" >/dev/null
+
 verdict

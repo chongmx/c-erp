@@ -44,6 +44,7 @@ SNAP_RATES=$(pgv "SELECT string_agg(format('UPDATE res_currency SET rate=%s WHER
 cleanup() {
     [ -n "$SNAP_RATES" ] && pg "$SNAP_RATES" >/dev/null 2>&1
     [ -n "$SNAP_CO" ]    && pg "$SNAP_CO"    >/dev/null 2>&1
+    pg "DELETE FROM res_currency WHERE name = 'ZZK'" >/dev/null 2>&1
 }
 trap cleanup EXIT
 auth_or_die
@@ -96,5 +97,9 @@ t_eq "0" "$(pg "SELECT count(*) FROM ir_config_parameter
                 WHERE key LIKE 'company.%' OR key IN ('report.reg_number','report.currency_code',
                       'report.bank.account_no','report.payment_term_days')")" \
      "no company identity was written to ir_config_parameter"
+# The currency added through ＋ on the screen.
+t_eq "ZZK|Z\$|1" "$(pg "SELECT name || '|' || symbol || '|' || active::int FROM res_currency WHERE name='ZZK'")" \
+     "the currency added on screen exists, active, with its symbol"
+t_eq "2500000" "$(pg "SELECT rate FROM res_currency WHERE name='ZZK'")" "at the rate that was typed (2.5)"
 
 verdict

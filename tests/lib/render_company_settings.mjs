@@ -35,6 +35,7 @@ const FROM    = process.argv[4] || 'MYR';
 const TO      = process.argv[5] || 'USD';
 const REG     = `${PFX}-REG-1`;
 const ACCT    = `${PFX}-ACCT-1`;
+const NEWCUR  = process.argv[6] || 'ZZK';   // a currency the test adds through ＋
 
 const puppeteer = await import('puppeteer-core');
 const fs = await import('node:fs');
@@ -107,20 +108,48 @@ async function fieldValue(label) {
 async function typeInto(label, text) {
     const el = await fieldHandle(label);
     if (!el) return false;
-    await el.click({ clickCount: 3 });
+    // Select all and delete: a triple-click selects only a word in some
+    // inputs, which left the old value in front of the new one.
+    await el.click();
+    await page.keyboard.down('Control');
+    await page.keyboard.press('KeyA');
+    await page.keyboard.up('Control');
     await page.keyboard.press('Backspace');
-    await el.type(text, { delay: 15 });
+    if (text) await el.type(text, { delay: 15 });
     return true;
 }
-/** What the Home Currency combo box shows, and what it offers. */
-async function combo() {
-    return page.evaluate(() => {
-        const s = document.querySelector('select.erp-home-currency');
-        if (!s) return null;
-        const o = s.options[s.selectedIndex];
-        return { shown: o ? o.textContent.trim() : '',
-                 options: [...s.options].map(x => x.textContent.trim()) };
-    });
+const PICKER = '.erp-currency-pick input.m2o-input';
+/** What the Home Currency picker shows, and what it offers when opened. */
+async function combo(open) {
+    if (open) {
+        await page.click(PICKER);
+        await pause(900);          // it searches the server on focus
+    }
+    return page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        return { shown: el.value.trim(),
+                 options: [...document.querySelectorAll('.erp-currency-pick .m2o-opt')]
+                            .map(o => o.textContent.trim()) };
+    }, PICKER);
+}
+/** Choose a currency by typing its code and clicking the row — as a person does. */
+async function pickCurrency(code) {
+    await page.click(PICKER);
+    await pause(400);
+    await page.type(PICKER, code, { delay: 40 });
+    try {
+        await page.waitForFunction((c) =>
+            [...document.querySelectorAll('.erp-currency-pick .m2o-opt')]
+                .some(o => o.textContent.trim().startsWith(c)), { timeout: 8000 }, code);
+    } catch (_) { return false; }
+    return page.evaluate((c) => {
+        const o = [...document.querySelectorAll('.erp-currency-pick .m2o-opt')]
+            .find(x => x.textContent.trim().startsWith(c));
+        if (!o) return false;
+        o.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        return true;
+    }, code);
 }
 /** Is the element at its own centre actually the element? (not covered/clipped) */
 async function hitTest(sel) {
@@ -149,7 +178,7 @@ async function save() {
 async function openSettings() {
     await clickByText('Settings');
     await clickByText('ERP Settings');
-    await page.waitForSelector('select.erp-home-currency', { timeout: 15000 });
+    await page.waitForSelector(PICKER, { timeout: 15000 });
     await pause(400);
 }
 
@@ -164,31 +193,31 @@ try {
     if (CO_NAME && nm === CO_NAME) ok(`Company Name shows the company ("${nm}")`);
     else no(`Company Name shows "${nm}", expected "${CO_NAME}" — the screen is not reading the company`);
 
-    // ---- 2. the combo box ---------------------------------------------------
-    let c = await combo();
-    if (!c) { no('there is no Home Currency combo box'); throw new Error('no combo'); }
+    // ---- 2. the picker ------------------------------------------------------
+    let c = await combo(false);
+    if (!c) { no('there is no Home Currency picker'); throw new Error('no picker'); }
     if (c.shown.startsWith(FROM)) ok(`Home Currency shows ${c.shown}`);
     else no(`Home Currency shows "${c.shown}", expected ${FROM}`);
-    if (c.options.some(o => o.startsWith(TO))) ok(`it offers ${TO} (options: ${c.options.join(' | ')})`);
+    if (await hitTest(PICKER)) ok('the picker is on screen, not covered');
+    else no('the picker is hidden or covered');
+    c = await combo(true);
+    if (c.options.some(o => o.startsWith(TO))) ok(`opening it offers ${TO} (${c.options.join(' | ')})`);
     else no(`${TO} is not offered: ${c.options.join(' | ')}`);
-    if (await hitTest('select.erp-home-currency')) ok('the combo box is on screen, not covered');
-    else no('the combo box is hidden or covered');
+    // The ones in use come first — that is the "frequently used" list.
+    const inUse = c.options.findIndex(o => o.includes('not in use yet'));
+    if (inUse !== 0) ok('currencies already in use are listed first');
+    else no(`the first entry is one not in use: ${c.options.join(' | ')}`);
     await page.screenshot({ path: `${SHOTDIR}/1-general.png` });
 
     // ---- 3. type, pick, save ------------------------------------------------
     if (await typeInto('Registration No.', REG)) ok(`typed Registration No. "${REG}"`);
     else no('there is no Registration No. box');
-    const toVal = await page.evaluate((code) => {
-        const s = document.querySelector('select.erp-home-currency');
-        const o = [...s.options].find(x => x.textContent.trim().startsWith(code));
-        return o ? o.value : null;
-    }, TO);
-    await page.focus('select.erp-home-currency');
-    await page.select('select.erp-home-currency', toVal);
-    await pause(200);
-    c = await combo();
-    if (c.shown.startsWith(TO)) ok(`picked ${TO} in the combo box`);
-    else no(`after picking, the combo box shows "${c.shown}"`);
+    if (await pickCurrency(TO)) ok(`typed "${TO}" and picked it from the list`);
+    else no(`typing "${TO}" offered nothing to pick`);
+    await pause(300);
+    c = await combo(false);
+    if (c.shown.startsWith(TO)) ok(`the picker now shows ${TO}`);
+    else no(`after picking, the picker shows "${c.shown}"`);
     let r = await save();
     if (r.saved) ok('Save Changes → "Saved!"');
     else no(`saving General failed: "${r.err}"`);
@@ -205,10 +234,43 @@ try {
     if (r.saved) ok('Banking saves');
     else no(`saving Banking failed: "${r.err}"`);
 
+    // ---- 4b. the Save button cannot stick on "Saving…" -------------------
+    // Reported: "Settings -> ALL: After clicking 'Save Changes' the button got
+    // stuck at 'Saving'." The page wrote one call per setting and nothing
+    // bounded how long a call could take. Now: one call for the page, and a
+    // request that does not answer fails with something readable.
+    await clickByText('General');
+    await pause(400);
+    const calls = [];
+    page.on('request', r => {
+        const b = r.postData() || '';
+        if (r.url().includes('call_kw') && b.includes('ir.config.parameter')) calls.push(b.slice(0, 120));
+    });
+    await typeInto('Address Line 3', `${PFX} floor 9`);
+    let r2 = await save();
+    if (r2.saved) ok('saving General still works');
+    else no(`saving General failed: "${r2.err}"`);
+    if (calls.length === 1) ok('and the whole page went in ONE call, not one per setting');
+    else no(`the page took ${calls.length} ir.config.parameter calls`);
+
+    await page.evaluate(() => { window.UI_TIMING = window.UI_TIMING || {}; window.UI_TIMING.rpcTimeout = 1; });
+    await typeInto('Address Line 3', `${PFX} floor 10`);
+    r2 = await save();
+    if (r2.err && /did not answer/i.test(r2.err)) ok('a request that never answers ends as an error, not a stuck button');
+    else no(`with a 1 ms limit the save reported: ${JSON.stringify(r2)}`);
+    const stuck = await page.$$eval('.erp-save-row button', els => els.some(b => /Saving/.test(b.textContent)));
+    if (!stuck) ok('and the button says "Save Changes" again, ready to retry');
+    else no('the button is still on "Saving…"');
+    await page.evaluate(() => { window.UI_TIMING.rpcTimeout = 45000; });
+    await typeInto('Address Line 3', '');
+    r2 = await save();
+    if (r2.saved) ok('the retry saves');
+    else no(`the retry failed: "${r2.err}"`);
+
     // ---- 5. reload: the edits are the company's now ----------------------
     await page.goto(BASE + '/', { waitUntil: 'networkidle2' });
     await openSettings();
-    c = await combo();
+    c = await combo(false);
     if (c.shown.startsWith(TO)) ok(`after a reload the Home Currency is still ${TO}`);
     else no(`after a reload the Home Currency shows "${c.shown}" — the pick was not kept`);
     const reg = await fieldValue('Registration No.');
@@ -239,6 +301,38 @@ try {
     if (base && base.locked) ok('and its rate is locked at 1.0');
     else no('the base rate is editable');
     await page.screenshot({ path: `${SHOTDIR}/3-currencies.png` });
+    // ---- 7. a currency c-erp does not know yet --------------------------
+    // "allow user to create new or search" — the ＋ beside the picker.
+    await clickByText('General');
+    await pause(400);
+    await page.click('[data-erp="new-currency"]');
+    await page.waitForSelector('[data-erp="cur-code"]', { timeout: 5000 });
+    await page.type('[data-erp="cur-code"]', NEWCUR.toLowerCase(), { delay: 20 });
+    await page.type('[data-erp="cur-symbol"]', 'Z$', { delay: 20 });
+    await page.click('[data-erp="cur-rate"]');
+    await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
+    await page.type('[data-erp="cur-rate"]', '2.5', { delay: 20 });
+    await page.click('[data-erp="cur-save"]');
+    try {
+        await page.waitForFunction((sel, c) => {
+            const el = document.querySelector(sel);
+            return el && el.value.trim().startsWith(c);
+        }, { timeout: 8000 }, PICKER, NEWCUR);
+        ok(`＋ adds ${NEWCUR} and selects it, typed in lower case`);
+    } catch (_) {
+        const err = await page.$$eval('.erp-save-err', els => els.map(e => e.textContent.trim()));
+        no(`adding a currency did not take: ${JSON.stringify(err)}`);
+    }
+    // A code that is not three letters is refused, on screen.
+    await page.click('[data-erp="new-currency"]');
+    await page.waitForSelector('[data-erp="cur-code"]', { timeout: 5000 });
+    await page.type('[data-erp="cur-code"]', 'zz', { delay: 20 });
+    await page.click('[data-erp="cur-save"]');
+    await pause(500);
+    const curErr = await page.$$eval('.erp-save-err', els => els.map(e => e.textContent.trim()).join(' '));
+    if (/three letters/i.test(curErr)) ok('a code that is not three letters is refused, with a reason');
+    else no(`a two-letter code was accepted or unexplained: "${curErr}"`);
+    await page.screenshot({ path: `${SHOTDIR}/4-currency.png` });
 } catch (e) {
     no('the journey stopped: ' + e.message);
     try { await page.screenshot({ path: `${SHOTDIR}/error.png` }); } catch (_) {}

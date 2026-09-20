@@ -54,6 +54,12 @@ struct DueGroup {
     /// Contract setting: the period is a calendar month, and the invoice says
     /// "August 2026" rather than a date range (migration 821).
     bool        wholeMonth = false;
+    /// Contract setting (migration 822): the invoice falls due on the move-in
+    /// day inside the period, not on the day the period starts.
+    bool        dueOnMoveIn = false;
+    /// The earliest move-in day among this invoice's lines — the day the
+    /// tenant has always paid on.
+    int         moveInDay  = 0;
     std::vector<DueLine> lines;
 };
 
@@ -116,12 +122,23 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             // Whole-month billing snaps the period to the 1st. Done in SQL so
             // the period the invoice PRINTS and the one it is keyed on
             // (UNIQUE contract_line_id, period_start) can never diverge.
-            "       to_char(CASE WHEN COALESCE(c.whole_month_billing, FALSE) "
+            // Whole months are now a LINE decision (migration 822): the line
+            // says 'month' or 'dates', or 'contract' to follow the contract.
+            "       to_char(CASE WHEN (l.billing_span = 'month' "
+            "                      OR (l.billing_span = 'contract' "
+            "                          AND COALESCE(c.whole_month_billing, FALSE))) "
             "                    THEN date_trunc('month', "
             "                           COALESCE(l.next_period_start, l.date_start))::date "
             "                    ELSE COALESCE(l.next_period_start, l.date_start) END, "
             "               'YYYY-MM-DD') AS period_start, "
-            "       COALESCE(c.whole_month_billing, FALSE) AS whole_month, "
+            "       (l.billing_span = 'month' "
+            "        OR (l.billing_span = 'contract' "
+            "            AND COALESCE(c.whole_month_billing, FALSE))) AS whole_month, "
+            // The day they moved in: the line's own anchor, else the day its
+            // period began. Used only when the contract asks for it.
+            "       COALESCE(c.due_on_move_in, FALSE) AS due_on_move_in, "
+            "       COALESCE(NULLIF(l.billing_anchor_day, 0), "
+            "                EXTRACT(DAY FROM l.date_start)::int, 1) AS move_in_day, "
             "       COALESCE(u.code, '')  AS unit_code, "
             "       COALESCE(u.name, '')  AS unit_name, "
             "       c.currency_id, c.journal_id "
@@ -180,7 +197,16 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             g.periodStart = key.periodStart;
             g.companyId   = key.companyId;
             g.currencyId  = key.currencyId;
-            g.wholeMonth  = !r["whole_month"].is_null() && r["whole_month"].as<bool>(false);
+            // One invoice, one due date: with several lines the earliest
+            // move-in day wins, so nobody is billed later than they agreed.
+            // A line that is NOT whole-month keeps the group's label a range.
+            const bool lineWholeMonth = !r["whole_month"].is_null() && r["whole_month"].as<bool>(false);
+            g.wholeMonth  = g.lines.empty() ? lineWholeMonth : (g.wholeMonth && lineWholeMonth);
+            g.dueOnMoveIn = !r["due_on_move_in"].is_null() && r["due_on_move_in"].as<bool>(false);
+            {
+                const int d = r["move_in_day"].as<int>(0);
+                if (d > 0 && (g.moveInDay == 0 || d < g.moveInDay)) g.moveInDay = d;
+            }
             // The journal is not part of the key: it is a routing choice
             // rather than an accounting attribute of the invoice, and
             // falls back to the company's sale journal when unset.
@@ -299,10 +325,26 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             }
             if (origin.empty()) origin = "Rental " + g.periodStart;
 
+            // When the contract bills on the move-in day, that is the day
+            // inside THIS period — the 5th of the month being billed, not the
+            // 1st. A month without that day (the 31st of February) falls back
+            // to its last day rather than skipping the month.
+            std::string dueDate = g.periodStart;
+            if (g.dueOnMoveIn && g.moveInDay > 0) {
+                auto dd = txn.exec(
+                    "SELECT to_char(date_trunc('month', $1::date) "
+                    "               + (LEAST($2, EXTRACT(DAY FROM "
+                    "                   (date_trunc('month', $1::date) "
+                    "                    + INTERVAL '1 month - 1 day'))::int) - 1) * INTERVAL '1 day', "
+                    "               'YYYY-MM-DD')",
+                    pqxx::params{g.periodStart, g.moveInDay});
+                dueDate = dd[0][0].c_str();
+            }
+
             pqxx::params mp;
             mp.append(invName);
             mp.append(asOf);                 // invoice_date
-            mp.append(g.periodStart);        // due on the day the period starts
+            mp.append(dueDate);              // when the rent is owed
             mp.append(journalId);
             mp.append(g.partnerId);
             mp.append(g.companyId);

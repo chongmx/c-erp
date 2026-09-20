@@ -244,8 +244,21 @@ Resolving the current value by id is what makes the third impossible.
 
 Props: `model`, `value`, `label`, `domain`, `fields` (extra columns to read),
 `searchFields` (extra columns a typed term also matches), `format` (a record →
-label function, for `code — name` style labels), `readonly`,
-`onSelect(id, displayName)`.
+label function, for `code — name` style labels), `order` (SQL order, default
+`name ASC` — the Home Currency picker uses `active DESC, name ASC` so the
+currencies in use come first), `readonly`, `onSelect(id, displayName)`.
+
+**Focus selects the text.** Typing used to APPEND to the label already in the
+box: it read "MYR (RM)", you typed "eu", and the search was for "MYR (RM)eu" —
+"No match", for a record sitting right there. The box now selects its contents
+on focus, so typing replaces them; leaving without choosing restores the label.
+
+**`order` reaches SQL.** It did not until 2026-09: `GenericViewModel::
+handleSearchRead` hardcoded `id ASC` and dropped whatever the client asked for,
+so this widget's `name ASC` was ignored and a dropdown showing the first 20 rows
+of a long table showed the twenty OLDEST — the exact defect it was built to
+prevent. A hand-written ViewModel that implements `search_read` itself must
+honour `call.order()` too (it is parsed and validated there).
 
 **The label comes from the model, not the call site.** An explicit `format`
 still wins, but otherwise the widget prefers the record's stored `display_name`
