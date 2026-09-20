@@ -63,6 +63,7 @@ All under `/api/v1`.
 |---|---|---|---|
 | GET | `/me` | any | who the key acts as, its scopes and projects |
 | GET | `/projects` | read | `[{key, name, tickets}]` |
+| POST | `/projects` | write | `{name, key?, description?}` → **201**; `key` is the ticket prefix (CERP), derived from the name when omitted. A key limited to projects cannot create one |
 | GET | `/projects/{key}/statuses` | read | `[{name, closed}]`, in board order |
 | GET | `/labels` | read | label names |
 | GET | `/users?q=` | read | `[{id, login, name}]` — people a ticket can be assigned to |

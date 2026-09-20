@@ -395,13 +395,18 @@ void ApiModule::registerRoutes() {
 
         auto conn = db->acquire();
         pqxx::work txn{conn.get()};
+        // Every column is aliased distinctly. k.name and the owner's name were
+        // both "name": pqxx returns the FIRST match, so /api/v1/me reported
+        // the KEY's name as the person's.
         auto r = txn.exec(
-            "SELECT k.id, k.name, k.user_id, array_to_json(k.scopes)::text AS scopes, "
+            "SELECT k.id AS key_id, k.name AS key_name, k.user_id, "
+            "       array_to_json(k.scopes)::text AS scopes, "
             "       array_to_json(k.project_ids)::text AS projects, "
             "       (k.revoked_at IS NOT NULL) AS revoked, "
             "       (k.expires_at IS NOT NULL AND k.expires_at < now()) AS expired, "
             "       u.active, u.login, COALESCE(u.company_id, 0) AS company_id, "
-            "       COALESCE(u.partner_id, 0) AS partner_id, COALESCE(p.name, u.login) AS name "
+            "       COALESCE(u.partner_id, 0) AS partner_id, "
+            "       COALESCE(NULLIF(p.name,''), u.login) AS user_name "
             "FROM res_users_apikey k JOIN res_users u ON u.id = k.user_id "
             "LEFT JOIN res_partner p ON p.id = u.partner_id WHERE k.token_hash = $1",
             pqxx::params{core::Filestore::sha256Hex(token)});
@@ -411,11 +416,11 @@ void ApiModule::registerRoutes() {
         if (!r[0]["active"].as<bool>(false))  throw ApiError(401, "unauthorized", "The key's owner is deactivated.");
 
         ApiUser u;
-        u.keyId = r[0]["id"].as<int>();
-        u.keyName = r[0]["name"].c_str();
+        u.keyId = r[0]["key_id"].as<int>();
+        u.keyName = r[0]["key_name"].c_str();
         u.uid = r[0]["user_id"].as<int>();
         u.login = r[0]["login"].c_str();
-        u.name = r[0]["name"].c_str();
+        u.name = r[0]["user_name"].c_str();
         u.companyId = r[0]["company_id"].as<int>();
         u.partnerId = r[0]["partner_id"].as<int>();
         for (const auto& s : json::parse(r[0]["scopes"].c_str(), nullptr, false))
@@ -694,10 +699,41 @@ void ApiModule::registerRoutes() {
             });
         }, {drogon::Get});
 
-    // GET /api/v1/projects
+    // GET /api/v1/projects   POST /api/v1/projects (create)
+    //
+    // Creating a project is part of running the tracker — the first ticket
+    // needs somewhere to live — so it sits under tickets:write rather than a
+    // scope of its own. A key limited to certain projects cannot create more.
     drogon::app().registerHandler("/api/v1/projects",
-        [serve, db](const drogon::HttpRequestPtr& req, Cb&& cb) {
-            serve(req, std::move(cb), [db](const ApiUser& u) -> std::pair<int, json> {
+        [serve, callVm, body, method, db](const drogon::HttpRequestPtr& req, Cb&& cb) {
+            serve(req, std::move(cb), [&](const ApiUser& u) -> std::pair<int, json> {
+                if (method(req) == drogon::Post) {
+                    u.need("tickets:write");
+                    if (!u.projectIds.empty())
+                        throw ApiError(403, "forbidden",
+                                       "This API key is limited to certain projects, so it cannot create one.");
+                    const json b = body(req);
+                    for (auto it = b.begin(); it != b.end(); ++it)
+                        if (it.key() != "name" && it.key() != "key" && it.key() != "description")
+                            throw ApiError(400, "invalid",
+                                           "Unknown field '" + it.key() + "'. Fields: name, key, description.");
+                    if (!b.contains("name") || !b["name"].is_string() || b["name"].get<std::string>().empty())
+                        throw ApiError(400, "invalid", "name is required.");
+                    json vals = {{"name", b["name"]}};
+                    if (b.contains("key")) {
+                        if (!b["key"].is_string())
+                            throw ApiError(400, "invalid", "key must be 2-10 letters or digits, e.g. CERP.");
+                        vals["task_prefix"] = b["key"];
+                    }
+                    if (b.contains("description")) vals["description"] = b["description"];
+                    const int pid = callVm(u, "project.project", "create", json::array({vals})).get<int>();
+                    auto conn = db->acquire();
+                    pqxx::work txn{conn.get()};
+                    auto r = txn.exec("SELECT name, task_prefix FROM project_project WHERE id = $1",
+                                      pqxx::params{pid});
+                    return {201, {{"key", r[0]["task_prefix"].c_str()}, {"name", r[0]["name"].c_str()},
+                                  {"tickets", 0}}};
+                }
                 u.need("tickets:read");
                 auto conn = db->acquire();
                 pqxx::work txn{conn.get()};
@@ -712,7 +748,7 @@ void ApiModule::registerRoutes() {
                 }
                 return {200, out};
             });
-        }, {drogon::Get});
+        }, {drogon::Get, drogon::Post});
 
     // GET /api/v1/projects/{key}/statuses — the board's columns, in order
     drogon::app().registerHandler("/api/v1/projects/{1}/statuses",

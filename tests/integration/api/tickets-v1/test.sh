@@ -120,6 +120,12 @@ t_eq "401" "$(st "$A")" "an unknown key: 401"
 A=$(api GET /api/v1/me "$KW")
 t_eq "200" "$(st "$A")" "the key works"
 t_eq "admin" "$(jget "$(bd "$A")" "r['user']['login']")" "and acts as its owner"
+# The key's name and the owner's name are different things. They were both
+# selected as "name", so /me reported the KEY's name as the person's.
+t_eq "$(pgv "SELECT COALESCE(NULLIF(p.name,''), u.login) FROM res_users u
+             LEFT JOIN res_partner p ON p.id=u.partner_id WHERE u.id=$ADMIN" | sed 's/^ *//;s/ *$//')" \
+     "$(jget "$(bd "$A")" "r['user']['name']")" "and reports the PERSON's name"
+t_eq "${PFX} full" "$(jget "$(bd "$A")" "r['key']['name']")" "with the key's own name beside it"
 t_nonempty "$(pg "SELECT last_used_at FROM res_users_apikey WHERE id=${KW_ID}")" "its last use is recorded"
 
 KX=$(jget "$(newkey "${PFX} revoke-me" '["tickets:read"]')" "r['result']['token']")
@@ -214,6 +220,17 @@ t_eq "Done" "$(jget "$(bd "$(api GET /api/v1/projects/ZZAPA/statuses "$KW")")" "
 t_contains "$(bd "$(api GET /api/v1/labels "$KW")")" "zzapi-ui" "labels"
 t_contains "$(jget "$(bd "$(api GET '/api/v1/users?q=admin' "$KW")")" "','.join(u['login'] for u in r)")" "admin" "users to assign to"
 t_contains "$(bd "$(api GET /api/v1/projects "$KW")")" "ZZAPB" "projects"
+
+# A project can be created through the API — the first ticket needs somewhere
+# to live, and a tracker nobody can start is no tracker.
+A=$(api POST /api/v1/projects "$KW" "{\"name\":\"${PFX} Made By Api\",\"key\":\"zzapc\"}")
+t_eq "201|ZZAPC" "$(st "$A")|$(jget "$(bd "$A")" "r['key']")" "a project is created, its key upper-cased"
+t_eq "ZZAPC-1" "$(jget "$(bd "$(api POST /api/v1/tickets "$KW" "{\"project\":\"ZZAPC\",\"title\":\"${PFX} first\"}")")" "r['key']")" \
+     "and its first ticket is numbered from 1"
+t_eq "400" "$(st "$(api POST /api/v1/projects "$KW" '{"name":"x","key":"1BAD"}')")" "a malformed project key is refused"
+t_eq "400" "$(st "$(api POST /api/v1/projects "$KW" "{\"name\":\"x\",\"key\":\"ZZAPC\"}")")" "a key already in use is refused"
+t_eq "403" "$(st "$(api POST /api/v1/projects "$KP" '{"name":"nope"}')")" "a project-limited key cannot create projects"
+t_eq "403" "$(st "$(api POST /api/v1/projects "$KR" '{"name":"nope"}')")" "nor can a read-only key"
 
 # -------------------------------------------------------------------------
 sec "5. comments and attachments"
