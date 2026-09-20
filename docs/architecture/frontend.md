@@ -30,6 +30,12 @@ into a public page for an authenticated editor.
 last. Script order is load-bearing — a component must be defined before the
 component that names it in `static components`.
 
+Write asset references in `index.html` as plain absolute paths
+(`/src/components/X.js`). The server stamps each with `?v=<mtime>` when it
+serves the shell, so a deploy reaches browsers immediately
+([../operations/deployment.md](../operations/deployment.md)); do not add
+version strings by hand.
+
 ```
 web/static/
   lib/owl.iife.js                the framework (vendored)

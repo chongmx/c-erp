@@ -109,6 +109,23 @@ prefer fixing the image.
 The cross-build gets its own directory so it never collides with a local
 `./build`.
 
+**Binary and web files are always the same commit.** The binary is shipped;
+`web/static`, `config` and `db` come from the host's git checkout. `deploy.sh`
+therefore checks, before shipping, that the host can fast-forward to the commit
+it just built — pushed, nothing uncommitted on the host, no host-only commits —
+and refuses with the reason if not. After the binaries land it fast-forwards the
+checkout, so the new frontend and the new binary go live together. `--no-sync`
+skips this. (Twice the halves came apart: an old binary under a new frontend,
+then a new binary whose API Keys menu the old `app.js` had never heard of —
+"internal error".)
+
+**Browsers pick up a deploy at once.** The app shell (`/login`) is sent
+`Cache-Control: no-cache`, and every `/src` and `/lib` script and stylesheet in
+it is stamped `?v=<modification time>` (`HttpServer::versionedShell_`). Without
+that, Cloudflare's default four-hour browser TTL kept the old `app.js` running
+long after a deploy. A changed file gets a new URL; an unchanged one keeps its
+cache.
+
 ## Migrations on deploy
 
 ```bash

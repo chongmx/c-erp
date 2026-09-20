@@ -3,7 +3,10 @@
 #include <trantor/utils/AsyncFileLogger.h>
 #include <nlohmann/json.hpp>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <regex>
+#include <sstream>
 #include <string>
 
 namespace cerp::infrastructure {
@@ -247,10 +250,30 @@ public:
             // /login (docs/126). index.html references its assets with
             // absolute paths (/lib, /src), so it loads correctly from any
             // path this is set to.
+            //
+            // The shell is served with every script and stylesheet URL
+            // stamped with that file's modification time (app.js?v=…) and
+            // with Cache-Control: no-cache on the shell itself. Without it a
+            // deploy was invisible for hours: c-erp sent no caching header,
+            // so Cloudflare applied its default four-hour browser TTL, and a
+            // browser kept running the old app.js against the new server —
+            // a new menu then opened a screen the old script had never heard
+            // of, and the user saw "internal error". A changed file now has a
+            // new URL, so browsers and the CDN fetch it at once, while an
+            // unchanged one keeps its cache.
             app.registerHandler(cfg_.appPath,
                 [this](const HttpRequestPtr&, HttpCallback&& cb) {
-                    auto res = drogon::HttpResponse::newFileResponse(
-                        cfg_.docRoot + "/" + cfg_.indexFile);
+                    auto res = drogon::HttpResponse::newHttpResponse();
+                    const std::string html = versionedShell_(cfg_.docRoot, cfg_.indexFile);
+                    if (html.empty()) {
+                        res->setStatusCode(drogon::k404NotFound);
+                        cb(res);
+                        return;
+                    }
+                    res->setStatusCode(drogon::k200OK);
+                    res->setContentTypeCode(drogon::CT_TEXT_HTML);
+                    res->addHeader("Cache-Control", "no-cache");
+                    res->setBody(html);
                     cb(res);
                 },
                 {drogon::Get});
@@ -270,6 +293,44 @@ public:
 
     HttpServer(const HttpServer&)            = delete;
     HttpServer& operator=(const HttpServer&) = delete;
+
+    /**
+     * index.html with each local asset URL — src="/src/…js", href="/lib/…css"
+     * — given ?v=<the file's modification time>. Read per request: the shell
+     * is fetched once per page load, and a few dozen stat() calls are nothing
+     * next to one stale deploy. A file that cannot be found is left as it
+     * was. Returns "" when the shell itself is missing.
+     */
+    static std::string versionedShell_(const std::string& docRoot, const std::string& indexFile) {
+        std::ifstream in(docRoot + "/" + indexFile, std::ios::binary);
+        if (!in) return {};
+        std::stringstream ss;
+        ss << in.rdbuf();
+        const std::string html = ss.str();
+
+        static const std::regex kAsset(R"re(((?:src|href)=")(/(?:src|lib)/[^"?#]+\.(?:js|css))")re");
+        std::string out;
+        out.reserve(html.size() + 1024);
+        auto begin = std::sregex_iterator(html.begin(), html.end(), kAsset);
+        std::size_t last = 0;
+        for (auto it = begin; it != std::sregex_iterator(); ++it) {
+            const auto& m = *it;
+            out.append(html, last, static_cast<std::size_t>(m.position(0)) - last);
+            std::string url = m[2].str();
+            std::error_code ec;
+            const auto t = std::filesystem::last_write_time(docRoot + url, ec);
+            if (!ec) {
+                const auto ticks = t.time_since_epoch().count();
+                std::ostringstream v;
+                v << std::hex << static_cast<unsigned long long>(ticks);
+                url += "?v=" + v.str();
+            }
+            out += m[1].str() + url + "\"";
+            last = static_cast<std::size_t>(m.position(0) + m.length(0));
+        }
+        out.append(html, last, std::string::npos);
+        return out;
+    }
 
     // ----------------------------------------------------------
     // Route registration helpers

@@ -1324,6 +1324,17 @@ private:
                     return successResponse_(id, *cached);
             }
 
+            // A model nothing serves. Seen when a browser runs an app.js older
+            // than the server: a menu the new server seeded opens a screen the
+            // old script does not know, and it falls back to a generic list of
+            // a model that does not exist. That used to surface as "internal
+            // error"; say what it is and what fixes it. The model name is not
+            // sensitive — the client just sent it.
+            if (!vmFactory_->has(call.model))
+                return errorResponse_(id, 404, "Unknown model",
+                    "The server has no model '" + call.model + "'. If a menu led here, this "
+                    "page is older than the server — reload it (Ctrl+Shift+R).");
+
             auto vm = vmFactory_->create(call.model, core::Lifetime::Transient);
 
             nlohmann::json result;

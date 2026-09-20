@@ -23,6 +23,9 @@
 #   ./scripts/deploy.sh --rebuild-image force a rebuild of the builder image
 #   ./scripts/deploy.sh --no-abi-check  ship even if the ABI check objects
 #   ./scripts/deploy.sh --dry-run       build and check, but do not ship
+#   ./scripts/deploy.sh --no-sync       leave the host's git checkout alone
+#                                       (default: fast-forward it to this commit,
+#                                        so binary and web/static always match)
 #
 # All build flags (--server, --admin, --clean, -j N) go through to build.sh.
 #
@@ -52,6 +55,7 @@ CHECK_STATUS=0
 REBUILD_IMAGE=0
 ABI_CHECK=1
 DRY_RUN=0
+SYNC_WEB=1
 BUILD_ARGS=()
 
 while [ $# -gt 0 ]; do
@@ -63,8 +67,10 @@ while [ $# -gt 0 ]; do
         --rebuild-image) REBUILD_IMAGE=1; shift ;;
         --no-abi-check)  ABI_CHECK=0; shift ;;
         --dry-run)       DRY_RUN=1; shift ;;
+        --no-sync)       SYNC_WEB=0; shift ;;
         -h|--help)
-            sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+            # the whole header comment, however long it grows
+            awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"
             exit 0
             ;;
         *)
@@ -240,12 +246,51 @@ fi
 # already run an Aug-09 binary against Aug-31 assets.
 # -------------------------------------------------------------
 local_rev=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+local_sha=$(git rev-parse HEAD 2>/dev/null || echo unknown)
 remote_rev=$(ssh "$REMOTE_HOST" "cd $REMOTE_DIR 2>/dev/null && git rev-parse --short HEAD" 2>/dev/null || echo unknown)
-if [ "$local_rev" != "$remote_rev" ]; then
+# SYNC — bring the host's checkout to the commit that was just built, so the
+# binary and web/static are always the same code.
+#
+# The note that used to stand here was not enough. A deploy is a long build,
+# the note scrolls away, and twice in one day the halves came apart: once an
+# old binary under a new frontend, then a new binary (which seeded the API
+# Keys menu) under an old app.js that had never heard of that screen — the
+# user clicked the menu and got "internal error". So this now checks BEFORE
+# shipping that the host can fast-forward to this commit (pushed, and nothing
+# uncommitted there), and fast-forwards it after the binaries land.
+# --no-sync restores the old behaviour.
+SYNC_READY=0
+if [ "$SYNC_WEB" -eq 1 ] && [ "$local_rev" != "$remote_rev" ]; then
     echo
-    echo "  NOTE  source revision differs — local $local_rev, remote $remote_rev."
-    echo "        This script ships binaries only; web/static, config and db come"
-    echo "        from git on the host. If this deploy includes frontend changes:"
+    echo "[deploy] Step 3: the host is at $remote_rev, this build is $local_rev — checking it can fast-forward..."
+    sync_check=$(ssh "$REMOTE_HOST" "cd $REMOTE_DIR && git fetch -q origin 2>&1 \
+        && { git cat-file -e $local_sha^{commit} 2>/dev/null || echo NOT_PUSHED; } \
+        && { [ -z \"\$(git status --porcelain --untracked-files=no)\" ] || echo HOST_DIRTY; } \
+        && { git merge-base --is-ancestor HEAD $local_sha 2>/dev/null || echo NOT_FF; }" 2>&1)
+    case "$sync_check" in
+        *NOT_PUSHED*)
+            echo "ERROR: commit $local_rev is not on the host's remote — push it first:" >&2
+            echo "           git push" >&2
+            echo "       (or deploy with --no-sync and update the host by hand)." >&2
+            exit 1 ;;
+        *HOST_DIRTY*)
+            echo "ERROR: the host's checkout has uncommitted changes; a fast-forward could" >&2
+            echo "       not bring its web/static to $local_rev. Look first:" >&2
+            echo "           ssh $REMOTE_HOST 'cd $REMOTE_DIR && git status'" >&2
+            exit 1 ;;
+        *NOT_FF*)
+            echo "ERROR: the host ($remote_rev) is not an ancestor of $local_rev — it has" >&2
+            echo "       commits this checkout does not. Pull here, rebuild, then deploy." >&2
+            exit 1 ;;
+        "") SYNC_READY=1; echo "        ok — it will be fast-forwarded to $local_rev after the binaries land." ;;
+        *)  echo "ERROR: could not check the host's checkout:" >&2
+            echo "$sync_check" | sed 's/^/       /' >&2
+            exit 1 ;;
+    esac
+elif [ "$local_rev" != "$remote_rev" ]; then
+    echo
+    echo "  NOTE  --no-sync: the host stays at $remote_rev, this binary is $local_rev."
+    echo "        web/static, config and db come from git on the host:"
     echo "            ssh $REMOTE_HOST 'cd $REMOTE_DIR && git pull'"
 fi
 
@@ -296,6 +341,14 @@ else
 fi
 
 ssh "$REMOTE_HOST" "chmod +x $REMOTE_DIR/build/* 2>/dev/null || true"
+
+# The web half, the same commit as the binary (checked in Step 3). The
+# running server serves web/static from disk, so the new frontend is live the
+# moment this lands — which is why it runs AFTER the binaries are in place.
+if [ "$SYNC_READY" -eq 1 ]; then
+    echo "[deploy] Step 4b: fast-forwarding the host's checkout to $local_rev (web/static, config, db)..."
+    ssh "$REMOTE_HOST" "cd $REMOTE_DIR && git merge --ff-only -q $local_sha && git log --oneline -1"
+fi
 
 if [ "$RESTART_SERVICE" -eq 1 ]; then
     echo
