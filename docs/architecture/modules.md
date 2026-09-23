@@ -203,6 +203,37 @@ Customer invoices, vendor bills, credit notes and vendor refunds are all
 `account.move` with a different type. Financial statements, the SST-02 tax
 report, lock dates and the accounting dashboard are served from here.
 
+### The life of an invoice
+
+**Every invoice is born a draft.** Whatever raises it — the invoice screen, a
+sales order, a rental contract's *Create Invoice*, the rental billing cron —
+writes `state='draft'` and `name='/'`. Nothing is numbered and nothing is owed
+until someone confirms it.
+
+`action_post` is the only step that changes that. It takes the next number from
+`account.move.INV` (customer invoices), `account.move.RINV` (credit notes) or
+the journal's own sequence, checks the lock dates, generates the analytic
+lines — and **spends any credit the customer already has on account**: a tenant
+who paid six months up front has that advance drawn down as each invoice is
+posted, because posting is when the invoice first owes anything.
+`PaymentAllocation` settles posted moves only, which is why this happens here
+and not at creation.
+
+A posted invoice then has four endings, and the form states which in a corner
+ribbon rather than leaving "Posted" to mean all of them:
+
+| Ending | How | What the form shows |
+|---|---|---|
+| unpaid | nothing yet | no ribbon — the status bar says Posted |
+| paid / part paid | Register Payment | **Paid** / **Part paid** |
+| cancelled | Cancel (`button_cancel`) | **Cancelled**, with *Reset to Draft* |
+| reversed | Add Credit Note, then confirm it | **Reversed** |
+
+Reversal is not a state on the invoice: the credit note carries
+`reversed_entry_id` pointing back at it, and only a **posted** credit note
+counts — a draft one reverses nothing. `tests/functional/account/invoice-states`
+drives all four endings through the screen.
+
 ## uom
 
 `uom.uom`, seeded with the standard categories and a factor to each category's
@@ -227,6 +258,82 @@ runs on.
 `part.lookup` is a ViewModel, not a table-backed model: it exposes
 `describe` / `submit` / `apply`. See
 [../reference/part-lookup-api.md](../reference/part-lookup-api.md).
+
+### The parameter vocabulary
+
+`part_parameter_keyword` is the list of quantities this catalogue measures;
+`part_parameter_alias` holds every spelling that resolves to one. Both are
+matched on `norm` — lowercase, letters and digits only — so `Rds(on)`,
+`RDS_ON` and `rds on` are one name.
+
+It exists because a parameter name is free text by design: an agent reading a
+datasheet may send anything. Without a vocabulary, "Resistance", "Ohms" and
+"resistance (Ω)" become three parameters, each looking fine on its own product
+and none of them finding the others in a parametric search.
+
+**A name the vocabulary does not know is never an error.** `submit` stages the
+part and attaches a suggestion — a known spelling is corrected outright, a near
+miss names what it is probably meant to be, and a genuinely new name says so.
+The fuzzy step is a plain edit distance, with 0.72 as the line between "a
+misspelling of this" and "a different quantity sharing some letters".
+
+A person decides on **Products ▸ Configuration ▸ Parameter Keywords** (menu 88,
+action 130, `ParamKeywords.js`), which lists every unmatched name in the
+catalogue with the two answers next to it:
+
+| | |
+|---|---|
+| **Add as new** | adopt the name as its own parameter |
+| **Merge into** | rename it on every product that used it, and keep the old spelling as an alias |
+
+Merge is the one that writes to products — it is what puts the parts back in
+each other's search results. The alias it leaves behind is why the same
+question is never asked twice.
+
+The seed is the standard electronics quantities plus their datasheet
+spellings, and then **every name already in the catalogue is adopted**: a live
+database has a vocabulary whether or not anyone wrote it down, and opening the
+screen to a list of false alarms would teach people to ignore it. Two seeded
+entries carry `advice` instead of measuring anything — `Package` and
+`Operating Temperature` — because those are the two ways a lookup produced a
+plausible, completely wrong number: `"0603"` reads as 603, and `"-55 to 125"`
+reads as −55.
+
+`tests/integration/product/param-vocabulary` pins the matching, the two
+actions and the merge's effect on product rows.
+
+### Units, and the two dead ends on the review desk
+
+The same problem arrives one level down: a new part brings a **unit** nobody
+has entered (`Mbps`) or a **value that is not a number** (`MIPS32 M4K`,
+`10/100`). Both were errors with nothing to click — the message said "see
+describe.units", which is advice to an agent, not an action a person can take.
+
+Both now carry their fix in the issue, and the review desk renders it as a
+button:
+
+| Error | Button | What it does |
+|---|---|---|
+| unknown unit | *Add `Mbps` as a unit…* | `part.unit.create_unit` — asks what it measures and how it converts |
+| value is not a number | *Keep it as text* | sets `"text": true`, storing it in `value_text` |
+
+A unit is added through `create_unit` rather than a plain `create` because
+`quantity_kind`, `factor` and `is_base` are not registered fields: they are
+what makes 4.7 kΩ and 4700 Ω the same number, and a unit without them is a
+label that breaks every range search it touches. The **first** unit of a
+quantity becomes its base with factor 1; any later one must give the factor
+that converts it to that base.
+
+Either fix-up re-runs `update`, which is the same validation `submit` runs, so
+the proposal moves itself out of *Needs fixing* rather than waiting to be
+re-submitted.
+
+While fixing this, `looksLikeText` gained the **pair** case: `10/100` parsed
+as 10 and the second speed was dropped, exactly as `-55 to 125` once became
+−55. Pairs and ranges are now kept whole as text and reported at `info` level,
+rather than silently becoming a number that reads like a specification.
+`tests/functional/product/lookup-fixups` drives both buttons through the
+screen.
 
 ## sale
 
@@ -511,6 +618,29 @@ period_start)` rejects the repeat and the answer is "already invoiced".
 
 `tests/integration/rental/contract-invoice` pins the scope, the gate and the
 idempotency; `tests/functional/rental/contract-invoice` presses the button.
+
+### What billing produces, and where it shows up
+
+Billing writes a **draft**, like every other producer of an invoice
+([The life of an invoice](#the-life-of-an-invoice)): `state='draft'`,
+`name='/'`, no sequence consumed. It used to post the invoice itself and apply
+the tenant's advance at the same moment; that work now happens once, in
+`action_post`, so a rental invoice and a hand-made one behave identically and
+the number belongs to a document somebody confirmed.
+
+That moves rent through two panels while it is unconfirmed, and both had to
+learn about it:
+
+- **the cashflow forecast** counts drafts as receivable. Billing advances
+  `next_period_start`, which takes the month out of the projection; if the
+  draft were not counted, a month of rent would vanish from the forecast the
+  moment it was billed and reappear only on posting.
+- **the dashboard** counts them in *needs attention* as "Invoices still in
+  draft". Outstanding receivables and the ageing buckets stay posted-only —
+  they are ledger figures, and a draft is in no ledger.
+
+`tests/integration/rental/rental-billing` §10 pins the draft and the advance,
+`rental-cashflow` §8 the forecast and `rental-dashboard` §6b the split.
 
 ### The billing period
 

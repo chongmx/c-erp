@@ -46,12 +46,19 @@ WITH m AS (
 ),
 -- Income already invoiced: counted in the month it falls DUE, not the
 -- month it was raised, because that is when the cash is expected.
+--
+-- Drafts count. Every invoice is born a draft, so restricting this to
+-- posted moves put the money nowhere: billing advances next_period_start,
+-- which drops the month out of `proj`, and the draft was not yet in
+-- `recv` — a forecast that lost a month of rent the moment it was billed.
+-- A draft is money the landlord expects; only 'cancel' is money written
+-- off, and that is excluded.
 recv AS (
     SELECT date_trunc('month', COALESCE(mv.due_date, mv.invoice_date, mv.date))::date AS month,
            SUM(mv.amount_residual) AS amount
       FROM account_move mv
      WHERE mv.move_type = 'out_invoice'
-       AND mv.state = 'posted'
+       AND mv.state IN ('draft', 'posted')
        AND mv.amount_residual > 0
      GROUP BY 1
 ),

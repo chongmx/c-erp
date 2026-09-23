@@ -262,6 +262,64 @@
 }
 .pl-issue.lvl-error   { border-left-color: var(--accent); color: #ffb4b4; }
 .pl-issue.lvl-warning { border-left-color: #e8d44d;       color: #e8d44d; }
+/* info: something was corrected FOR the reviewer — a unit symbol, a parameter
+   name that is a known spelling of one we use. Not a doubt, so it is not
+   dressed as one. */
+.pl-issue.lvl-info    { border-left-color: #6fb3d6;       color: var(--muted); }
+
+/* CERP-8 — the way out of an error, offered where the error is read. */
+.pl-fix {
+    margin-left: auto; flex: 0 0 auto;
+    background: none; border: 1px solid currentColor; border-radius: 4px;
+    color: inherit; font-size: .74rem; padding: 1px 8px; cursor: pointer;
+    white-space: nowrap;
+}
+.pl-fix:hover:not(:disabled) { background: rgba(255,255,255,.08); }
+.pl-fix:disabled { opacity: .5; cursor: default; }
+.pl-fix + .pl-fix { margin-left: 6px; }
+
+.pl-unit-form {
+    margin-top: 12px; padding: 12px 14px; border-radius: 6px;
+    background: var(--surface); border: 1px solid var(--border);
+}
+.pl-unit-h { font-size: .84rem; font-weight: 700; margin-bottom: 8px; }
+.pl-unit-h code { font-family: ui-monospace, Consolas, monospace; }
+.pl-unit-row { display: grid; grid-template-columns: 90px 200px 1fr; gap: 10px; align-items: center; margin-bottom: 6px; }
+.pl-unit-row > label { color: var(--muted); font-size: .8rem; }
+.pl-unit-row input, .pl-unit-row select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 5px 7px; font-family: inherit; font-size: .82rem;
+}
+.pl-unit-row input:focus, .pl-unit-row select:focus { border-color: var(--accent); outline: none; }
+.pl-unit-form .pl-hint.inline { padding: 0; border: none; font-size: .76rem; }
+
+@media (max-width: 720px) {
+    .pl-unit-row { grid-template-columns: 1fr; }
+    .pl-fix { margin-left: 0; }
+}
+
+/* CERP-8 — the vocabulary's verdict on a parameter name, next to the name
+   itself rather than only in the issue list above, because the decision is
+   made while reading the row. */
+.pl-param-hint {
+    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    margin-top: 3px; font-size: .75rem; color: var(--muted);
+}
+.pl-param-hint .pl-tag {
+    padding: 1px 6px; border-radius: 9px; font-weight: 700; font-size: .68rem;
+    text-transform: uppercase; letter-spacing: .04em;
+}
+.pl-param-hint .pl-tag.similar { background: rgba(232,212,77,.16); color: #e8d44d; }
+.pl-param-hint .pl-tag.unknown { background: rgba(120,140,170,.16); color: var(--muted); }
+.pl-param-hint button {
+    background: none; border: 1px solid var(--border); border-radius: 4px;
+    color: var(--text); font-size: .72rem; padding: 1px 7px; cursor: pointer;
+}
+.pl-param-hint button:hover { border-color: var(--accent); }
+.pl-param-hint select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; font-size: .72rem; padding: 1px 4px; max-width: 160px;
+}
 .pl-issue-field {
     font-family: ui-monospace, Consolas, monospace; font-size: .74rem;
     color: var(--muted); flex: 0 0 auto;

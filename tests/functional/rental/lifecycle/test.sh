@@ -62,6 +62,21 @@ trap cleanup EXIT
 cleanup
 auth_or_die
 
+# The SCHEDULED billing run is switched off for the duration.
+#
+# This journey drives billing by hand, from the dashboard, with explicit
+# dates — and then asserts that a closed contract raises nothing further. The
+# cron bills as of TODAY, so if it fired while the contract was still open it
+# raised a second, perfectly correct invoice for the next period and the
+# assertion failed for a reason that had nothing to do with the journey. That
+# is a race against the clock, not a test.
+#
+# It is re-enabled on the way out, by the same cleanup that removes the
+# fixtures, so a failed run does not leave billing switched off.
+pg "UPDATE ir_cron SET active=false WHERE code='rental.billing'" >/dev/null
+restore_cron() { pg "UPDATE ir_cron SET active=true WHERE code='rental.billing'" >/dev/null 2>&1; }
+trap 'restore_cron; cleanup' EXIT
+
 CHROME=${CHROME_PATH:-/usr/bin/google-chrome}
 
 # -------------------------------------------------------------------------

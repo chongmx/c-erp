@@ -1763,6 +1763,13 @@ class InvoiceFormView extends Component {
             <t t-elif="state.error"><div class="error" t-esc="state.error"/></t>
             <t t-else="">
                 <div class="so-card">
+                    <!-- Where an invoice ENDED UP, readable at a glance and in
+                         the corner every accounting system puts it. The status
+                         bar shows the workflow; this shows the verdict: paid,
+                         reversed or cancelled. -->
+                    <div t-if="ribbon" t-attf-class="doc-ribbon {{ ribbon.kind }}">
+                        <span t-esc="ribbon.text"/>
+                    </div>
                     <div class="so-card-head">
                         <h1 class="so-doc-id" t-esc="state.record.name || 'Draft Invoice'"/>
                     </div>
@@ -1982,6 +1989,26 @@ class InvoiceFormView extends Component {
         return '';
     }
 
+    /**
+     * The corner ribbon: where this invoice ended up.
+     *
+     * An invoice has three ways to finish — paid, reversed by a credit note,
+     * or cancelled — and the status bar alone showed only "Posted" for all
+     * three. Reversal is not a state on the invoice: the credit note points
+     * back at it (`reversed_entry_id`), so `state.reversedBy` is loaded with
+     * the record.
+     */
+    get ribbon() {
+        const r = this.state.record;
+        if (!r || !r.id) return null;
+        if (r.state === 'cancel')     return { kind: 'cancelled', text: 'Cancelled' };
+        if (this.state.reversedBy)    return { kind: 'reversed',  text: 'Reversed' };
+        if (r.state === 'draft')      return { kind: 'draft',     text: 'Draft' };
+        if (r.payment_state === 'paid')    return { kind: 'paid',    text: 'Paid' };
+        if (r.payment_state === 'partial') return { kind: 'partial', text: 'Part paid' };
+        return null;                  // posted and unpaid: the status bar says so
+    }
+
     get isNew() { return !this.props.recordId; }
 
     setup() {
@@ -1996,6 +2023,7 @@ class InvoiceFormView extends Component {
             paymentTerms:   [],
             taxOptions:     [],   // P3: tax picker on invoice lines
             chatRefreshKey: 0,
+            reversedBy:     null,  // the credit note that reversed this, if any
             payDialogOpen:  false,
             payDate:        '',
             payError:       '',
@@ -2043,6 +2071,18 @@ class InvoiceFormView extends Component {
             this.state.record = rec;
             this.state.deletedLineIds = [];
             if (recId) await this.loadLines(recId);
+            // Reversal lives on the CREDIT NOTE, which points back here, so
+            // "has this been reversed?" is a question about other records.
+            // Only a POSTED credit note counts: a draft one reverses nothing.
+            this.state.reversedBy = null;
+            if (recId) {
+                try {
+                    const rev = await RpcService.call('account.move', 'search_read',
+                        [[['reversed_entry_id', '=', recId], ['state', '=', 'posted']]],
+                        { fields: ['id', 'name'], limit: 1 });
+                    this.state.reversedBy = (Array.isArray(rev) && rev[0]) || null;
+                } catch (_) { /* the ribbon is a nicety; the form still works */ }
+            }
         } catch (e) {
             this.state.error = e.message;
         } finally {
@@ -12398,6 +12438,10 @@ const CUSTOM_VIEWS = {
     'db.studio':          DbStudio,
     'part.lookup':        PartLookup,
     'part.catalog':       PartCatalog,
+    // CERP-8 — Products ▸ Configuration ▸ Parameter Keywords. A custom screen
+    // because the work is deciding what an unmatched name should become, which
+    // is a comparison, not a row edit.
+    'part.parameter.keyword': ParamKeywords,
     // Categories are a hierarchy, so the screen is a tree rather than a flat
     // list with a "Parent" column (CategoryTree.js).
     'product.category':   CategoryTree,

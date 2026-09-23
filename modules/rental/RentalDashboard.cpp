@@ -152,6 +152,12 @@ nlohmann::json RentalDashboard::build(std::shared_ptr<DbConnection> db,
             "  (SELECT count(*) FROM rental_unit WHERE state='available' AND active) AS vacant, "
             "  (SELECT count(*) FROM rental_contract_line "
             "    WHERE state='active' AND billing_mode='manual') AS walk_ins, "
+            // Billing raises drafts, so a draft is rent that has been worked
+            // out but not yet booked. It is in no ledger figure above — the
+            // outstanding and ageing numbers are posted-only on purpose — so
+            // it is surfaced here, where it is a job someone has to finish.
+            "  (SELECT count(*) FROM account_move "
+            "    WHERE move_type='out_invoice' AND state='draft') AS draft_invoices, "
             "  (SELECT count(*) FROM account_payment_unallocated "
             "    WHERE amount_unallocated > 0) AS unallocated");
         out["attention"] = {
@@ -159,6 +165,7 @@ nlohmann::json RentalDashboard::build(std::shared_ptr<DbConnection> db,
             {"units_in_maintenance", att[0]["maintenance"].as<long long>(0)},
             {"units_vacant",         att[0]["vacant"].as<long long>(0)},
             {"walk_in_tenancies",    att[0]["walk_ins"].as<long long>(0)},
+            {"draft_invoices",       att[0]["draft_invoices"].as<long long>(0)},
             {"unallocated_payments", att[0]["unallocated"].as<long long>(0)},
         };
 

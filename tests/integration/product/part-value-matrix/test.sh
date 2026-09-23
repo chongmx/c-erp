@@ -150,7 +150,11 @@ t_nonempty "$FB" "a ferrite bead is accepted"
 base_is "$FB" impedance      600   "600 Ω impedance"
 base_is "$FB" test_frequency 1e8   "100 MHz -> 1e8"
 base_is "$FB" dc_resistance  0.025 "25 mΩ -> 0.025 (not 25)"
-base_is "$FB" rated_current  2     "2 A"
+# Read back as "Current", not "rated_current": a name the vocabulary knows as
+# a spelling of one of its own is rewritten on submit (CERP-8), which is the
+# whole point of having a vocabulary. The VALUE is what this file is about,
+# and it survives the rename untouched.
+base_is "$FB" Current        2     "2 A, filed under Current"
 
 sec "6. the notations components are actually marked with"
 N=$(stage_apply NOTE '[{"name":"r_4k7","value":"4k7","unit":"Ω"},
@@ -261,8 +265,8 @@ CN=$(stage_apply CONN '[{"name":"pin_count","value":"40","unit":""},
 t_nonempty "$CN" "a connector is accepted"
 base_is "$CN" pin_count 40      "40 pins, dimensionless"
 base_is "$CN" pitch     0.00254 "2.54 mm -> 0.00254 m"
-base_is "$CN" current_rating 3  "3 A"
-base_is "$CN" voltage_rating 250 "250 V"
+base_is "$CN" Current 3   "3 A, filed under Current"
+base_is "$CN" Voltage 250 "250 V, filed under Voltage"
 base_is "$CN" operating_temperature 85 "85 °C"
 
 verdict

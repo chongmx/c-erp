@@ -201,6 +201,7 @@ never be reused; see [../reference/id-registry.md](../reference/id-registry.md).
 | `AiSettings.js` | AI provider, model, caps |
 | `PartLookup.js` | the part-lookup agent review queue |
 | `PartCatalog.js` | the faceted parts catalogue |
+| `ParamKeywords.js` | the parameter vocabulary, and the decisions waiting on it |
 | `CategoryTree.js` | the category tree |
 | `BomEditor.js` | the BOM editor and importer |
 | `BarcodeScan.js` | barcode scanning |

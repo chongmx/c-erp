@@ -17,8 +17,8 @@ not anyone has run the server. It fails on any id claimed by two modules, fails
 if an app root has more than one owner, and **prints the next free id in each
 space** — that is the number to use.
 
-At the time of writing: next free `ir_ui_menu` **87**, next free
-`ir_act_window` **127**. Run the test rather than trusting those numbers.
+At the time of writing: next free `ir_ui_menu` **89**, next free
+`ir_act_window` **131**. Run the test rather than trusting those numbers.
 
 The test is also in the default suite, so a collision fails CI.
 
@@ -42,7 +42,7 @@ seeded by exactly one module.
 | 20–21 | `ir` | **Contacts** |
 | 30–32 | `ir` | **Settings** and its children |
 | 50, 52–53 | `uom` | **Products** root, units of measure |
-| 51, 54–57, 75–79, 86 | `product` | products, categories, parts catalogue |
+| 51, 54–57, 75–79, 86, 88 | `product` | products, categories, parts catalogue, parameter keywords |
 | 87 | `api` | Settings → Users & Access → API Keys |
 | 60–62 | `sale` | **Sales** |
 | 67–68, 80–85 | `hr` | **Employees** |
@@ -66,7 +66,7 @@ seeded by exactly one module.
 | 1–3, 117 | `ir` |
 | 4–7, 32–33, 60–63, 73–93 | `account` |
 | 8 | `uom` |
-| 9–13, 102–107 | `product` |
+| 9–13, 102–107, 130 | `product` |
 | 14, 16, 50–51, 97–98, 118–122 | `hr` |
 | 17–29, 31, 47, 94, 99 | `stock` |
 | 30, 71–72, 95–96, 101 | `report` |

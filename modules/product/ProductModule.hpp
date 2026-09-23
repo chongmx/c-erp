@@ -53,6 +53,7 @@ private:
     void migrateTemplates_();   ///< docs/096 — one template per existing product
     void seedPartUnits_();      ///< docs/097 — the electronics unit vocabulary
     void seedFootprints_();     ///< docs/098 — the standard package vocabulary
+    void seedParamKeywords_();  ///< CERP-8 — the parameter-name vocabulary
     void seedMenus_();
 };
 

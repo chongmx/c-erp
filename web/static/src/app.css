@@ -2931,3 +2931,39 @@ body.ct-resizing { cursor:col-resize; user-select:none; }
     cursor: pointer;
 }
 .pay-check input { cursor: pointer; }
+
+/* ---------- ERP Settings: the home-currency picker (app.js) ----------
+   Both screens live in app.js, so their styles live here. */
+.erp-currency-pick { display: flex; align-items: center; gap: 6px; width: 100%; max-width: 400px; }
+.erp-currency-pick .m2o { flex: 1 1 auto; min-width: 0; }
+.erp-add-cur {
+    flex: 0 0 auto; width: 28px; height: 28px; border-radius: 5px; cursor: pointer;
+    background: var(--border); color: var(--text); border: 1px solid transparent;
+    font-size: .9rem; line-height: 1;
+}
+.erp-add-cur:hover { background: var(--accent); color: #fff; }
+.erp-newcur { display: flex; flex-direction: column; gap: 8px; }
+.erp-newcur-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.erp-field-input.sm { max-width: 130px; }
+.erp-hint.inline { padding: 0; border: none; }
+
+/* ---------- document corner ribbon (invoice: paid / reversed / cancelled) ----------
+   The verdict on a document, in the corner every accounting system puts it.
+   The card is position:relative and clips it, so the banner is drawn as a
+   rotated bar rather than an image. */
+.so-card { position: relative; overflow: hidden; }
+.doc-ribbon {
+    position: absolute; top: 18px; right: -52px; width: 190px;
+    transform: rotate(45deg); z-index: 2; pointer-events: none;
+    text-align: center; padding: 5px 0;
+    font-size: .74rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;
+    color: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.35);
+    /* the diagonal stripes */
+    background-image: repeating-linear-gradient(
+        45deg, rgba(255,255,255,.16) 0 6px, rgba(255,255,255,0) 6px 12px);
+}
+.doc-ribbon.paid      { background-color: #2e8b57; }
+.doc-ribbon.partial   { background-color: #b8860b; }
+.doc-ribbon.reversed  { background-color: #b23b3b; }
+.doc-ribbon.cancelled { background-color: #6b7787; }
+.doc-ribbon.draft     { background-color: #3c4a60; color: #cdd7e5; }

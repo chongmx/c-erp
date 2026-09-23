@@ -47,6 +47,8 @@ dash() {
 }
 
 cleanup() {
+    pg "DELETE FROM account_move WHERE partner_id IN
+          (SELECT id FROM res_partner WHERE name LIKE 'DBTEST%')" >/dev/null
     pg "DELETE FROM rental_event WHERE summary LIKE 'DBTEST%'" >/dev/null
     pg "DELETE FROM rental_expense WHERE name LIKE 'DBTEST%'" >/dev/null
     pg "DELETE FROM rental_contract_line WHERE partner_id IN
@@ -165,6 +167,32 @@ for b in current d0_30 d31_60 d61_90 d90_plus; do
     [ "$HAS" = "True" ] || no "bucket '$b' missing"
 done
 ok "all five buckets present, including empty ones"
+
+echo
+echo "############ 6b. a draft invoice is a job, not a receivable ############"
+# Billing raises drafts (CERP-7), and the ledger figures above are
+# posted-only. So a draft must appear in exactly one place: the
+# attention table. If it appeared in 'outstanding' too, the dashboard
+# would be reporting money the ledger has never heard of.
+DRAFT_BEFORE=$(dash "d['attention']['draft_invoices']")
+JRN2=$(pg "SELECT id FROM account_journal WHERE type='sale' ORDER BY id LIMIT 1")
+DMV=$(pg "INSERT INTO account_move
+            (name,move_type,state,journal_id,partner_id,company_id,date,
+             invoice_date,due_date,amount_total,amount_residual,payment_state)
+          VALUES ('/','out_invoice','draft',$JRN2,$PT,1,CURRENT_DATE,
+                  CURRENT_DATE,CURRENT_DATE,$((300*M)),$((300*M)),'not_paid')
+          RETURNING id")
+DRAFT_AFTER=$(dash "d['attention']['draft_invoices']")
+OUT_AFTER=$(dash "d['receivables']['outstanding']")
+echo "    drafts $DRAFT_BEFORE -> $DRAFT_AFTER   outstanding=$OUT_AFTER (was $OUT_API)"
+[ -n "$DMV" ] || no "the draft invoice was not created"
+[ "$DRAFT_AFTER" = "$((DRAFT_BEFORE + 1))" ] \
+    && ok "the draft is counted in 'needs attention'" \
+    || no "draft count went $DRAFT_BEFORE -> $DRAFT_AFTER"
+[ "$OUT_AFTER" = "$OUT_API" ] \
+    && ok "and is NOT in outstanding — that stays posted-only" \
+    || no "outstanding moved to $OUT_AFTER"
+pg "DELETE FROM account_move WHERE id=${DMV:-0}" >/dev/null
 
 echo
 echo "############ 7. the panel is registered and served ############"

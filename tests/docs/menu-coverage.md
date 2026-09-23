@@ -12,14 +12,14 @@ python3 tests/tools/gen_menu_doc.py
 
 | | |
 |---|---|
-| Menu options that open a page | **115** |
-| Covered by at least one test | **107** (93%) |
-| No test at all | **8** |
+| Menu options that open a page | **119** |
+| Covered by at least one test | **110** (92%) |
+| No test at all | **9** |
 
 Legend: ✅ two or more tests · 🟡 exactly one (thin — often only a
 "the form opens" smoke check) · ❌ none.
 
-> **The 93% is generous and is not page coverage.** A page counts as covered
+> **The 92% is generous and is not page coverage.** A page counts as covered
 > when ANY test mentions the model behind it. Many pages share one model —
 > every entry under Accounting → Journals, Customers and Vendors is
 > `account.move` — so one well-tested model marks a dozen distinct pages green.
@@ -41,24 +41,24 @@ Legend: ✅ two or more tests · 🟡 exactly one (thin — often only a
 
 - **Accounting**
   - **Dashboard** · `account.dashboard` — 🟡 `integration/account/bank-dashboard`
-  - **Journal Entries** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +19
+  - **Journal Entries** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +23
   - **Journals**
-    - **Sales** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +19
-    - **Purchases** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +19
+    - **Sales** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +23
+    - **Purchases** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +23
     - **Bank and Cash** · `account.bank.statement` — ✅ `functional/account/money-in-and-out`, `integration/account/bank-recon`, `security/access/multicompany-hardening`
-    - **Miscellaneous** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +19
+    - **Miscellaneous** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +23
   - **Customers**
-    - **Invoices** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +19
-    - **Credit Notes** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +19
+    - **Invoices** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +23
+    - **Credit Notes** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +23
     - **Payments** · `account.payment` — 🟡 `functional/account/money-in-and-out`
-    - **Products** · `product.product` — ✅ `functional/base/customer-company`, `integration/core/ir-primitives`, `integration/core/precision` +9
-    - **Customers** · `res.partner` — ✅ `functional/account/accounting`, `functional/base/contact-company-display`, `functional/base/customer-company` +24
+    - **Products** · `product.product` — ✅ `functional/base/customer-company`, `integration/core/ir-primitives`, `integration/core/precision` +10
+    - **Customers** · `res.partner` — ✅ `functional/account/accounting`, `functional/base/contact-company-display`, `functional/base/customer-company` +28
   - **Vendors**
-    - **Bills** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +19
-    - **Refunds** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +19
+    - **Bills** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +23
+    - **Refunds** · `account.move` — ✅ `functional/account/money-in-and-out`, `functional/account/period-close`, `functional/portal/customer-portal` +23
     - **Payments** · `account.payment` — 🟡 `functional/account/money-in-and-out`
-    - **Products** · `product.product` — ✅ `functional/base/customer-company`, `integration/core/ir-primitives`, `integration/core/precision` +9
-    - **Vendors** · `res.partner` — ✅ `functional/account/accounting`, `functional/base/contact-company-display`, `functional/base/customer-company` +24
+    - **Products** · `product.product` — ✅ `functional/base/customer-company`, `integration/core/ir-primitives`, `integration/core/precision` +10
+    - **Vendors** · `res.partner` — ✅ `functional/account/accounting`, `functional/base/contact-company-display`, `functional/base/customer-company` +28
   - **Expense Reports** · `hr.expense.sheet` — ✅ `integration/account/expenses`, `integration/core/attachments`, `integration/core/new-forms` +1
   - **Bank Reconciliation** · `bank.reconcile` — ❌ **no test**
   - **Assets** · `account.asset` — 🟡 `integration/account/assets`
@@ -75,21 +75,22 @@ Legend: ✅ two or more tests · 🟡 exactly one (thin — often only a
     - **Bank Accounts** · `account.bank.account` — 🟡 `integration/account/bank-dashboard`
     - **Asset Types** · `account.asset.type` — 🟡 `integration/account/assets`
     - **Budgetary Positions** · `account.budget.post` — 🟡 `integration/account/budgets`
-    - **Currencies** · `res.currency` — ✅ `integration/account/account-config`, `integration/account/currency-rate`
+    - **Currencies** · `res.currency` — ✅ `integration/account/account-config`, `integration/account/currency-rate`, `integration/core/company-settings`
     - **Account Types** · `account.account.type` — 🟡 `integration/account/account-config`
     - **Fiscal Positions** · `account.fiscal.position` — 🟡 `integration/account/account-config`
     - **Incoterms** · `account.incoterms` — 🟡 `integration/account/account-config`
     - **Journal Groups** · `account.journal.group` — 🟡 `integration/account/account-config`
 - **Contacts**
-  - **Contacts** · `res.partner` — ✅ `functional/account/accounting`, `functional/base/contact-company-display`, `functional/base/customer-company` +24
+  - **Contacts** · `res.partner` — ✅ `functional/account/accounting`, `functional/base/contact-company-display`, `functional/base/customer-company` +28
 - **Settings**
   - **ERP Settings** · `ir.erp.settings` — 🟡 `integration/core/new-forms`
   - **Users & Access**
-    - **Users** · `res.users` — ✅ `functional/account/accounting`, `integration/account/no-double-audit`, `integration/portal/web-features` +11
+    - **Users** · `res.users` — ✅ `functional/account/accounting`, `integration/account/no-double-audit`, `integration/api/tickets-v1` +13
     - **Groups** · `res.groups` — 🟡 `integration/core/new-forms`
     - **Portal Users** · `portal.partner` — ✅ `functional/portal/customer-portal`, `integration/core/new-forms`, `integration/portal/web-features` +2
-    - **Companies** · `res.company` — ✅ `integration/core/contact-company-link`, `security/access/partner-tenant-isolation`
+    - **Companies** · `res.company` — ✅ `integration/core/company-settings`, `integration/core/contact-company-link`, `security/access/partner-tenant-isolation`
     - **Companies & Access** · `company.admin` — ❌ **no test**
+    - **API Keys** · `api.keys` — 🟡 `integration/core/app-shell-cache`
   - **Website**
     - **Website Pages** · `website.page` — ✅ `integration/website/blocks`, `integration/website/cms`, `integration/website/editor` +3
     - **Website Menu** · `website.menu` — 🟡 `integration/website/cms`
@@ -104,22 +105,23 @@ Legend: ✅ two or more tests · 🟡 exactly one (thin — often only a
     - **AI Agent** · `ir.ai.settings` — ✅ `integration/core/ai-settings`, `integration/mrp/bom-formats`, `integration/product/part-lookup-review`
 - **Sales**
   - **Orders**
-    - **Sales Orders** · `sale.order` — ✅ `functional/base/customer-company`, `functional/portal/customer-portal`, `functional/sale/order-to-invoice` +13
+    - **Sales Orders** · `sale.order` — ✅ `functional/base/customer-company`, `functional/portal/customer-portal`, `functional/rental/contract-invoice` +14
 - **Rental**
   - **Operations**
     - **Dashboard** · `rental.dashboard` — 🟡 `integration/rental/rental-dashboard`
-    - **Units** · `rental.unit` — ✅ `functional/base/customer-company`, `functional/rental/unit-picker`, `integration/account/no-double-audit` +5
-    - **Contracts** · `rental.contract` — ✅ `functional/base/customer-company`, `functional/core/form-pickers`, `functional/rental/lifecycle` +5
+    - **Booking** · `rental.booking` — 🟡 `functional/rental/booking-calendar`
+    - **Units** · `rental.unit` — ✅ `functional/base/customer-company`, `functional/rental/unit-edit`, `functional/rental/unit-picker` +9
+    - **Contracts** · `rental.contract` — ✅ `functional/base/customer-company`, `functional/core/form-pickers`, `functional/rental/lifecycle` +7
     - **Expenses** · `rental.expense` — ✅ `integration/account/no-double-audit`, `integration/core/new-forms`, `integration/rental/rental-schema`
     - **Events** · `rental.event` — 🟡 `integration/rental/rental-schema`
   - **Configuration**
-    - **Unit Types** · `rental.unit.type` — ✅ `integration/core/new-forms`, `integration/money/money-string-write`, `integration/rental/rental-schema`
+    - **Unit Types** · `rental.unit.type` — ✅ `functional/rental/unit-type`, `integration/core/new-forms`, `integration/money/money-string-write` +2
     - **Expense Categories** · `rental.expense.category` — ✅ `integration/account/no-double-audit`, `integration/core/new-forms`, `integration/rental/rental-schema`
 - **Products**
-  - **Products** · `product.product` — ✅ `functional/base/customer-company`, `integration/core/ir-primitives`, `integration/core/precision` +9
+  - **Products** · `product.product` — ✅ `functional/base/customer-company`, `integration/core/ir-primitives`, `integration/core/precision` +10
   - **Product Templates** · `product.template` — ✅ `integration/product/product-variants`, `integration/sale/pricelists`
   - **Parts Catalogue** · `part.catalog` — ✅ `functional/product/parts-catalogue`, `integration/product/part-catalog`, `security/injection/sql-surfaces`
-  - **Part Lookup** · `part.lookup` — ✅ `integration/core/ai-settings`, `integration/mrp/bom-import`, `integration/product/part-lookup` +2
+  - **Part Lookup** · `part.lookup` — ✅ `functional/product/lookup-fixups`, `integration/core/ai-settings`, `integration/mrp/bom-import` +4
   - **Configuration**
     - **Units of Measure** · `uom.uom` — 🟡 `integration/core/new-forms`
     - **Categories** · `product.category` — ✅ `integration/core/new-forms`, `integration/product/category-tree`, `integration/sale/pricelists` +2
@@ -128,7 +130,8 @@ Legend: ✅ two or more tests · 🟡 exactly one (thin — often only a
     - **Price Rules** · `product.pricelist.item` — 🟡 `integration/sale/pricelists`
     - **Vendor Pricelists** · `product.supplierinfo` — ✅ `integration/core/new-forms`, `integration/purchase/supplierinfo`
     - **Footprints** · `part.footprint` — ✅ `integration/core/new-forms`, `integration/product/partkeepr`
-    - **Part Units** · `part.unit` — 🟡 `integration/core/new-forms`
+    - **Part Units** · `part.unit` — ✅ `integration/core/new-forms`, `integration/product/param-vocabulary`
+    - **Parameter Keywords** · `part.parameter.keyword` — ✅ `functional/product/param-keywords`, `integration/product/param-vocabulary`
   - **Bills of Materials** · `mrp.bom` — 🟡 `integration/account/no-double-audit`
 - **Purchase**
   - **Orders**
@@ -142,7 +145,7 @@ Legend: ✅ two or more tests · 🟡 exactly one (thin — often only a
     - **Landed Costs** · `stock.landed.cost` — ✅ `integration/core/new-forms`, `integration/stock/landed-cost`
     - **Barcode** · `barcode.scan` — ❌ **no test**
   - **Products**
-    - **Products** · `product.product` — ✅ `functional/base/customer-company`, `integration/core/ir-primitives`, `integration/core/precision` +9
+    - **Products** · `product.product` — ✅ `functional/base/customer-company`, `integration/core/ir-primitives`, `integration/core/precision` +10
     - **Bills of Materials** · `mrp.bom` — 🟡 `integration/account/no-double-audit`
     - **Lots/Serial Numbers** · `stock.production.lot` — ✅ `functional/stock/warehouse`, `integration/core/new-forms`, `integration/stock/lot-serial` +1
     - **Packages** · `stock.quant.package` — ✅ `functional/stock/warehouse`, `integration/core/new-forms`, `integration/core/new-views-smoke` +1
@@ -158,11 +161,12 @@ Legend: ✅ two or more tests · 🟡 exactly one (thin — often only a
     - **Putaway Rules** · `stock.putaway.rule` — ✅ `integration/core/new-forms`, `integration/core/new-views-smoke`, `integration/stock/product-inventory` +1
 - **Project**
   - **Task Board** · `project.board` — 🟡 `integration/project/project`
-  - **Projects** · `project.project` — ✅ `functional/project/project`, `integration/project/project`, `integration/website/forms`
-  - **Tasks** · `project.task` — ✅ `functional/project/project`, `integration/project/project`, `integration/website/forms`
+  - **Projects** · `project.project` — ✅ `functional/project/project`, `integration/api/tickets-v1`, `integration/project/issue-tracker` +2
+  - **Tasks** · `project.task` — ✅ `functional/project/issue-tracker`, `functional/project/project`, `integration/api/tickets-v1` +3
   - **Timesheets** · `project.timegrid` — 🟡 `integration/project/project`
   - **Timesheet Entries** · `project.timesheet` — ✅ `functional/project/project`, `integration/project/project`
   - **Task Stages** · `project.task.type` — ❌ **no test**
+  - **Labels** · `project.tag` — ❌ **no test**
 - **Employees**
   - **Employees** · `hr.employee` — ✅ `integration/account/expenses`, `integration/core/new-forms`, `integration/core/new-views-smoke` +3
   - **Attendance** · `hr.attendance` — 🟡 `integration/hr/attendance`
@@ -192,7 +196,7 @@ Legend: ✅ two or more tests · 🟡 exactly one (thin — often only a
 
 ---
 
-## Audit list — no test at all (8)
+## Audit list — no test at all (9)
 
 | Model | Page |
 |---|---|
@@ -203,9 +207,10 @@ Legend: ✅ two or more tests · 🟡 exactly one (thin — often only a
 | `db.backups` | Database & Backups |
 | `hr.leave.type` | Leave Types |
 | `hr.public.holiday` | Public Holidays |
+| `project.tag` | Labels |
 | `project.task.type` | Task Stages |
 
-## Audit list — thin, one test only (40)
+## Audit list — thin, one test only (41)
 
 Each of these is touched by a single test, and several only incidentally.
 Check whether that test actually exercises the page or merely opens its form.
@@ -225,6 +230,7 @@ Check whether that test actually exercises the page or merely opens its form.
 | `account.journal.group` | Journal Groups |
 | `account.payment` | Payments |
 | `account.settings` | Settings |
+| `api.keys` | API Keys |
 | `db.studio` | Database Tools |
 | `help.article` | Help Articles |
 | `help.center` | Help Centre |
@@ -236,12 +242,12 @@ Check whether that test actually exercises the page or merely opens its form.
 | `ir.erp.settings` | ERP Settings |
 | `mrp.bom` | Bills of Materials |
 | `mrp.workorder` | Work Orders |
-| `part.unit` | Part Units |
 | `product.attribute` | Attributes |
 | `product.pricelist` | Pricelists |
 | `product.pricelist.item` | Price Rules |
 | `project.board` | Task Board |
 | `project.timegrid` | Timesheets |
+| `rental.booking` | Booking |
 | `rental.dashboard` | Dashboard |
 | `rental.demo.data` | Demo Data |
 | `rental.event` | Events |
@@ -262,4 +268,4 @@ marked ✅.
 
 ---
 
-_Generated 2026-09-04 from `ir_ui_menu` × `ir_act_window`._
+_Generated 2026-09-22 from `ir_ui_menu` × `ir_act_window`._

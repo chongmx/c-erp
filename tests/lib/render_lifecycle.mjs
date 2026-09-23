@@ -289,6 +289,34 @@ try {
     await page.evaluate((id) => window.ErpNav.openRecord('account.move', id), INV);
     await pause(2200);
     await page.screenshot({ path: `${SHOTDIR}/invoice.png` });
+
+    // Billing raises a DRAFT (CERP-7), and a draft owes nothing — so it is
+    // confirmed here, on screen, before anyone can pay it. Register Payment
+    // is deliberately absent until then.
+    const draftFirst = await page.evaluate(() => {
+        const step = document.querySelector('.so-statusbar .so-step.active');
+        const rib  = document.querySelector('.doc-ribbon');
+        return { step: step ? step.textContent.trim() : null,
+                 ribbon: rib ? rib.textContent.trim() : null,
+                 pay: [...document.querySelectorAll('.so-action-btns button')]
+                          .some(b => /register payment/i.test(b.textContent || '')) };
+    });
+    if (draftFirst.step === 'Draft' && draftFirst.ribbon === 'Draft')
+        ok('the billed invoice arrives as a draft, and says so');
+    else no(`the billed invoice opened at ${JSON.stringify(draftFirst)}`);
+    if (!draftFirst.pay) ok('and offers no Register Payment — a draft owes nothing');
+    else no('a draft invoice offered Register Payment');
+
+    const confirmed = await page.evaluate(() => {
+        const b = [...document.querySelectorAll('.so-action-btns button')]
+            .find(x => /^confirm$/i.test((x.textContent || '').trim()));
+        if (!b) return false;
+        b.click(); return true;
+    });
+    if (confirmed) ok('Confirm posts it');
+    else no('no Confirm button on the draft invoice');
+    await pause(2600);
+
     const paid = await page.evaluate(() => {
         const b = [...document.querySelectorAll('button, .btn')]
             .find(x => /register payment|pay/i.test((x.textContent || '').trim()));
@@ -381,10 +409,13 @@ try {
         await clickText('.rental-filters button', 'Run billing now');
         await pause(2500);
     }
-    const finalInvs = await read('account.move', 'search_count',
-        [[['partner_id', '=', CO_ID], ['move_type', '=', 'out_invoice']]]);
+    const finalList = await read('account.move', 'search_read',
+        [[['partner_id', '=', CO_ID], ['move_type', '=', 'out_invoice']]],
+        { fields: ['id', 'name', 'state', 'invoice_date', 'amount_total', 'invoice_origin'] });
+    const finalInvs = finalList.length;
     if (finalInvs === 1) ok('three more billing runs raised NO further invoice');
-    else no(`${finalInvs} invoices after closing — a stopped contract kept billing`);
+    else no(`${finalInvs} invoices after closing — a stopped contract kept billing: ` +
+            JSON.stringify(finalList));
 
     const real = errs.filter(e => !e.startsWith('--step:'));
     if (real.length) {

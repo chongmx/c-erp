@@ -2544,6 +2544,15 @@ static bool looksLikeText(const std::string& s) {
     if (s.find(" to ") != std::string::npos || s.find('~') != std::string::npos ||
         s.find("..")   != std::string::npos || s.find(" ... ") != std::string::npos)
         return true;
+    // **Pairs.** "10/100" is an Ethernet MAC that does both speeds, and it
+    // parses as 10 — the second half is simply dropped, and 10 Mbps reads as
+    // a specification. Observed from a real lookup (CERP-8). A slash between
+    // digits is never a single magnitude; a unit that genuinely contains one
+    // (V/µs) belongs in the unit field, where the slash is not in the value.
+    for (std::size_t i = 1; i + 1 < s.size(); ++i)
+        if (s[i] == '/' && std::isdigit(static_cast<unsigned char>(s[i-1]))
+                        && std::isdigit(static_cast<unsigned char>(s[i+1])))
+            return true;
     if (s.size() < 2 || s[0] != '0') return false;
     if (s.find('.') != std::string::npos) return false;
     return std::all_of(s.begin(), s.end(),
@@ -2594,6 +2603,156 @@ static bool parseSiValue(const std::string& text, double& number, double& mult) 
     } catch (const std::exception&) {
         return false;
     }
+}
+
+// ================================================================
+// CERP-8 — the parameter vocabulary
+//
+// A datasheet names the same quantity a dozen ways. Left alone, "Resistance",
+// "Ohms", "resistance (Ω)" and "R" become four parameters, and the parametric
+// screen stops finding siblings — quietly, because each one looks fine on its
+// own product.
+//
+// So a name arriving from an agent is MATCHED, never rejected:
+//
+//   exact    — it is already a keyword
+//   alias    — a known spelling of one; the payload is rewritten to the
+//              canonical name, and the rewrite is reported
+//   similar  — close to one or more keywords; the reviewer is shown the
+//              candidates and picks, or adds it as new
+//   unknown  — nothing is close; adding it is one click
+//
+// Matching is on `norm`: lowercase, letters and digits only. That alone
+// collapses "Rds(on)", "RDS_ON" and "rds on", which is most of the variation
+// in practice. The fuzzy step is a plain edit distance over the norms —
+// enough to catch "Tolerence", "Capacitence" and a dropped plural, and small
+// enough to explain to the person deciding.
+// ================================================================
+
+/// Lowercase, letters and digits only — the key names are matched on.
+static std::string paramNorm(const std::string& s) {
+    std::string out;
+    for (unsigned char c : s)
+        if (std::isalnum(c)) out += static_cast<char>(std::tolower(c));
+    return out;
+}
+
+/// Edit distance, iterative two-row. Bounded by the strings we compare here.
+static int editDistance(const std::string& a, const std::string& b) {
+    const std::size_t n = a.size(), m = b.size();
+    if (n == 0) return static_cast<int>(m);
+    if (m == 0) return static_cast<int>(n);
+    std::vector<int> prev(m + 1), cur(m + 1);
+    for (std::size_t j = 0; j <= m; ++j) prev[j] = static_cast<int>(j);
+    for (std::size_t i = 1; i <= n; ++i) {
+        cur[0] = static_cast<int>(i);
+        for (std::size_t j = 1; j <= m; ++j) {
+            const int cost = (a[i-1] == b[j-1]) ? 0 : 1;
+            cur[j] = std::min({prev[j] + 1, cur[j-1] + 1, prev[j-1] + cost});
+        }
+        prev = cur;
+    }
+    return prev[m];
+}
+
+/// 1.0 is identical; 0.0 shares nothing. Containment counts for a lot here:
+/// "Resistance (ohm)" norms to "resistanceohm", which contains "resistance".
+static double nameSimilarity(const std::string& a, const std::string& b) {
+    if (a.empty() || b.empty()) return 0.0;
+    if (a == b) return 1.0;
+    const std::size_t longer = std::max(a.size(), b.size());
+    double score = 1.0 - static_cast<double>(editDistance(a, b)) / static_cast<double>(longer);
+    // Containment only counts when the contained name is long enough to mean
+    // something. The vocabulary has one-letter aliases — "r", "l", "c", "f" —
+    // and without this floor every name containing an L was "close to
+    // Inductance", which is how a suggestion feature stops being believed.
+    const std::size_t shorter = std::min(a.size(), b.size());
+    if (shorter >= 4 && (a.find(b) != std::string::npos || b.find(a) != std::string::npos))
+        score = std::max(score, 0.80);
+    return score < 0 ? 0.0 : score;
+}
+
+/// What the vocabulary makes of one incoming name.
+struct ParamVerdict {
+    std::string        kind;        ///< exact | alias | similar | unknown
+    std::string        canonical;   ///< the name to store, when known
+    int                keywordId = 0;
+    std::string        advice;      ///< what the keyword says to do instead, if anything
+    nlohmann::json     candidates = nlohmann::json::array();  ///< {name,id,score}
+};
+
+/**
+ * @brief Resolve a written parameter name against the vocabulary.
+ *
+ * Never throws and never fails: an unmatched name comes back as `unknown`
+ * with whatever candidates were closest. Deciding is the reviewer's job.
+ */
+static ParamVerdict matchParamName(pqxx::transaction_base& txn, const std::string& raw) {
+    ParamVerdict v;
+    const std::string norm = paramNorm(raw);
+    if (norm.empty()) { v.kind = "unknown"; return v; }
+
+    auto exact = txn.exec(
+        "SELECT id, name, COALESCE(advice,'') FROM part_parameter_keyword "
+        " WHERE norm = $1 AND active", pqxx::params{norm});
+    if (!exact.empty()) {
+        v.kind = "exact"; v.keywordId = exact[0][0].as<int>();
+        v.canonical = exact[0][1].c_str(); v.advice = exact[0][2].c_str();
+        return v;
+    }
+
+    auto alias = txn.exec(
+        "SELECT k.id, k.name, COALESCE(k.advice,'') FROM part_parameter_alias a "
+        "  JOIN part_parameter_keyword k ON k.id = a.keyword_id "
+        " WHERE a.norm = $1 AND k.active", pqxx::params{norm});
+    if (!alias.empty()) {
+        v.kind = "alias"; v.keywordId = alias[0][0].as<int>();
+        v.canonical = alias[0][1].c_str(); v.advice = alias[0][2].c_str();
+        return v;
+    }
+
+    // Nothing matched outright: rank every keyword and alias by similarity and
+    // keep the best three. The keyword's own name is what gets suggested, so
+    // two aliases of one keyword cannot fill the list with the same answer.
+    std::map<int, std::pair<std::string, double>> best;   // keyword id -> name, score
+    auto consider = [&](int id, const std::string& kname, const std::string& candNorm) {
+        // An alias of one or two characters ("r", "vf") is an abbreviation:
+        // it means itself exactly and is a near miss for nothing.
+        if (candNorm.size() <= 2) return;
+        const double s = nameSimilarity(norm, candNorm);
+        auto it = best.find(id);
+        if (it == best.end() || s > it->second.second) best[id] = {kname, s};
+    };
+    for (const auto& r : txn.exec(
+             "SELECT id, name, norm FROM part_parameter_keyword WHERE active"))
+        consider(r[0].as<int>(), r[1].c_str(), r[2].c_str());
+    for (const auto& r : txn.exec(
+             "SELECT k.id, k.name, a.norm FROM part_parameter_alias a "
+             "  JOIN part_parameter_keyword k ON k.id = a.keyword_id WHERE k.active"))
+        consider(r[0].as<int>(), r[1].c_str(), r[2].c_str());
+
+    std::vector<std::tuple<double, int, std::string>> ranked;
+    for (const auto& [id, ns] : best) ranked.push_back({ns.second, id, ns.first});
+    std::sort(ranked.begin(), ranked.end(),
+              [](const auto& a, const auto& b) { return std::get<0>(a) > std::get<0>(b); });
+
+    // 0.72 is the line between "a misspelling of this" and "a different
+    // quantity that happens to share letters". Below it the honest answer is
+    // "I do not know", with the near misses still shown.
+    static constexpr double kSuggest = 0.72;
+    for (const auto& [score, id, kname] : ranked) {
+        if (v.candidates.size() >= 3 || score < 0.45) break;
+        v.candidates.push_back({{"keyword_id", id}, {"name", kname},
+                                {"score", std::round(score * 100.0) / 100.0}});
+    }
+    if (!ranked.empty() && std::get<0>(ranked.front()) >= kSuggest) {
+        v.kind      = "similar";
+        v.canonical = std::get<2>(ranked.front());
+        v.keywordId = std::get<1>(ranked.front());
+    } else {
+        v.kind = "unknown";
+    }
+    return v;
 }
 
 // ================================================================
@@ -2852,6 +3011,472 @@ private:
  * the catalogue is a part someone solders. Everything arrives as a proposal
  * with its issues attached.
  */
+/**
+ * part.unit — the generic screen, plus the one thing a generic create cannot do.
+ *
+ * `quantity_kind`, `factor` and `is_base` are columns but not registered
+ * fields, and deliberately so: they are not free-text properties of a unit,
+ * they are what makes 4.7 kΩ and 4700 Ω the same number. A unit created
+ * without them is a label that silently breaks every range search it touches.
+ *
+ * So adding one goes through `create_unit`, which asks the only question that
+ * matters — what does it measure, and how does it relate to the base of that
+ * quantity — and refuses the two ways of getting it wrong.
+ *
+ * CERP-8: this exists because "Unknown unit 'Mbps'" was a dead end on the
+ * review desk. A part whose datasheet uses a unit nobody has entered yet is
+ * the normal case for a catalogue that is still growing, not an error.
+ */
+class PartUnitViewModel : public core::GenericViewModel<PartUnit> {
+public:
+    explicit PartUnitViewModel(std::shared_ptr<DbConnection> db)
+        : core::GenericViewModel<PartUnit>(db), db_(std::move(db)) {
+        REGISTER_METHOD("quantities",   handleQuantities)
+        REGISTER_MUTATOR("create_unit", handleCreateUnit)
+    }
+
+private:
+    std::shared_ptr<DbConnection> db_;
+
+    /// The quantities already known, each with its base unit — what a new
+    /// unit can be measured against.
+    nlohmann::json handleQuantities(const core::CallKwArgs&) {
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        nlohmann::json out = nlohmann::json::array();
+        for (const auto& r : txn.exec(
+                 "SELECT quantity_kind, "
+                 "       COALESCE(MAX(symbol) FILTER (WHERE is_base), '') AS base, "
+                 "       count(*)::int AS units "
+                 "  FROM part_unit WHERE quantity_kind IS NOT NULL AND quantity_kind <> '' "
+                 " GROUP BY quantity_kind ORDER BY quantity_kind"))
+            out.push_back({{"quantity", r[0].c_str()}, {"base", r[1].c_str()},
+                           {"units", r[2].as<int>(0)}});
+        txn.commit();
+        return out;
+    }
+
+    nlohmann::json handleCreateUnit(const core::CallKwArgs& call) {
+        auto v = call.arg(0);
+        const std::string symbol = trim_(S_(v, "symbol"));
+        const std::string name   = trim_(S_(v, "name"));
+        const std::string kind   = trim_(S_(v, "quantity_kind"));
+        double factor = 1.0;
+        if (v.is_object() && v.contains("factor")) {
+            if (v["factor"].is_number()) factor = v["factor"].get<double>();
+            else if (v["factor"].is_string()) {
+                double num = 0, mul = 1;
+                // The factor is written the way the rest of this module reads
+                // numbers, so "1e6", "1M" and "1000000" all work.
+                if (parseSiValue(v["factor"].get<std::string>(), num, mul)) factor = num;
+            }
+        }
+        if (symbol.empty()) throw infrastructure::ValidationError("A unit needs a symbol.");
+        if (symbol.size() > 16)
+            throw infrastructure::ValidationError("That symbol is too long to be a unit.");
+        if (name.empty())   throw infrastructure::ValidationError("A unit needs a name.");
+        if (!(factor > 0))
+            throw infrastructure::ValidationError(
+                "The factor must be greater than zero — it is what this unit multiplies by "
+                "to reach the base of its quantity.");
+
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        if (!txn.exec("SELECT 1 FROM part_unit WHERE symbol=$1", pqxx::params{symbol}).empty())
+            throw infrastructure::ValidationError("The unit '" + symbol + "' already exists.");
+
+        bool isBase = false;
+        if (!kind.empty()) {
+            auto existing = txn.exec(
+                "SELECT COALESCE(MAX(symbol) FILTER (WHERE is_base), '') FROM part_unit "
+                " WHERE quantity_kind = $1", pqxx::params{kind});
+            const std::string base = existing.empty() ? "" : std::string(existing[0][0].c_str());
+            // The FIRST unit of a quantity defines that quantity's base, so it
+            // is base by definition and its factor is 1. Letting someone add
+            // "Mbps ×1 000 000" to a quantity with no base at all would leave
+            // every value of that kind multiplied against nothing.
+            if (base.empty()) { isBase = true; factor = 1.0; }
+            else if (factor == 1.0 && symbol != base)
+                // A second unit with factor 1 is either a duplicate of the
+                // base or a mistake; both are worth stopping here rather than
+                // discovering through a search that returns the wrong parts.
+                throw infrastructure::ValidationError(
+                    "'" + kind + "' is already measured in " + base +
+                    ". Give the factor that converts " + symbol + " to " + base +
+                    " (for example 1000 if one " + symbol + " is a thousand " + base + ").");
+        }
+
+        auto ins = txn.exec(
+            "INSERT INTO part_unit (name, symbol, quantity_kind, factor, is_base) "
+            "VALUES ($1,$2,NULLIF($3,''),$4,$5) RETURNING id",
+            pqxx::params{name, symbol, kind, factor, isBase});
+        const int id = ins[0][0].as<int>();
+        txn.commit();
+        return {{"ok", true}, {"id", id}, {"symbol", symbol},
+                {"quantity", kind}, {"factor", factor}, {"is_base", isBase}};
+    }
+
+    static std::string S_(const nlohmann::json& j, const char* k) {
+        return (j.is_object() && j.contains(k) && j[k].is_string()) ? j[k].get<std::string>()
+                                                                    : std::string{};
+    }
+    static std::string trim_(std::string s) {
+        while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
+        while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back())))  s.pop_back();
+        return s;
+    }
+};
+
+/**
+ * part.parameter.keyword — the parameter vocabulary, and the screen over it.
+ *
+ * CERP-8: "when new parameter types emerge, how should we handle it? should we
+ * create a new one? or should we put it under our existing parameters?" Both,
+ * and the system says which it thinks — `suggest` answers for any list of
+ * names, `unmatched` answers for the whole catalogue at once, and the two
+ * actions a person can take (adopt it, or fold it into an existing keyword)
+ * are one call each.
+ *
+ * `merge` is the one that writes to products: folding "Ohms" into
+ * "Resistance" renames every part_parameter row that used it, which is what
+ * makes the parametric search see them as siblings again. The old name
+ * survives as an alias, so the next agent that sends "Ohms" lands in the
+ * right place without anyone deciding twice.
+ */
+class PartParamKeywordViewModel : public core::BaseViewModel {
+public:
+    explicit PartParamKeywordViewModel(std::shared_ptr<DbConnection> db) : db_(std::move(db)) {
+        REGISTER_METHOD("search_read",  handleList)
+        REGISTER_METHOD("list",         handleList)
+        REGISTER_METHOD("suggest",      handleSuggest)
+        REGISTER_METHOD("unmatched",    handleUnmatched)
+        REGISTER_MUTATOR("create_keyword", handleCreateKeyword)
+        REGISTER_MUTATOR("add_alias",      handleAddAlias)
+        REGISTER_MUTATOR("remove_alias",   handleRemoveAlias)
+        REGISTER_MUTATOR("rename",         handleRename)
+        REGISTER_MUTATOR("merge",          handleMerge)
+        REGISTER_MUTATOR("set_active",     handleSetActive)
+        REGISTER_MUTATOR("unlink",         handleUnlink)
+        REGISTER_METHOD("fields_get",   handleFieldsGet)
+    }
+    std::string modelName() const override { return "part.parameter.keyword"; }
+
+private:
+    std::shared_ptr<DbConnection> db_;
+
+    static std::string S(const nlohmann::json& j, const char* k) {
+        return (j.is_object() && j.contains(k) && j[k].is_string()) ? j[k].get<std::string>() : std::string{};
+    }
+    static int I(const nlohmann::json& j, const char* k) {
+        return (j.is_object() && j.contains(k) && j[k].is_number()) ? j[k].get<int>() : 0;
+    }
+
+    /// One keyword, with its aliases and how many products actually use it.
+    static nlohmann::json rowOf_(pqxx::transaction_base& txn, const pqxx::row& r) {
+        const int id = r["id"].as<int>();
+        nlohmann::json aliases = nlohmann::json::array();
+        for (const auto& a : txn.exec(
+                 "SELECT id, alias, source FROM part_parameter_alias "
+                 " WHERE keyword_id=$1 ORDER BY alias", pqxx::params{id}))
+            aliases.push_back({{"id", a[0].as<int>()}, {"alias", a[1].c_str()},
+                               {"source", a[2].c_str()}});
+        return {
+            {"id",            id},
+            {"name",          r["name"].c_str()},
+            {"norm",          r["norm"].c_str()},
+            {"quantity_kind", r["quantity_kind"].is_null() ? "" : r["quantity_kind"].c_str()},
+            {"advice",        r["advice"].is_null() ? "" : r["advice"].c_str()},
+            {"active",        r["active"].as<bool>(true)},
+            {"uses",          r["uses"].as<int>(0)},
+            {"aliases",       aliases},
+        };
+    }
+
+    nlohmann::json handleList(const core::CallKwArgs&) {
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        nlohmann::json out = nlohmann::json::array();
+        // `uses` counts through the NAME, not a foreign key: parameters are
+        // free text by design (an agent may send anything), so the vocabulary
+        // describes the catalogue rather than constraining it.
+        for (const auto& r : txn.exec(
+                 "SELECT k.id, k.name, k.norm, k.quantity_kind, k.advice, k.active, "
+                 "  (SELECT count(*) FROM part_parameter p "
+                 "    WHERE lower(regexp_replace(p.name,'[^A-Za-z0-9]','','g')) = k.norm "
+                 "       OR lower(regexp_replace(p.name,'[^A-Za-z0-9]','','g')) IN "
+                 "          (SELECT norm FROM part_parameter_alias WHERE keyword_id=k.id) "
+                 "  )::int AS uses "
+                 "FROM part_parameter_keyword k ORDER BY k.name"))
+            out.push_back(rowOf_(txn, r));
+        txn.commit();
+        return out;
+    }
+
+    /// What the vocabulary makes of these names. The screen and the reviewer
+    /// both ask this; nothing is written.
+    nlohmann::json handleSuggest(const core::CallKwArgs& call) {
+        auto a0 = call.arg(0);
+        std::vector<std::string> names;
+        if (a0.is_string()) names.push_back(a0.get<std::string>());
+        else if (a0.is_array())
+            for (const auto& n : a0) if (n.is_string()) names.push_back(n.get<std::string>());
+        else if (a0.is_object() && a0.contains("names") && a0["names"].is_array())
+            for (const auto& n : a0["names"]) if (n.is_string()) names.push_back(n.get<std::string>());
+        if (names.size() > 200) names.resize(200);
+
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        nlohmann::json out = nlohmann::json::array();
+        for (const auto& n : names) {
+            const auto v = matchParamName(txn, n);
+            out.push_back({{"name", n}, {"kind", v.kind}, {"canonical", v.canonical},
+                           {"keyword_id", v.keywordId}, {"advice", v.advice},
+                           {"candidates", v.candidates},
+                           {"action", suggestedAction_(v)}});
+        }
+        txn.commit();
+        return out;
+    }
+
+    /// The sentence a person reads before clicking. Plain, and specific about
+    /// which of the two choices the system thinks is right.
+    static std::string suggestedAction_(const ParamVerdict& v) {
+        if (v.kind == "exact")  return "keep";
+        if (v.kind == "alias")  return "rename to " + v.canonical;
+        if (v.kind == "similar")return "merge into " + v.canonical;
+        return "add as a new parameter";
+    }
+
+    /// Every name in the catalogue the vocabulary does not know, worst first.
+    nlohmann::json handleUnmatched(const core::CallKwArgs&) {
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        nlohmann::json out = nlohmann::json::array();
+        for (const auto& r : txn.exec(
+                 "SELECT p.name, count(*)::int AS uses "
+                 "  FROM part_parameter p "
+                 " WHERE lower(regexp_replace(p.name,'[^A-Za-z0-9]','','g')) NOT IN "
+                 "       (SELECT norm FROM part_parameter_keyword WHERE active "
+                 "        UNION SELECT a.norm FROM part_parameter_alias a "
+                 "          JOIN part_parameter_keyword k ON k.id=a.keyword_id WHERE k.active) "
+                 " GROUP BY p.name ORDER BY uses DESC, p.name LIMIT 200")) {
+            const std::string nm = r[0].c_str();
+            const auto v = matchParamName(txn, nm);
+            out.push_back({{"name", nm}, {"uses", r[1].as<int>(0)},
+                           {"kind", v.kind}, {"suggestion", v.canonical},
+                           {"keyword_id", v.keywordId}, {"candidates", v.candidates},
+                           {"action", suggestedAction_(v)}});
+        }
+        txn.commit();
+        return out;
+    }
+
+    nlohmann::json handleCreateKeyword(const core::CallKwArgs& call) {
+        auto v = call.arg(0);
+        const std::string name = S(v, "name");
+        const std::string norm = paramNorm(name);
+        if (norm.empty())
+            throw infrastructure::ValidationError("A parameter name needs at least one letter or digit.");
+
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        // An alias of something else is not free to become a keyword: that is
+        // how "Ohms" would end up meaning two things at once.
+        auto clash = txn.exec(
+            "SELECT k.name FROM part_parameter_alias a "
+            "  JOIN part_parameter_keyword k ON k.id=a.keyword_id WHERE a.norm=$1",
+            pqxx::params{norm});
+        if (!clash.empty())
+            throw infrastructure::ValidationError(
+                "'" + name + "' is already a spelling of '" + std::string(clash[0][0].c_str()) +
+                "'. Remove that alias first if it should be its own parameter.");
+
+        const std::string kind = S(v, "quantity_kind");
+        const int unitId       = I(v, "default_unit_id");
+        pqxx::params kp;
+        kp.append(name); kp.append(norm);
+        if (kind.empty()) kp.append(nullptr); else kp.append(kind);
+        if (unitId > 0)   kp.append(unitId);  else kp.append(nullptr);
+        auto ins = txn.exec(
+            "INSERT INTO part_parameter_keyword (name, norm, quantity_kind, default_unit_id) "
+            "VALUES ($1,$2,$3,$4) ON CONFLICT (norm) DO UPDATE SET active=true, "
+            "  write_date=now() RETURNING id", kp);
+        const int id = ins[0][0].as<int>();
+
+        if (v.contains("aliases") && v["aliases"].is_array())
+            for (const auto& al : v["aliases"])
+                if (al.is_string()) addAlias_(txn, id, al.get<std::string>(), "user");
+
+        txn.commit();
+        return {{"ok", true}, {"id", id}, {"name", name}};
+    }
+
+    static void addAlias_(pqxx::transaction_base& txn, int keywordId,
+                          const std::string& alias, const std::string& source) {
+        const std::string an = paramNorm(alias);
+        if (an.empty()) return;
+        auto kw = txn.exec("SELECT name FROM part_parameter_keyword WHERE norm=$1",
+                           pqxx::params{an});
+        if (!kw.empty())
+            throw infrastructure::ValidationError(
+                "'" + alias + "' is a parameter in its own right ('" +
+                std::string(kw[0][0].c_str()) + "'). Merge it instead of aliasing it.");
+        txn.exec("INSERT INTO part_parameter_alias (keyword_id, alias, norm, source) "
+                 "VALUES ($1,$2,$3,$4) "
+                 "ON CONFLICT (norm) DO UPDATE SET keyword_id=EXCLUDED.keyword_id",
+                 pqxx::params{keywordId, alias, an, source});
+    }
+
+    nlohmann::json handleAddAlias(const core::CallKwArgs& call) {
+        auto v = call.arg(0);
+        const int kid = I(v, "keyword_id");
+        const std::string alias = S(v, "alias");
+        if (kid <= 0 || alias.empty())
+            throw infrastructure::ValidationError("keyword_id and alias are required.");
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        if (txn.exec("SELECT 1 FROM part_parameter_keyword WHERE id=$1", pqxx::params{kid}).empty())
+            throw infrastructure::ValidationError("No such parameter.");
+        addAlias_(txn, kid, alias, S(v, "source") == "agent" ? "agent" : "user");
+        txn.commit();
+        return {{"ok", true}};
+    }
+
+    nlohmann::json handleRemoveAlias(const core::CallKwArgs& call) {
+        auto v = call.arg(0);
+        const int id = v.is_number() ? v.get<int>() : I(v, "id");
+        if (id <= 0) throw infrastructure::ValidationError("An alias id is required.");
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        txn.exec("DELETE FROM part_parameter_alias WHERE id=$1", pqxx::params{id});
+        txn.commit();
+        return {{"ok", true}};
+    }
+
+    /**
+     * Rename a keyword, and rename what the catalogue calls it with it.
+     *
+     * The old spelling is kept as an alias. Anything that already learned the
+     * old name — an agent's cached `describe`, a spreadsheet someone imports
+     * from — keeps working, and lands on the new name.
+     */
+    nlohmann::json handleRename(const core::CallKwArgs& call) {
+        auto v = call.arg(0);
+        const int kid = I(v, "keyword_id");
+        const std::string name = S(v, "name");
+        const std::string norm = paramNorm(name);
+        if (kid <= 0 || norm.empty())
+            throw infrastructure::ValidationError("keyword_id and a new name are required.");
+
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        auto cur = txn.exec("SELECT name, norm FROM part_parameter_keyword WHERE id=$1",
+                            pqxx::params{kid});
+        if (cur.empty()) throw infrastructure::ValidationError("No such parameter.");
+        const std::string oldName = cur[0][0].c_str(), oldNorm = cur[0][1].c_str();
+        if (oldNorm == norm) {
+            txn.exec("UPDATE part_parameter_keyword SET name=$1, write_date=now() WHERE id=$2",
+                     pqxx::params{name, kid});
+        } else {
+            auto taken = txn.exec("SELECT name FROM part_parameter_keyword WHERE norm=$1 AND id<>$2",
+                                  pqxx::params{norm, kid});
+            if (!taken.empty())
+                throw infrastructure::ValidationError(
+                    "'" + name + "' is already a parameter. Merge into it instead.");
+            txn.exec("DELETE FROM part_parameter_alias WHERE norm=$1", pqxx::params{norm});
+            txn.exec("UPDATE part_parameter_keyword SET name=$1, norm=$2, write_date=now() WHERE id=$3",
+                     pqxx::params{name, norm, kid});
+            addAlias_(txn, kid, oldName, "user");
+        }
+        const auto n = renameParams_(txn, oldNorm, name);
+        txn.commit();
+        return {{"ok", true}, {"renamed", n}};
+    }
+
+    /// Rewrite every part_parameter row whose name norms to `fromNorm`.
+    static int renameParams_(pqxx::transaction_base& txn, const std::string& fromNorm,
+                             const std::string& to) {
+        if (fromNorm.empty()) return 0;
+        auto r = txn.exec(
+            "UPDATE part_parameter SET name=$1, write_date=now() "
+            " WHERE lower(regexp_replace(name,'[^A-Za-z0-9]','','g'))=$2 AND name<>$1",
+            pqxx::params{to, fromNorm});
+        return static_cast<int>(r.affected_rows());
+    }
+
+    /**
+     * Fold one name into another.
+     *
+     * Takes either a keyword id (`from_keyword_id`) or a bare name
+     * (`from_name`) — the second is the case that matters, because an
+     * unmatched name from the catalogue is not a keyword at all yet.
+     */
+    nlohmann::json handleMerge(const core::CallKwArgs& call) {
+        auto v = call.arg(0);
+        const int into = I(v, "into_keyword_id");
+        if (into <= 0) throw infrastructure::ValidationError("into_keyword_id is required.");
+
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        auto tgt = txn.exec("SELECT name, norm FROM part_parameter_keyword WHERE id=$1",
+                            pqxx::params{into});
+        if (tgt.empty()) throw infrastructure::ValidationError("No such target parameter.");
+        const std::string toName = tgt[0][0].c_str(), toNorm = tgt[0][1].c_str();
+
+        const int fromId = I(v, "from_keyword_id");
+        std::string fromName = S(v, "from_name"), fromNorm;
+        if (fromId > 0) {
+            auto src = txn.exec("SELECT name, norm FROM part_parameter_keyword WHERE id=$1",
+                                pqxx::params{fromId});
+            if (src.empty()) throw infrastructure::ValidationError("No such source parameter.");
+            fromName = src[0][0].c_str(); fromNorm = src[0][1].c_str();
+            if (fromId == into)
+                throw infrastructure::ValidationError("A parameter cannot be merged into itself.");
+            // Its aliases come too — they meant the merged quantity all along.
+            txn.exec("UPDATE part_parameter_alias SET keyword_id=$1 WHERE keyword_id=$2",
+                     pqxx::params{into, fromId});
+            txn.exec("DELETE FROM part_parameter_keyword WHERE id=$1", pqxx::params{fromId});
+        } else {
+            fromNorm = paramNorm(fromName);
+            if (fromNorm.empty())
+                throw infrastructure::ValidationError("from_keyword_id or from_name is required.");
+            if (fromNorm == toNorm)
+                throw infrastructure::ValidationError("That name is already this parameter.");
+        }
+
+        const int renamed = renameParams_(txn, fromNorm, toName);
+        // The old spelling becomes an alias, so the next payload that uses it
+        // resolves silently instead of asking the same question again.
+        if (fromNorm != toNorm && !fromName.empty()) addAlias_(txn, into, fromName, "user");
+        txn.commit();
+        return {{"ok", true}, {"into", toName}, {"renamed", renamed}};
+    }
+
+    nlohmann::json handleSetActive(const core::CallKwArgs& call) {
+        auto v = call.arg(0);
+        const int kid = I(v, "keyword_id");
+        const bool on = v.is_object() && v.contains("active") && v["active"].is_boolean()
+                            ? v["active"].get<bool>() : true;
+        if (kid <= 0) throw infrastructure::ValidationError("keyword_id is required.");
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        txn.exec("UPDATE part_parameter_keyword SET active=$1, write_date=now() WHERE id=$2",
+                 pqxx::params{on, kid});
+        txn.commit();
+        return {{"ok", true}};
+    }
+
+    /// Deleting a keyword removes the vocabulary entry, never the parameters
+    /// that use it — the catalogue's data is not the vocabulary's to destroy.
+    nlohmann::json handleUnlink(const core::CallKwArgs& call) {
+        const auto ids = call.ids();
+        auto conn = db_->acquire(); pqxx::work txn{conn.get()};
+        for (int id : ids)
+            txn.exec("DELETE FROM part_parameter_keyword WHERE id=$1", pqxx::params{id});
+        txn.commit();
+        return true;
+    }
+
+    nlohmann::json handleFieldsGet(const core::CallKwArgs&) {
+        return {
+            {"id",            {{"type","integer"},{"string","ID"}}},
+            {"name",          {{"type","char"},   {"string","Parameter"}}},
+            {"quantity_kind", {{"type","char"},   {"string","Measures"}}},
+            {"advice",        {{"type","text"},   {"string","Advice"}}},
+            {"active",        {{"type","boolean"},{"string","Active"}}},
+        };
+    }
+};
+
 class PartLookupViewModel : public core::BaseViewModel {
 public:
     explicit PartLookupViewModel(std::shared_ptr<DbConnection> db) : db_(std::move(db)) {
@@ -2897,10 +3522,33 @@ private:
                              {"quantity", r[2].c_str()}, {"factor_to_base", r[3].as<double>(1)}});
         out["units"] = units;
 
+        // CERP-8: the vocabulary, not "whatever is in use". A name in use that
+        // nobody has adopted is exactly the thing being cleaned up, and
+        // echoing it back would teach the next agent to keep sending it.
         nlohmann::json pnames = nlohmann::json::array();
-        for (const auto& r : txn.exec("SELECT DISTINCT name FROM part_parameter ORDER BY name"))
-            pnames.push_back(r[0].c_str());
+        nlohmann::json pdetail = nlohmann::json::array();
+        for (const auto& r : txn.exec(
+                 "SELECT k.id, k.name, COALESCE(k.quantity_kind,''), "
+                 "  COALESCE((SELECT string_agg(a.alias, '|' ORDER BY a.alias) "
+                 "             FROM part_parameter_alias a WHERE a.keyword_id=k.id), '') "
+                 "FROM part_parameter_keyword k WHERE k.active ORDER BY k.name")) {
+            pnames.push_back(r[1].c_str());
+            nlohmann::json al = nlohmann::json::array();
+            const std::string joined = r[3].c_str();
+            for (std::size_t p = 0; p <= joined.size() && !joined.empty();) {
+                const std::size_t bar = joined.find('|', p);
+                al.push_back(joined.substr(p, bar == std::string::npos ? std::string::npos : bar - p));
+                if (bar == std::string::npos) break;
+                p = bar + 1;
+            }
+            pdetail.push_back({{"name", r[1].c_str()}, {"measures", r[2].c_str()},
+                               {"aliases", al}});
+        }
         out["known_parameters"] = pnames;
+        // The aliases are published too: an agent that knows "Ohms" resolves
+        // to "Resistance" can send the right name the first time, instead of
+        // being corrected afterwards.
+        out["parameter_vocabulary"] = pdetail;
 
         nlohmann::json fps = nlohmann::json::array();
         for (const auto& r : txn.exec("SELECT name FROM part_footprint ORDER BY name"))
@@ -3021,19 +3669,106 @@ private:
                                             ? p["value"].get<std::string>()
                                             : (p.contains("value") && p["value"].is_number()
                                                    ? numText(p["value"].get<double>()) : std::string{});
-                if (pn.empty())
+                if (pn.empty()) {
                     issues.push_back({{"field","parameters[" + std::to_string(idx) + "].name"},
                                       {"level","error"},{"message","Parameter name is required"}});
+                } else {
+                    // CERP-8: a name the vocabulary does not know is a
+                    // QUESTION, never an error. A datasheet that says
+                    // "Rds(on)" for the first time is a new parameter or a
+                    // spelling of one we have — and the system says which it
+                    // thinks, with the evidence, rather than refusing the
+                    // part and leaving the reviewer to guess.
+                    const auto pv = matchParamName(txn, pn);
+                    // A keyword that carries advice is one that says "this is
+                    // not a parameter at all" — a package, an operating
+                    // range. Renaming the field to it would be dressing the
+                    // mistake up as a correction, so the name is left exactly
+                    // as sent and the advice is the whole answer.
+                    if (!pv.advice.empty()) {
+                        issues.push_back({
+                            {"field","parameters[" + std::to_string(idx) + "].name"},
+                            {"level","warning"},{"message",pv.advice}});
+                    } else if (pv.kind == "alias") {
+                        // Rewrite to the canonical name, exactly as unit
+                        // symbols are canonicalised, and say so.
+                        p["name"] = pv.canonical;
+                        issues.push_back({
+                            {"field","parameters[" + std::to_string(idx) + "].name"},
+                            {"level","info"},
+                            {"message","'" + pn + "' recorded as '" + pv.canonical +
+                                       "' — a known spelling of it"},
+                            {"suggest", {{"kind","alias"},{"canonical",pv.canonical},
+                                         {"keyword_id",pv.keywordId}}}});
+                    } else if (pv.kind == "similar") {
+                        issues.push_back({
+                            {"field","parameters[" + std::to_string(idx) + "].name"},
+                            {"level","warning"},
+                            {"message","'" + pn + "' is new. Closest existing parameter: '" +
+                                       pv.canonical + "'. Merge it there, or add it as new."},
+                            {"suggest", {{"kind","similar"},{"canonical",pv.canonical},
+                                         {"keyword_id",pv.keywordId},
+                                         {"candidates",pv.candidates}}}});
+                    } else if (pv.kind == "unknown") {
+                        issues.push_back({
+                            {"field","parameters[" + std::to_string(idx) + "].name"},
+                            {"level","warning"},
+                            {"message","'" + pn + "' is not in the parameter vocabulary. "
+                                       "Add it, or map it to an existing parameter."},
+                            {"suggest", {{"kind","unknown"},{"canonical",""},
+                                         {"keyword_id",0},
+                                         {"candidates",pv.candidates}}}});
+                    }
+                }
                 if (!us.empty() &&
                     txn.exec("SELECT 1 FROM part_unit WHERE symbol=$1", pqxx::params{us}).empty())
+                    // CERP-8: still an error — a unit nobody has defined has no
+                    // factor, so any value in it is unconvertible and would
+                    // range-search against nothing. But the issue now carries
+                    // what is needed to ADD it, so the reviewer is one click
+                    // from a fix instead of at a dead end.
                     issues.push_back({{"field","parameters[" + std::to_string(idx) + "].unit"},
                                       {"level","error"},
-                                      {"message","Unknown unit '" + us + "' — see describe.units"}});
+                                      {"message","Unknown unit '" + us + "' — add it, or clear it"},
+                                      {"suggest", {{"kind","add_unit"},{"symbol",us},
+                                                   {"parameter",pn}}}});
+
+                // A value that is not a number: "MIPS32 M4K", "10/100". Often
+                // the honest answer — a core name or a pair of speeds is not a
+                // magnitude — so it can be KEPT AS TEXT deliberately, with
+                // `"text": true` on the parameter. It is then stored in
+                // value_text, exactly as `apply` already handles it, and the
+                // only thing lost is range search, which was never available
+                // for a value like that anyway.
+                const bool asText = p.contains("text") && p["text"].is_boolean()
+                                 && p["text"].get<bool>();
                 double num = 0, mul = 1;
-                if (!raw.empty() && !parseSiValue(raw, num, mul))
-                    issues.push_back({{"field","parameters[" + std::to_string(idx) + "].value"},
-                                      {"level","error"},
-                                      {"message","Cannot read value '" + raw + "'"}});
+                // A value that parses but is NOT a single magnitude — a range,
+                // a pair like "10/100", a package code. `apply` already stores
+                // these as text rather than truncating them, but until now it
+                // did so silently, so the reviewer never learned that half the
+                // value was not going to be searchable.
+                if (!raw.empty() && !asText && looksLikeText(raw))
+                    issues.push_back({
+                        {"field","parameters[" + std::to_string(idx) + "].value"},
+                        {"level","info"},
+                        {"message","'" + raw + "' is not a single number, so it is kept as "
+                                   "text. Send the parts separately to make them searchable."}});
+                if (!raw.empty() && !parseSiValue(raw, num, mul)) {
+                    if (asText)
+                        issues.push_back({
+                            {"field","parameters[" + std::to_string(idx) + "].value"},
+                            {"level","info"},
+                            {"message","'" + raw + "' is kept as text — searchable by name, "
+                                       "not by range"}});
+                    else
+                        issues.push_back({
+                            {"field","parameters[" + std::to_string(idx) + "].value"},
+                            {"level","error"},
+                            {"message","Cannot read value '" + raw + "' as a number"},
+                            {"suggest", {{"kind","keep_as_text"},{"value",raw},
+                                         {"parameter",pn}}}});
+                }
                 ++idx;
             }
         }
@@ -3337,7 +4072,13 @@ private:
                                       kind = u[0][2].is_null() ? "" : u[0][2].c_str(); }
                 }
                 double num = 0, mul = 1;
-                const bool numeric = !raw.empty() && !looksLikeText(raw)
+                // `text: true` is the reviewer saying "this one is not a
+                // magnitude" (CERP-8). It wins over the parser: a value kept
+                // as text on the review desk must be stored as text here, or
+                // the decision they took would be undone on the way in.
+                const bool keepText = p.contains("text") && p["text"].is_boolean()
+                                   && p["text"].get<bool>();
+                const bool numeric = !raw.empty() && !keepText && !looksLikeText(raw)
                                      && parseSiValue(raw, num, mul);
                 // The SI prefix in the text and the unit symbol are two ways of
                 // saying the same thing. "4.7" + "kΩ" and "4k7" + "Ω" must land
@@ -3454,7 +4195,8 @@ void ProductModule::registerViewModels() {
         return std::make_shared<ProductSupplierInfoViewModel>(db);
     });
     viewModels_.registerCreator("part.footprint", [db]{ return std::make_shared<GenericViewModel<PartFootprint>>(db); });
-    viewModels_.registerCreator("part.unit",      [db]{ return std::make_shared<GenericViewModel<PartUnit>>(db); });
+    // Generic CRUD for the Part Units screen, plus create_unit — see the class.
+    viewModels_.registerCreator("part.unit",      [db]{ return std::make_shared<PartUnitViewModel>(db); });
     viewModels_.registerCreator("part.parameter", [db]{ return std::make_shared<PartParameterViewModel>(db); });
     viewModels_.registerCreator("part.catalog",   [db]{ return std::make_shared<PartCatalogViewModel>(db); });
     viewModels_.registerCreator("part.manufacturer.info", [db]{ return std::make_shared<PartManufacturerInfoViewModel>(db); });
@@ -3465,6 +4207,8 @@ void ProductModule::registerViewModels() {
     viewModels_.registerCreator("product.pricelist",       [db]{ return std::make_shared<ProductPricelistViewModel>(db); });
     viewModels_.registerCreator("product.pricelist.item",  [db]{ return std::make_shared<GenericViewModel<ProductPricelistItem>>(db); });
     viewModels_.registerCreator("part.lookup",             [db]{ return std::make_shared<PartLookupViewModel>(db); });
+    // CERP-8 — the parameter vocabulary behind Products ▸ Configuration.
+    viewModels_.registerCreator("part.parameter.keyword",  [db]{ return std::make_shared<PartParamKeywordViewModel>(db); });
 }
 
 // docs/096 — arches for the template and attribute screens. Without these,
@@ -3868,6 +4612,7 @@ void ProductModule::initialize() {
     seedCategories_();
     seedPartUnits_();      // docs/097 — units before anything measures with them
     seedFootprints_();     // docs/098 — packages before anything is filtered by them
+    seedParamKeywords_();  // CERP-8 — the parameter vocabulary, after the units it points at
     migrateTemplates_();   // docs/096 — before menus, so the screens have data
     seedMenus_();
 }
@@ -4194,6 +4939,42 @@ void ProductModule::ensureSchema_() {
     )");
     txn.exec("CREATE INDEX IF NOT EXISTS idx_plr_state ON part_lookup_result(state)");
 
+    // ── CERP-8: the parameter vocabulary ─────────────────────────────────
+    //
+    // A parameter name arriving from a datasheet is a free string, and the
+    // same quantity is written a dozen ways: "Resistance", "Ohms", "R",
+    // "resistance (ohm)". Left alone, each becomes its own parameter and the
+    // parametric search quietly stops finding siblings.
+    //
+    // This is the list of names the catalogue MEANS, plus the spellings that
+    // resolve to each. `norm` is the match key — lowercase, letters and
+    // digits only — so "Rds(on)", "RDS_ON" and "rds on" are one thing. A new
+    // name is never an error: it is matched, suggested, and added by a person.
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS part_parameter_keyword (
+            id              SERIAL PRIMARY KEY,
+            name            VARCHAR NOT NULL,
+            norm            VARCHAR NOT NULL UNIQUE,
+            quantity_kind   VARCHAR,
+            default_unit_id INTEGER REFERENCES part_unit(id) ON DELETE SET NULL,
+            advice          TEXT,
+            active          BOOLEAN NOT NULL DEFAULT TRUE,
+            create_date     TIMESTAMP DEFAULT now(), write_date TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS part_parameter_alias (
+            id          SERIAL PRIMARY KEY,
+            keyword_id  INTEGER NOT NULL REFERENCES part_parameter_keyword(id) ON DELETE CASCADE,
+            alias       VARCHAR NOT NULL,
+            norm        VARCHAR NOT NULL UNIQUE,
+            source      VARCHAR NOT NULL DEFAULT 'user'
+                        CHECK (source IN ('seed','user','agent')),
+            create_date TIMESTAMP DEFAULT now()
+        )
+    )");
+    txn.exec("CREATE INDEX IF NOT EXISTS idx_ppa_keyword ON part_parameter_alias(keyword_id)");
+
     // ── docs/096: pricelists ─────────────────────────────────────────────
     //
     // Until now a product had exactly one price. A pricelist is an ordered set
@@ -4395,6 +5176,123 @@ void ProductModule::seedFootprints_() {
         txn.exec("INSERT INTO part_footprint (name, description) VALUES ($1,$2) "
                  "ON CONFLICT (name) DO UPDATE SET description=EXCLUDED.description",
                  pqxx::params{f.name, f.descr});
+
+    txn.commit();
+}
+
+// ----------------------------------------------------------
+// seedParamKeywords_ — CERP-8
+//
+// The vocabulary starts as the quantities an electronics catalogue actually
+// has, each with the spellings datasheets use for it. Two rules govern this
+// list and nothing else belongs in it:
+//
+//   * an alias is a spelling of the SAME quantity. "Ohms" is Resistance;
+//     "Impedance" is not, and gets its own keyword.
+//   * `advice` is for a name that should not be a parameter at all —
+//     "Package" belongs in the footprint field, and an operating range
+//     belongs in two parameters. Those were already the two ways a lookup
+//     produced a plausible, wrong number (see looksLikeText), and now the
+//     vocabulary says so at the point someone is reading it.
+//
+// Then every name ALREADY in the catalogue is adopted as a keyword. A live
+// database has a vocabulary whether or not anyone wrote it down, and starting
+// by declaring half of it unknown would be a screen full of false alarms.
+// ----------------------------------------------------------
+void ProductModule::seedParamKeywords_() {
+    auto conn = services_.db()->acquire();
+    pqxx::work txn{conn.get()};
+
+    struct K { const char* name; const char* kind; const char* aliases; const char* advice; };
+    static const K kKeywords[] = {
+        // "DC resistance" is deliberately NOT an alias of Resistance: on a
+        // ferrite bead or an inductor it is a different figure from the
+        // impedance the part is bought for, and folding them together would
+        // put two unrelated numbers under one name.
+        {"Resistance",  "resistance",  "ohms|ohm|ohmic value|r|res|resistance value", nullptr},
+        {"Capacitance", "capacitance", "cap|capacity|c|nominal capacitance", nullptr},
+        {"Inductance",  "inductance",  "ind|l|nominal inductance", nullptr},
+        {"Tolerance",   "ratio",       "tol|accuracy|precision", nullptr},
+        {"Power",       "power",       "power rating|rated power|power dissipation|pd|wattage", nullptr},
+        // Named for the quantity, with the qualified forms as spellings —
+        // not the other way round. A datasheet that says plain "Voltage"
+        // means this, and a vocabulary that renamed it to "Voltage Rating"
+        // would be correcting the commonest spelling there is.
+        {"Voltage",     "voltage",     "rated voltage|working voltage|voltage rating|vdc|wv|max voltage|breakdown voltage", nullptr},
+        {"Current",     "current",     "rated current|current rating|max current|continuous current|if", nullptr},
+        {"Forward Voltage", "voltage", "vf|forward drop|vfwd", nullptr},
+        {"Frequency",   "frequency",   "freq|f|operating frequency|clock frequency", nullptr},
+        {"Temperature Min", "temperature",
+         "min temperature|minimum operating temperature|top min|tmin", nullptr},
+        {"Temperature Max", "temperature",
+         "max temperature|maximum operating temperature|top max|tmax", nullptr},
+        {"Temperature Coefficient", "ratio", "tempco|tcr|temperature drift", nullptr},
+        {"Gain",        "gain",        "hfe|amplification|dc gain", nullptr},
+        {"Memory Size", "data",        "memory|flash size|storage|capacity (memory)", nullptr},
+        {"Mounting",    nullptr,       "mount|mounting type|mounting style|technology", nullptr},
+        {"Pin Count",   nullptr,       "pins|number of pins|no of pins|leads|lead count", nullptr},
+        {"Operating Temperature", "temperature", "temperature range|operating range|temp range",
+         "A range is two parameters — send Temperature Min and Temperature Max. "
+         "\"-55 to 125\" reads as -55 and the upper limit is lost."},
+        {"Package",     nullptr,       "case|case code|package type|footprint|package/case",
+         "A package is not a parameter — put it in the footprint field. \"0603\" "
+         "reads as the number 603 and the package is gone."},
+    };
+
+    for (const auto& k : kKeywords) {
+        pqxx::params kp;
+        kp.append(std::string(k.name));
+        kp.append(paramNorm(k.name));
+        if (k.kind)   kp.append(std::string(k.kind));   else kp.append(nullptr);
+        if (k.advice) kp.append(std::string(k.advice)); else kp.append(nullptr);
+        auto ins = txn.exec(
+            "INSERT INTO part_parameter_keyword (name, norm, quantity_kind, advice) "
+            "VALUES ($1,$2,$3,$4) "
+            // Re-running must not undo a person's edits: only fields still
+            // empty are filled in, and the name they chose is left alone.
+            "ON CONFLICT (norm) DO UPDATE SET "
+            "   quantity_kind = COALESCE(part_parameter_keyword.quantity_kind, EXCLUDED.quantity_kind), "
+            "   advice        = COALESCE(part_parameter_keyword.advice,        EXCLUDED.advice) "
+            "RETURNING id", kp);
+        const int kid = ins[0][0].as<int>();
+
+        std::string list = k.aliases ? k.aliases : "";
+        std::size_t pos = 0;
+        while (!list.empty()) {
+            const std::size_t bar = list.find('|', pos);
+            const std::string alias = list.substr(pos, bar == std::string::npos
+                                                        ? std::string::npos : bar - pos);
+            const std::string an = paramNorm(alias);
+            // An alias that is already a KEYWORD is skipped rather than
+            // stolen: someone decided that name means something of its own.
+            if (!an.empty() &&
+                txn.exec("SELECT 1 FROM part_parameter_keyword WHERE norm=$1",
+                         pqxx::params{an}).empty())
+                txn.exec("INSERT INTO part_parameter_alias (keyword_id, alias, norm, source) "
+                         "VALUES ($1,$2,$3,'seed') ON CONFLICT (norm) DO NOTHING",
+                         pqxx::params{kid, alias, an});
+            if (bar == std::string::npos) break;
+            pos = bar + 1;
+        }
+    }
+
+    // Adopt what the catalogue already says. These names are in use on real
+    // products; declaring them unknown would be a screen of false alarms on
+    // the first run, and the vocabulary is meant to describe this catalogue.
+    auto adopted = txn.exec(
+        "INSERT INTO part_parameter_keyword (name, norm) "
+        "SELECT DISTINCT ON (lower(regexp_replace(name,'[^A-Za-z0-9]','','g'))) "
+        "       name, lower(regexp_replace(name,'[^A-Za-z0-9]','','g')) "
+        "  FROM part_parameter "
+        " WHERE regexp_replace(name,'[^A-Za-z0-9]','','g') <> '' "
+        "   AND lower(regexp_replace(name,'[^A-Za-z0-9]','','g')) NOT IN "
+        "       (SELECT norm FROM part_parameter_keyword "
+        "        UNION SELECT norm FROM part_parameter_alias) "
+        " ORDER BY 2, name "
+        "ON CONFLICT (norm) DO NOTHING");
+    if (adopted.affected_rows() > 0)
+        LOG_INFO << "[parts] adopted " << adopted.affected_rows()
+                 << " parameter name(s) already in the catalogue into the vocabulary";
 
     txn.commit();
 }
@@ -4625,7 +5523,11 @@ void ProductModule::seedCategories_() {
             (10, 'Product Categories', 'product.category',     'list,form', 'product-categories',  '{}'),
             (11, 'Vendor Pricelists',  'product.supplierinfo', 'list,form', 'vendor-pricelists',   '{}'),
             (12, 'Footprints',         'part.footprint',       'list,form', 'footprints',          '{}'),
-            (13, 'Part Units',         'part.unit',            'list,form', 'part-units',          '{}')
+            (13, 'Part Units',         'part.unit',            'list,form', 'part-units',          '{}'),
+            -- CERP-8: the parameter vocabulary. A custom screen, not a list:
+            -- the work is deciding what an unmatched name should become, and
+            -- that is a comparison, not a row edit.
+            (130,'Parameter Keywords', 'part.parameter.keyword','list',     'parameter-keywords',  '{}')
             -- 15 was 'Parametric Search' (part.search), removed: a strict subset
             -- of Parts Catalogue, which does the same ranges and the same SI
             -- shorthand. The id stays retired rather than reused.
@@ -4745,7 +5647,8 @@ void ProductModule::seedMenus_() {
         INSERT INTO ir_ui_menu (id, name, parent_id, sequence, action_id) VALUES
             (55, 'Vendor Pricelists', 52, 30, 11),
             (56, 'Footprints',        52, 40, 12),
-            (57, 'Part Units',        52, 50, 13)
+            (57, 'Part Units',        52, 50, 13),
+            (88, 'Parameter Keywords',52, 60, 130)
         ON CONFLICT (id) DO UPDATE
             SET name=EXCLUDED.name, parent_id=EXCLUDED.parent_id,
                 sequence=EXCLUDED.sequence, action_id=EXCLUDED.action_id

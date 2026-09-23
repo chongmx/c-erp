@@ -592,6 +592,7 @@ class RentalDashboard extends owl.Component {
             { key: 'overdue',  label: 'Invoices overdue > 60 days', n: a.overdue_60d || 0,          icon: '⛔' },
             { key: 'maint',    label: 'Units in maintenance',       n: a.units_in_maintenance || 0, icon: '⚠' },
             { key: 'vacant',   label: 'Units vacant',               n: a.units_vacant || 0,         icon: '○' },
+            { key: 'draft',    label: 'Invoices still in draft',    n: a.draft_invoices || 0,       icon: '✐' },
             { key: 'walkin',   label: 'Walk-ins not auto-billed',   n: a.walk_in_tenancies || 0,    icon: '✎' },
             { key: 'unalloc',  label: 'Payments not allocated',     n: a.unallocated_payments || 0, icon: '◐' },
         ];

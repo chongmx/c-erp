@@ -73,6 +73,9 @@ EOF
 curl -s -c "$CK" -X POST "$BASE/web/session/authenticate" \
      -H 'Content-Type: application/json' --data @/tmp/vrb_auth.json > /tmp/vrb_auth_out.json
 grep -q '"session_id"' /tmp/vrb_auth_out.json || { echo "cannot authenticate"; exit 1; }
+# The JSON-RPC helpers authenticate by session_id in the context, not by the
+# cookie above, so they need their own sign-in (section 10 posts an invoice).
+auth_or_die
 
 runbill() {   # $1 = as-of date -> echoes the JSON result
     curl -s -b "$CK" -X POST "$BASE/rental/billing/run?date=$1"
@@ -253,11 +256,21 @@ UNAL=$(pg "SELECT amount_unallocated FROM account_payment_unallocated
 echo "    advance on account: $UNAL"
 LA=$(mkline $P4 $U7 2026-09-01 100 recurring 1)
 runbill 2026-08-26 > /dev/null
-RESID=$(pg "SELECT amount_residual FROM account_move WHERE partner_id=$P4 LIMIT 1")
-PSTATE=$(pg "SELECT payment_state FROM account_move WHERE partner_id=$P4 LIMIT 1")
+# Billing writes a DRAFT (docs: "Draft first"), so nothing is owed yet and the
+# advance is untouched. A draft cannot be settled: PaymentAllocation works on
+# posted moves only.
+MV=$(pg "SELECT id FROM account_move WHERE partner_id=$P4 ORDER BY id LIMIT 1")
+[ "$(pg "SELECT state FROM account_move WHERE id=${MV:-0}")" = "draft" ]     && ok "billing creates the invoice as a draft" || no "the generated invoice is not a draft"
+[ "$(pg "SELECT amount_unallocated FROM account_payment_unallocated WHERE partner_id=$P4 LIMIT 1")" = "$((500*M))" ]     && ok "and the advance is untouched while it is a draft" || no "credit moved against a draft"
+
+# Posting is what makes the invoice owe something — and that is when the money
+# already on account is spent against it.
+call account.move action_post "[[${MV:-0}]]" > /dev/null
+RESID=$(pg "SELECT amount_residual FROM account_move WHERE id=${MV:-0}")
+PSTATE=$(pg "SELECT payment_state FROM account_move WHERE id=${MV:-0}")
 LEFT=$(pg "SELECT amount_unallocated FROM account_payment_unallocated WHERE partner_id=$P4 LIMIT 1")
-echo "    invoice residual=$RESID state=$PSTATE  credit left=$LEFT"
-[ "$RESID" = "0" ]     && ok "the advance settled the invoice automatically" || no "residual is $RESID"
+echo "    after posting: residual=$RESID state=$PSTATE  credit left=$LEFT"
+[ "$RESID" = "0" ]     && ok "posting settles it from the advance automatically" || no "residual is $RESID"
 [ "$PSTATE" = "paid" ] && ok "marked paid"                                    || no "state is $PSTATE"
 [ "$LEFT" = "$((385*M))" ] && ok "credit drawn down by exactly 115.00" || no "credit left is $LEFT"
 

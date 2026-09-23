@@ -21,6 +21,7 @@
 #include "Errors.hpp"
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
+#include <trantor/utils/Logger.h>
 #include <memory>
 #include <string>
 #include <vector>
@@ -292,6 +293,13 @@ public:
         fieldRegistry_.add({"company_id",      core::FieldType::Many2one,  "Company",           true,  false, true, false, "res.company"});
         fieldRegistry_.add({"currency_id",     core::FieldType::Many2one,  "Currency",          false, false, true, false, "res.currency"});
         fieldRegistry_.add({"payment_state",   core::FieldType::Selection, "Payment Status",    false, true});
+        // The invoice this one reverses (a credit note points at its original).
+        // Registered so a client can both READ it and FILTER on it — which is
+        // how the invoice screen answers "has this been reversed?": it looks
+        // for a posted credit note pointing back at it. Written only by
+        // action_reverse, never by a form.
+        fieldRegistry_.add({"reversed_entry_id", core::FieldType::Many2one, "Reversal Of",
+                            false, true, true, false, "account.move"});
         fieldRegistry_.add({"amount_untaxed",  core::FieldType::Monetary,  "Untaxed Amount",    false, true});
         fieldRegistry_.add({"amount_tax",      core::FieldType::Monetary,  "Tax",               false, true});
         fieldRegistry_.add({"amount_total",    core::FieldType::Monetary,  "Total",             false, true});
@@ -825,6 +833,43 @@ private:
                 "WHERE aml.move_id=$1 AND aml.analytic_account_id IS NOT NULL "
                 "AND NOT EXISTS (SELECT 1 FROM account_analytic_line al WHERE al.move_line_id=aml.id)",
                 pqxx::params{id, date});
+
+            // Money already on account is spent the moment there is something
+            // to spend it on. A customer who paid six months up front has that
+            // credit drawn down as each invoice is posted — which is when the
+            // invoice first owes anything (PaymentAllocation settles posted
+            // moves only). Rental billing used to do this itself at creation;
+            // now every invoice behaves the same way, because every invoice is
+            // born a draft.
+            if (moveType == "out_invoice") {
+                try {
+                    auto partner = txn.exec(
+                        "SELECT partner_id FROM account_move WHERE id = $1 AND partner_id IS NOT NULL",
+                        pqxx::params{id});
+                    if (!partner.empty()) {
+                        auto pmts = txn.exec(
+                            "SELECT payment_id FROM account_payment_unallocated "
+                            " WHERE partner_id = $1 AND amount_unallocated > 0 ORDER BY payment_id",
+                            pqxx::params{partner[0][0].as<int>()});
+                        for (const auto& p : pmts) {
+                            core::PaymentAllocation::allocate(
+                                txn, p[0].as<int>(), core::Money::zero(), {id});
+                            auto resid = txn.exec(
+                                "SELECT amount_residual FROM account_move WHERE id = $1",
+                                pqxx::params{id});
+                            if (!resid.empty() && resid[0][0].as<long long>(0) <= 0) break;
+                        }
+                    }
+                } catch (const std::exception& ex) {
+                    // Posting must not fail because a credit could not be
+                    // applied: the posted invoice is the thing that matters,
+                    // and the credit stays on account for the next one. It is
+                    // still logged — a credit that silently fails to apply
+                    // looks exactly like a customer who never paid.
+                    LOG_ERROR << "[account/action_post] advance not applied to move "
+                              << id << ": " << ex.what();
+                }
+            }
 
             cerp::modules::mail::postLog(txn, "account.move", id, 0,
                 "Invoice posted.", "log_note");

@@ -1,0 +1,98 @@
+/* =============================================================
+   paramkeywords.css — Products ▸ Configuration ▸ Parameter Keywords
+   (ParamKeywords.js, CERP-8)
+
+   Surfaces are inherited from app.css (--bg, --surface, --border) rather
+   than restated: the shell is dark, and a panel with its own opinion about
+   that is a white rectangle inside a navy app.
+   ============================================================= */
+.pk-shell { padding: 18px 24px 40px; color: var(--text); max-width: 1180px; overflow-y: auto; height: 100%; box-sizing: border-box; }
+.pk-head h2 { margin: 0 0 4px; font-size: 1.2rem; }
+.pk-sub { margin: 0 0 16px; color: var(--muted); font-size: .86rem; max-width: 720px; }
+
+.pk-error {
+    margin: 0 0 14px; padding: 9px 12px; border-radius: 5px;
+    background: rgba(244,71,71,.1); border: 1px solid rgba(244,71,71,.45);
+    color: #ffb4b4; font-size: .84rem;
+}
+.pk-notice {
+    margin: 0 0 14px; padding: 9px 12px; border-radius: 5px;
+    background: rgba(78,201,176,.08); border: 1px solid rgba(78,201,176,.45);
+    font-size: .84rem;
+}
+.pk-hint { padding: 10px 16px; color: var(--muted); font-size: .82rem; }
+
+.pk-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    margin-bottom: 16px; overflow: hidden;
+}
+.pk-card-h {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    font-size: .78rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .05em; color: var(--muted);
+}
+.pk-card-h .btn { text-transform: none; letter-spacing: 0; }
+.pk-count { font-weight: 500; text-transform: none; letter-spacing: 0; }
+
+.pk-table { width: 100%; border-collapse: collapse; font-size: .86rem; }
+.pk-table th {
+    text-align: left; padding: 8px 16px; font-size: .72rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+    border-bottom: 1px solid var(--border);
+}
+.pk-table td { padding: 9px 16px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.pk-table tr:last-child td { border-bottom: none; }
+.pk-table tr.inactive { opacity: .5; }
+/* Counts line up so "used by" can be compared down the column. */
+.pk-table td:nth-child(3) { font-variant-numeric: tabular-nums; }
+
+.pk-muted { color: var(--muted); }
+.pk-advice { margin-top: 3px; color: var(--muted); font-size: .78rem; max-width: 420px; }
+
+/* The verdict is a word plus a shape, never a bare colour: "new" and
+   "close to" must be distinguishable without seeing the hue. */
+.pk-verdict {
+    display: inline-block; margin-right: 6px; padding: 1px 7px; border-radius: 10px;
+    font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+}
+.pk-verdict.similar { background: rgba(212,160,23,.16); color: #e8c15a; border: 1px solid rgba(212,160,23,.45); }
+.pk-verdict.unknown { background: rgba(120,140,170,.14); color: var(--muted); border: 1px solid var(--border); }
+.pk-score { margin-left: 6px; color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; }
+
+.pk-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pk-select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 5px; padding: 5px 8px; font-family: inherit; font-size: .82rem; max-width: 220px;
+}
+.pk-in {
+    width: 100%; max-width: 440px; box-sizing: border-box; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 5px; padding: 7px 9px;
+    font-family: inherit; font-size: .86rem;
+}
+.pk-in:focus { border-color: var(--accent); outline: none; }
+.pk-row { display: grid; grid-template-columns: 140px 1fr; gap: 12px; align-items: center; padding: 10px 16px; }
+.pk-row > label { color: var(--muted); font-size: .84rem; }
+.pk-editbar { display: flex; gap: 8px; padding: 4px 16px 14px 168px; }
+
+.pk-chip {
+    display: inline-flex; align-items: center; gap: 4px; margin: 0 5px 4px 0;
+    padding: 2px 6px 2px 8px; border-radius: 10px; background: var(--bg);
+    border: 1px solid var(--border); font-size: .78rem;
+}
+.pk-x {
+    border: none; background: none; color: var(--muted); cursor: pointer;
+    font-size: .9rem; line-height: 1; padding: 0 2px;
+}
+.pk-x:hover { color: #ff9c9c; }
+.pk-add { border: none; background: none; color: var(--accent); cursor: pointer; font-size: .78rem; padding: 0; }
+
+.pk-try { display: flex; gap: 12px; align-items: center; padding: 12px 16px 4px; }
+.pk-try-out { color: var(--muted); font-size: .84rem; }
+
+@media (max-width: 720px) {
+    .pk-shell { padding: 14px 16px 32px; }
+    .pk-row { grid-template-columns: 1fr; }
+    .pk-editbar { padding-left: 16px; }
+    .pk-table th:nth-child(2), .pk-table td:nth-child(2) { display: none; }
+}

@@ -203,6 +203,89 @@ class PartLookup extends owl.Component {
                              t-attf-class="pl-issue lvl-{{ i.level }}">
                             <span class="pl-issue-field" t-esc="i.field"/>
                             <span t-esc="i.message"/>
+                            <!-- CERP-8: an error a person can actually clear is
+                                 offered as a button here, where they are
+                                 reading about it. A new part legitimately
+                                 brings a unit or a textual value nobody has
+                                 entered before, and "see describe.units" was a
+                                 dead end on that. -->
+                            <t t-if="i.suggest and state.detail.state !== 'applied'">
+                                <button class="pl-fix" t-if="i.suggest.kind === 'add_unit'"
+                                        data-pl="add-unit" t-att-disabled="state.busy"
+                                        t-on-click="() => this.openUnitForm(i.suggest.symbol)">
+                                    Add <t t-esc="i.suggest.symbol"/> as a unit…
+                                </button>
+                                <button class="pl-fix" t-if="i.suggest.kind === 'keep_as_text'"
+                                        data-pl="keep-text" t-att-disabled="state.busy"
+                                        t-on-click="() => this.keepAsText(i.suggest.parameter)">
+                                    Keep it as text
+                                </button>
+                                <button class="pl-fix" t-if="i.suggest.kind === 'unknown' or i.suggest.kind === 'similar'"
+                                        data-pl="issue-adopt" t-att-disabled="state.busy"
+                                        t-on-click="() => this.adoptName({ name: i.suggest.parameter || paramNameFor(i.field) })">
+                                    Add as a new parameter
+                                </button>
+                            </t>
+                        </div>
+                    </div>
+
+                    <!-- Adding the unit the datasheet used. Everything here is
+                         what makes a unit usable rather than decorative: what
+                         it measures, and how it converts to the base of that
+                         quantity. A unit without those cannot be compared to
+                         anything. -->
+                    <div class="pl-unit-form" t-if="state.unitForm">
+                        <div class="pl-unit-h">New unit <code t-esc="state.unitForm.symbol"/></div>
+                        <div class="pl-unit-row">
+                            <label>Symbol</label>
+                            <input data-pl="u-symbol" t-att-value="state.unitForm.symbol"
+                                   t-on-input="ev => state.unitForm.symbol = ev.target.value"/>
+                        </div>
+                        <div class="pl-unit-row">
+                            <label>Name</label>
+                            <input data-pl="u-name" placeholder="e.g. Megabit per second"
+                                   t-att-value="state.unitForm.name"
+                                   t-on-input="ev => state.unitForm.name = ev.target.value"/>
+                        </div>
+                        <div class="pl-unit-row">
+                            <label>Measures</label>
+                            <select data-pl="u-kind" t-on-change="onUnitKind">
+                                <option value="">(no quantity — a plain count or label)</option>
+                                <t t-foreach="state.quantities" t-as="q" t-key="q.quantity">
+                                    <option t-att-value="q.quantity"
+                                            t-att-selected="state.unitForm.kind === q.quantity ? true : undefined"
+                                            t-esc="q.quantity + (q.base ? ' (base ' + q.base + ')' : '')"/>
+                                </t>
+                                <option value="__new"
+                                        t-att-selected="state.unitForm.newKind ? true : undefined">
+                                    something new…
+                                </option>
+                            </select>
+                        </div>
+                        <div class="pl-unit-row" t-if="state.unitForm.newKind">
+                            <label>Call it</label>
+                            <input data-pl="u-newkind" placeholder="e.g. data_rate"
+                                   t-att-value="state.unitForm.kind"
+                                   t-on-input="ev => state.unitForm.kind = ev.target.value"/>
+                        </div>
+                        <div class="pl-unit-row" t-if="baseOf(state.unitForm.kind)">
+                            <label>Factor</label>
+                            <input data-pl="u-factor" class="pl-mono"
+                                   t-att-value="state.unitForm.factor"
+                                   t-on-input="ev => state.unitForm.factor = ev.target.value"/>
+                            <span class="pl-hint inline">
+                                how many <t t-esc="baseOf(state.unitForm.kind)"/> make one
+                                <t t-esc="state.unitForm.symbol"/>
+                            </span>
+                        </div>
+                        <div class="pl-hint" t-else="">
+                            The first unit of a quantity defines it, so this one becomes the base
+                            and everything else will be measured against it.
+                        </div>
+                        <div class="pl-editbar">
+                            <button class="pl-btn primary" data-pl="u-save"
+                                    t-att-disabled="state.busy" t-on-click="createUnit">Add the unit</button>
+                            <button class="pl-btn ghost" t-on-click="() => state.unitForm = null">Cancel</button>
                         </div>
                     </div>
 
@@ -218,8 +301,28 @@ class PartLookup extends owl.Component {
                             <thead><tr><th>Name</th><th>Value</th><th>Unit</th><th/></tr></thead>
                             <tbody>
                                 <tr t-foreach="state.edit.parameters" t-as="p" t-key="p_index">
-                                    <td><input t-att-value="p.name" t-att-disabled="state.detail.state === 'applied'"
-                                               t-on-input="ev => p.name = ev.target.value"/></td>
+                                    <td>
+                                        <input t-att-value="p.name" t-att-disabled="state.detail.state === 'applied'"
+                                               t-on-input="ev => p.name = ev.target.value"/>
+                                        <!-- CERP-8: what the vocabulary makes of this name,
+                                             and the two answers, where the decision is made. -->
+                                        <t t-set="v" t-value="verdictFor(p)"/>
+                                        <div class="pl-param-hint" t-if="v and state.detail.state !== 'applied'">
+                                            <span t-attf-class="pl-tag {{ v.kind }}"
+                                                  t-esc="v.kind === 'similar' ? 'close to' : 'new'"/>
+                                            <span t-if="v.kind === 'similar'" t-esc="v.canonical"/>
+                                            <span t-else="">not in the vocabulary</span>
+                                            <button data-pl="adopt-name" t-att-disabled="state.busy"
+                                                    t-on-click="() => this.adoptName(p)">Add as new</button>
+                                            <select data-pl="map-name" t-att-disabled="state.busy"
+                                                    t-on-change="(ev) => this.useKeyword(p, ev.target.value)">
+                                                <option value="">Use existing…</option>
+                                                <t t-foreach="mergeChoices(v)" t-as="k" t-key="k.id">
+                                                    <option t-att-value="k.id" t-esc="k.name"/>
+                                                </t>
+                                            </select>
+                                        </div>
+                                    </td>
                                     <td><input class="pl-mono" t-att-value="p.value"
                                                t-att-disabled="state.detail.state === 'applied'"
                                                t-on-input="ev => p.value = ev.target.value"/></td>
@@ -292,6 +395,12 @@ class PartLookup extends owl.Component {
             filter: 'pending', categId: '0', productId: '0',
             loading: true, busy: false, error: '', notice: '',
             askRes: null, units: [],
+            // CERP-8 — what the parameter vocabulary makes of each name on
+            // the proposal, and the keywords it can be mapped onto.
+            verdicts: {}, keywords: [],
+            // The two fix-ups offered on an error: adding the unit the
+            // datasheet used, and keeping a value that is not a number.
+            unitForm: null, quantities: [],
             edit: { mpn: '', manufacturer: '', name: '', source: '',
                     datasheet_url: '', parameters: [] },
             paste: false, pasteText: '',
@@ -360,14 +469,21 @@ class PartLookup extends owl.Component {
     }
 
     async init() {
+        await this.loadUnits();
+        await this.reload();
+    }
+
+    /**
+     * The vocabulary the agent was told to target, so the reviewer picks from
+     * exactly the list the agent was choosing from. Re-read after a unit is
+     * added here, or the picker would still be offering yesterday's list.
+     */
+    async loadUnits() {
         try {
-            // The same vocabulary the agent is told to target, so the reviewer
-            // picks from exactly the list the agent was choosing from.
             const d = await RpcService.call('part.lookup', 'describe', [{}], {});
             this.state.categories = (d && d.categories) || [];
             this.state.units = ((d && d.units) || []).map(u => u.symbol || u).filter(Boolean);
         } catch (e) { this.state.error = (e && e.message) || 'Could not load the category list.'; }
-        await this.reload();
     }
 
     /**
@@ -498,7 +614,174 @@ class PartLookup extends owl.Component {
                 parameters: JSON.parse(JSON.stringify(
                     Array.isArray(p.parameters) ? p.parameters : [])),
             };
+            await this.checkNames();
         } catch (e) { this.state.error = (e && e.message) || 'Could not open that proposal.'; }
+    }
+
+    /**
+     * CERP-8 — ask the vocabulary what it makes of each parameter name.
+     *
+     * The issue list above already carries this, but the decision is made
+     * while reading the row, so the verdict and the two actions belong next
+     * to the name. Keyed by name rather than by index: the reviewer can add
+     * and remove rows, and an index would drift onto the wrong one.
+     */
+    async checkNames() {
+        this.state.verdicts = {};
+        const names = [...new Set((this.state.edit.parameters || [])
+            .map(p => (p.name || '').trim()).filter(Boolean))];
+        if (!names.length) return;
+        try {
+            const [rs, kw] = await Promise.all([
+                RpcService.call('part.parameter.keyword', 'suggest', [names], {}),
+                this.state.keywords.length
+                    ? Promise.resolve(this.state.keywords)
+                    : RpcService.call('part.parameter.keyword', 'list', [{}], {}),
+            ]);
+            this.state.keywords = kw || [];
+            const map = {};
+            (rs || []).forEach(v => { map[v.name] = v; });
+            this.state.verdicts = map;
+        } catch (_) { /* the hint is a nicety; the review desk still works */ }
+    }
+
+    // --- the two fix-ups on an error (CERP-8) ----------------------
+
+    /** "parameters[3].unit" -> the name on that row, for an issue's button. */
+    paramNameFor(field) {
+        const m = /^parameters\[(\d+)\]/.exec(field || '');
+        if (!m) return '';
+        const p = (this.state.edit.parameters || [])[Number(m[1])];
+        return p ? (p.name || '').trim() : '';
+    }
+
+    baseOf(kind) {
+        const q = (this.state.quantities || []).find(x => x.quantity === kind);
+        return q ? q.base : '';
+    }
+
+    async openUnitForm(symbol) {
+        this.state.error = '';
+        try {
+            this.state.quantities = await RpcService.call('part.unit', 'quantities', [{}], {});
+        } catch (_) { this.state.quantities = []; }
+        this.state.unitForm = { symbol: symbol || '', name: '', kind: '', newKind: false, factor: '' };
+    }
+
+    onUnitKind(ev) {
+        const v = ev.target.value;
+        if (v === '__new') { this.state.unitForm.newKind = true; this.state.unitForm.kind = ''; }
+        else { this.state.unitForm.newKind = false; this.state.unitForm.kind = v; }
+    }
+
+    async createUnit() {
+        const f = this.state.unitForm;
+        if (!f) return;
+        this.state.busy = true; this.state.error = ''; this.state.notice = '';
+        try {
+            const r = await RpcService.call('part.unit', 'create_unit', [{
+                symbol: (f.symbol || '').trim(),
+                name:   (f.name || '').trim(),
+                quantity_kind: (f.kind || '').trim(),
+                factor: f.factor === '' ? 1 : f.factor,
+            }], {});
+            this.state.unitForm = null;
+            this.state.notice = r.is_base
+                ? `${r.symbol} added — it is now the base unit for ${r.quantity || 'its own quantity'}.`
+                : `${r.symbol} added.`;
+            // The unit list the pickers offer is now out of date, and so is
+            // the verdict on this proposal: re-validate it so the error it
+            // was raised for actually clears.
+            await this.loadUnits();
+            await this.revalidate();
+        } catch (e) { this.state.error = (e && e.message) || 'Could not add that unit.'; }
+        this.state.busy = false;
+    }
+
+    /** Mark a parameter as deliberately textual, and re-validate. */
+    async keepAsText(name) {
+        const p = (this.state.edit.parameters || [])
+            .find(x => (x.name || '').trim() === (name || '').trim());
+        if (!p) { this.state.error = 'That parameter is no longer on this proposal.'; return; }
+        p.text = true;
+        this.state.busy = true; this.state.error = ''; this.state.notice = '';
+        try {
+            await this.revalidate();
+            this.state.notice = `"${p.value}" is kept as text.`;
+        } catch (e) { this.state.error = (e && e.message) || 'Could not save that.'; }
+        this.state.busy = false;
+    }
+
+    /**
+     * Re-run the server's validation over the edited payload.
+     *
+     * `update` is the same validation `submit` runs, so a proposal whose last
+     * error has just been cleared moves itself back out of "Needs fixing"
+     * without anyone re-submitting it.
+     */
+    async revalidate() {
+        if (!this.state.detail) return;
+        const id = this.state.detail.id;
+        await RpcService.call('part.lookup', 'update', [{
+            id,
+            mpn: this.state.edit.mpn,
+            manufacturer: this.state.edit.manufacturer,
+            name: this.state.edit.name,
+            source: this.state.edit.source,
+            datasheet_url: this.state.edit.datasheet_url,
+            parameters: JSON.parse(JSON.stringify(this.state.edit.parameters || [])),
+        }], {});
+        await this.reload();
+        await this.select(id);
+    }
+
+    verdictFor(p) {
+        const v = this.state.verdicts[(p.name || '').trim()];
+        // Only the two that need a decision are shown. "exact" is the normal
+        // case and "alias" was already corrected on the way in; decorating
+        // those would bury the two rows that actually want attention.
+        return v && (v.kind === 'similar' || v.kind === 'unknown') ? v : null;
+    }
+
+    /** Keywords to offer, closest first. */
+    mergeChoices(v) {
+        const first = (v.candidates || []).map(c => ({ id: c.keyword_id, name: c.name }));
+        const seen = new Set(first.map(f => f.id));
+        return first.concat(this.state.keywords.filter(k => !seen.has(k.id))
+                                .map(k => ({ id: k.id, name: k.name })));
+    }
+
+    async adoptName(p) {
+        const name = (p.name || '').trim();
+        if (!name) return;
+        this.state.busy = true; this.state.error = '';
+        try {
+            await RpcService.call('part.parameter.keyword', 'create_keyword', [{ name }], {});
+            this.state.keywords = [];
+            this.state.notice = '"' + name + '" is now a parameter in its own right.';
+            await this.checkNames();
+        } catch (e) { this.state.error = (e && e.message) || 'Could not add that parameter.'; }
+        this.state.busy = false;
+    }
+
+    /** Use an existing keyword for this row — and teach the vocabulary. */
+    async useKeyword(p, keywordId) {
+        const id = Number(keywordId);
+        const was = (p.name || '').trim();
+        if (!id || !was) return;
+        const target = (this.state.keywords.find(k => k.id === id) || {}).name;
+        if (!target) return;
+        this.state.busy = true; this.state.error = '';
+        try {
+            // The alias is what stops this question coming back on the next
+            // datasheet that spells it the same way.
+            await RpcService.call('part.parameter.keyword', 'add_alias',
+                [{ keyword_id: id, alias: was, source: 'agent' }], {});
+            p.name = target;
+            this.state.notice = '"' + was + '" now means ' + target + '. Save to keep the change here.';
+            await this.checkNames();
+        } catch (e) { this.state.error = (e && e.message) || 'Could not map that name.'; }
+        this.state.busy = false;
     }
 
     async apply() {

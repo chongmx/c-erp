@@ -292,18 +292,19 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
                 ? std::string(pe[0][2].c_str())
                 : (g.periodStart + " to " + periodEnd);
 
-            // Invoice number from ir.sequence inside this transaction —
-            // never COUNT(*)+1, which P4 removed from three other places.
+            // A rental invoice is born a DRAFT, like every other invoice in
+            // the system — a sale order, a purchase bill and a portal request
+            // all create drafts, and only account.move.action_post makes an
+            // invoice real. Billing used to insert 'posted' directly, which
+            // meant a rental invoice could never be checked before it counted
+            // as revenue, and a mistake had to be reversed rather than edited.
             //
-            // A rental invoice is an out_invoice, so it draws from the SAME
-            // customer-invoice series as a hand-posted one:
-            // `account.move.INV` — prefix "INV", padding 6, seeded by
-            // migration 1020. A rental invoice and a manual invoice must
-            // share one continuous series; two series in the customer-
-            // invoice space is a numbering gap waiting to be explained to
-            // an auditor.
-            const std::string invName =
-                IrSequence::instance().nextByCode(txn, "account.move.INV");
+            // It therefore takes NO number here: action_post draws it from
+            // `account.move.INV`, the same series a hand-posted invoice uses,
+            // so a draft that is deleted leaves no gap to explain to an
+            // auditor. Until then it is called "/", as the portal's own
+            // drafts are.
+            const std::string invName = "/";
 
             // Origin, exactly as a sale-generated invoice carries it: the
             // contract name when there is one, else a label naming the
@@ -360,7 +361,7 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
                 " journal_id, partner_id, company_id, currency_id, narration, "
                 " invoice_origin, rental_contract_id, "
                 " amount_untaxed, amount_tax, amount_total, amount_residual, payment_state) "
-                "VALUES ($1,'out_invoice','posted',$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,"
+                "VALUES ($1,'out_invoice','draft',$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,"
                 "        0,0,0,0,'not_paid') "
                 "RETURNING id", mp);
             const int moveId = mv[0][0].as<int>();
@@ -517,29 +518,11 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
                 " WHERE id=$1",
                 pqxx::params{moveId, untaxedTotal, taxTotal, total});
 
-            // Consume any unallocated credit the customer is carrying.
-            // This is the advance-payment behaviour: someone who paid six
-            // months up front has it drawn down one period at a time, on
-            // their own billing date.
-            try {
-                auto pmts = txn.exec(
-                    "SELECT payment_id FROM account_payment_unallocated "
-                    " WHERE partner_id = $1 AND amount_unallocated > 0 "
-                    " ORDER BY payment_id",
-                    pqxx::params{g.partnerId});
-                for (const auto& p : pmts) {
-                    core::PaymentAllocation::allocate(
-                        txn, p[0].as<int>(), core::Money::zero(), {moveId});
-                    auto resid = txn.exec(
-                        "SELECT amount_residual FROM account_move WHERE id=$1",
-                        pqxx::params{moveId});
-                    if (!resid.empty() && resid[0][0].as<long long>(0) <= 0) break;
-                }
-            } catch (const std::exception& ex) {
-                // An allocation problem must not lose the invoice — the
-                // invoice is the thing that must exist.
-                LOG_WARN << "[rental/billing] advance allocation skipped: " << ex.what();
-            }
+            // Advance payments are NOT consumed here any more. A draft owes
+            // nothing — PaymentAllocation only settles posted moves — so the
+            // credit is drawn down when the invoice is posted, by
+            // account.move.action_post. That also gives every invoice the
+            // behaviour rental used to have on its own.
 
             EventCtx ctx;
             ctx.partnerId  = g.partnerId;
@@ -553,7 +536,7 @@ BillingResult RentalBilling::run(std::shared_ptr<DbConnection> db,
             }
             RentalEvents::emit(
                 txn, evt::kInvoiceGenerated, ctx,
-                "Invoice " + invName + " for " + g.periodStart + " to " + periodEnd +
+                "Draft invoice for " + g.periodStart + " to " + periodEnd +
                     " (" + std::to_string(g.lines.size()) + " unit(s))",
                 nlohmann::json{{"move_id", moveId},
                                {"period_start", g.periodStart},

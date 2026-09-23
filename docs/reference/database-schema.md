@@ -183,6 +183,8 @@ after the table appears here too.
 | `part_lookup_result` | 14 | `id`, `query`, `mpn`, `manufacturer`, `state`, `payload`, `issues`, `product_id`, `categ_id`, `source`, `confidence`, `company_id`, `create_date`, `write_date` |
 | `part_manufacturer_info` | 7 | `id`, `product_id`, `manufacturer_id`, `part_number`, `notes`, `create_date`, `write_date` |
 | `part_parameter` | 10 | `id`, `product_id`, `name`, `value_numeric`, `unit_id`, `value_text`, `create_date`, `write_date`, `value_base`, `quantity_kind` |
+| `part_parameter_alias` | 6 | `id`, `keyword_id`, `alias`, `norm`, `source`, `create_date` |
+| `part_parameter_keyword` | 9 | `id`, `name`, `norm`, `quantity_kind`, `default_unit_id`, `advice`, `active`, `create_date`, `write_date` |
 | `part_unit` | 8 | `id`, `name`, `symbol`, `create_date`, `write_date`, `quantity_kind`, `factor`, `is_base` |
 | `product_attribute` | 5 | `id`, `name`, `sequence`, `create_date`, `write_date` |
 | `product_attribute_value` | 6 | `id`, `attribute_id`, `name`, `sequence`, `create_date`, `write_date` |

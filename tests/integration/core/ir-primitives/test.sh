@@ -46,9 +46,23 @@ PARTNER=$(pg "SELECT id FROM res_partner ORDER BY id LIMIT 1")
 UNIT=$(pg "INSERT INTO rental_unit (code,name,state,company_id) VALUES ('IRPTEST-1','x','available',1) RETURNING id")
 pg "INSERT INTO rental_contract_line (partner_id,unit_id,date_start,unit_price,tax_ids_json,state,billing_mode,billing_anchor_day,billing_months,billing_lead_days,next_period_start,company_id) VALUES ($PARTNER,$UNIT,'2026-09-01',100000000,'[]','active','recurring',1,1,7,'2026-09-01',1)" > /dev/null
 curl -s -b "$CK" -X POST "$BASE/rental/billing/run?date=2026-08-26" > /dev/null
-NUM=$(pg "SELECT name FROM account_move WHERE move_type='out_invoice' AND name LIKE 'INV%' ORDER BY id DESC LIMIT 1")
+
+# Billing raises a DRAFT (CERP-7), and a draft has no number — the sequence
+# is not consumed until somebody confirms. That is half of what numbering
+# means here: a number belongs to a document that exists, so drafts deleted
+# before posting can never leave a gap in the INV series.
+MV=$(pg "SELECT id FROM account_move WHERE move_type='out_invoice' AND state='draft' ORDER BY id DESC LIMIT 1")
+echo "    billing raised draft #$MV named '$(pg "SELECT name FROM account_move WHERE id=${MV:-0}")'"
+[ "$(pg "SELECT name FROM account_move WHERE id=${MV:-0}")" = "/" ] \
+    && ok "a draft carries no number — the sequence is untouched" \
+    || no "the draft is already numbered"
+
+# The JSON-RPC helpers authenticate through the context, not the cookie above.
+auth_or_die
+call account.move action_post "[[${MV:-0}]]" > /dev/null
+NUM=$(pg "SELECT name FROM account_move WHERE id=${MV:-0}")
 echo "    posted invoice number: $NUM"
-printf '%s' "$NUM" | grep -qE '^INV[0-9]{6}$' && ok "matches INV###### format" || no "got '$NUM'"
+printf '%s' "$NUM" | grep -qE '^INV[0-9]{6}$' && ok "posting takes the next number, in INV###### format" || no "got '$NUM'"
 
 # Two invoices must be consecutive, never duplicated.
 N1=$(pg "SELECT regexp_replace(name,'INV','') FROM account_move WHERE name LIKE 'INV%' ORDER BY id DESC LIMIT 1")

@@ -87,19 +87,3 @@
     .ak-actions { padding-left: 16px; }
     .ak-table { display: block; overflow-x: auto; }
 }
-
-/* ---------- ERP Settings: the home-currency picker (app.js) ----------
-   Kept here beside the other Settings-screen additions rather than in the
-   9,000-line app.css. */
-.erp-currency-pick { display: flex; align-items: center; gap: 6px; width: 100%; max-width: 400px; }
-.erp-currency-pick .m2o { flex: 1 1 auto; min-width: 0; }
-.erp-add-cur {
-    flex: 0 0 auto; width: 28px; height: 28px; border-radius: 5px; cursor: pointer;
-    background: var(--border); color: var(--text); border: 1px solid transparent;
-    font-size: .9rem; line-height: 1;
-}
-.erp-add-cur:hover { background: var(--accent); color: #fff; }
-.erp-newcur { display: flex; flex-direction: column; gap: 8px; }
-.erp-newcur-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.erp-field-input.sm { max-width: 130px; }
-.erp-hint.inline { padding: 0; border: none; }
