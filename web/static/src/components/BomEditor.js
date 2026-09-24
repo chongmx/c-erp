@@ -656,8 +656,10 @@ class BomEditor extends owl.Component {
             // Only the header and a couple of rows: the mapping is decidable
             // from the shape, and shipping the whole BOM to a vendor costs
             // tokens and gives away the part list for nothing.
+            // Longer than the browser's 45 s default, which would give up
+            // before the server does (CERP-10).
             const r = await RpcService.call('ir.ai.settings', 'map_bom_headers',
-                [{ header: lines[0], samples: lines.slice(1, 4) }], {});
+                [{ header: lines[0], samples: lines.slice(1, 4) }], {}, { timeoutMs: 70000 });
             if (!r || !r.ok) {
                 this.state.error = (r && r.detail) || 'The assistant could not map those columns.';
             } else {
@@ -702,7 +704,8 @@ class BomEditor extends owl.Component {
                 value: s.value || '', footprint: s.footprint || '',
                 description: s.description || '', fitted: s.fitted !== false,
             }));
-            const r = await RpcService.call('ir.ai.settings', 'clean_bom_rows', [{ rows }], {});
+            const r = await RpcService.call('ir.ai.settings', 'clean_bom_rows', [{ rows }], {},
+                                            { timeoutMs: 70000 });
             if (!r || !r.ok) {
                 this.state.error = (r && r.detail) || 'The assistant could not tidy these rows.';
             } else {

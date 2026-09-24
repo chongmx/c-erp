@@ -143,6 +143,32 @@ class AiSettings extends owl.Component {
                                     <t t-esc="state.s.calls_today"/> / <t t-esc="state.s.daily_call_cap"/>
                                 </span>
                             </div>
+                            <!-- CERP-10. Two numbers because the two cases are
+                                 not close: answering from memory is seconds,
+                                 and browsing is several fetches inside one
+                                 request. A bigger model needs longer for both. -->
+                            <label class="ai-field">
+                                <span class="ai-label">Reply timeout (s)</span>
+                                <input class="ai-num" type="number" min="5" max="600"
+                                       data-ai="reply-timeout"
+                                       t-att-value="state.s.reply_timeout_s"
+                                       t-on-change="ev => this.set('reply_timeout_s', parseInt(ev.target.value, 10))"/>
+                            </label>
+                            <label class="ai-field">
+                                <span class="ai-label">Search timeout (s)</span>
+                                <input class="ai-num" type="number" min="5" max="600"
+                                       data-ai="search-timeout"
+                                       t-att-value="state.s.search_timeout_s"
+                                       t-on-change="ev => this.set('search_timeout_s', parseInt(ev.target.value, 10))"/>
+                            </label>
+                            <div class="ai-field ai-wide">
+                                <span class="ai-label"/>
+                                <span class="ai-val ai-muted">
+                                    How long the model is given to answer. A part lookup runs as a
+                                    job on the server, so nothing in the browser has to wait that
+                                    long — you can leave the page and the answer will be there.
+                                </span>
+                            </div>
                         </div>
                     </div>
 
@@ -429,7 +455,12 @@ class AiSettings extends owl.Component {
         this.state.busy = true;
         this.state.test = null;
         try {
-            this.state.test = await RpcService.call('ir.ai.settings', 'test_connection', [{}], {});
+            // The server gives the model up to 55 s here (it is a held-open
+            // request, so it cannot outlive the proxy). The browser's own
+            // default is 45 s, which would abort first and report a timeout
+            // for a test that was about to pass — CERP-10, in miniature.
+            this.state.test = await RpcService.call('ir.ai.settings', 'test_connection', [{}], {},
+                                                    { timeoutMs: 70000 });
             await this.load();
         } catch (e) {
             this.state.test = { ok: false, detail: String((e && e.message) || e) };

@@ -179,7 +179,58 @@ Values may be text, numbers or booleans; they are stored as text.
 **AI settings** configure an external model provider for in-app assistance.
 Three providers are seeded: `anthropic` (Claude), `xai` (Grok), and `mock`
 (no network, for tests). Settings cover the model name, an output-token
-ceiling, a daily call cap and a web-search toggle.
+ceiling, a daily call cap, a web-search toggle and two **timeouts**
+(`reply_timeout_s`, `search_timeout_s`, 5–600 s): how long the model is given
+to answer from memory, and how long when it browses.
+
+### Asking is a job, not a held-open request
+
+A model may think for minutes. A request held open that long has to be waited
+for by three separate things — the browser, nginx, and any CDN in front of
+them — and **the shortest one decides**. It was the browser at a fixed 45 s,
+so a slower model produced an answer that arrived to a screen which had
+stopped listening, and the person was told it had timed out when nothing had
+(CERP-10).
+
+So a part lookup is a row in `ir_ai_job` with a state:
+
+```
+ask_async → queued → running → done | failed | cancelled
+                ↑                        ↓
+            a worker thread          ask_status (polled, ~1.5 s)
+```
+
+| Call | |
+|---|---|
+| `ask_async` | creates the job, returns its id in milliseconds |
+| `ask_status` | state, elapsed seconds, and the result once it is there |
+| `ask_cancel` | stops waiting; whatever comes back is discarded |
+| `ask_latest` | this caller's unfinished question, for a screen that has just loaded |
+
+Every HTTP request is short again, so no proxy setting has to be raised — and
+the answer **survives a reload, a closed tab and a dropped connection**,
+because it is in the database rather than in flight. A pushed notification
+over the existing websocket bus would make it snappier, but it cannot replace
+this: a dropped socket still has to ask somewhere what happened, and that
+somewhere is `ask_status`.
+
+Rules the design turns on:
+
+- **A job belongs to one person.** Ownership is checked on every status call,
+  so an id is not a capability; a job that is not yours is refused in the same
+  words as one that does not exist.
+- **Bounded work.** Three questions in flight per person, six on the server —
+  each one is a paid call and a thread — on top of the daily call cap.
+- **Terminal, always.** Every path out of the worker writes a state, and a job
+  still marked `running` at boot is failed on startup: its thread died with
+  the process, and a screen politely polling it would otherwise wait for ever.
+- **The long timeout is only for the background.** A synchronous caller — the
+  Test button, the Help assistant, the BOM tidier — is capped at 55 s, below
+  the proxy, because outliving the proxy does not produce a slow answer, it
+  produces a 504 whose result nobody can read. Anything needing longer belongs
+  in a job.
+- Jobs older than seven days are pruned when the next one is created, so this
+  is not a table that quietly keeps a year of questions and answers.
 
 ## account
 

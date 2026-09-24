@@ -85,7 +85,7 @@ Legend: ✅ two or more tests · 🟡 exactly one (thin — often only a
 - **Settings**
   - **ERP Settings** · `ir.erp.settings` — 🟡 `integration/core/new-forms`
   - **Users & Access**
-    - **Users** · `res.users` — ✅ `functional/account/accounting`, `integration/account/no-double-audit`, `integration/api/tickets-v1` +13
+    - **Users** · `res.users` — ✅ `functional/account/accounting`, `integration/account/no-double-audit`, `integration/api/tickets-v1` +14
     - **Groups** · `res.groups` — 🟡 `integration/core/new-forms`
     - **Portal Users** · `portal.partner` — ✅ `functional/portal/customer-portal`, `integration/core/new-forms`, `integration/portal/web-features` +2
     - **Companies** · `res.company` — ✅ `integration/core/company-settings`, `integration/core/contact-company-link`, `security/access/partner-tenant-isolation`
@@ -102,7 +102,7 @@ Legend: ✅ two or more tests · 🟡 exactly one (thin — often only a
     - **Demo Data** · `rental.demo.data` — 🟡 `integration/rental/rental-demo`
   - **Technical**
     - **Document Templates** · `ir.report.template` — ✅ `integration/core/new-forms`, `integration/core/new-views-smoke`, `integration/core/template-reset`
-    - **AI Agent** · `ir.ai.settings` — ✅ `integration/core/ai-settings`, `integration/mrp/bom-formats`, `integration/product/part-lookup-review`
+    - **AI Agent** · `ir.ai.settings` — ✅ `functional/core/ai-job`, `integration/core/ai-jobs`, `integration/core/ai-settings` +2
 - **Sales**
   - **Orders**
     - **Sales Orders** · `sale.order` — ✅ `functional/base/customer-company`, `functional/portal/customer-portal`, `functional/rental/contract-invoice` +14
@@ -121,7 +121,7 @@ Legend: ✅ two or more tests · 🟡 exactly one (thin — often only a
   - **Products** · `product.product` — ✅ `functional/base/customer-company`, `integration/core/ir-primitives`, `integration/core/precision` +10
   - **Product Templates** · `product.template` — ✅ `integration/product/product-variants`, `integration/sale/pricelists`
   - **Parts Catalogue** · `part.catalog` — ✅ `functional/product/parts-catalogue`, `integration/product/part-catalog`, `security/injection/sql-surfaces`
-  - **Part Lookup** · `part.lookup` — ✅ `functional/product/lookup-fixups`, `integration/core/ai-settings`, `integration/mrp/bom-import` +4
+  - **Part Lookup** · `part.lookup` — ✅ `functional/core/ai-job`, `functional/product/lookup-fixups`, `integration/core/ai-settings` +5
   - **Configuration**
     - **Units of Measure** · `uom.uom` — 🟡 `integration/core/new-forms`
     - **Categories** · `product.category` — ✅ `integration/core/new-forms`, `integration/product/category-tree`, `integration/sale/pricelists` +2
@@ -268,4 +268,4 @@ marked ✅.
 
 ---
 
-_Generated 2026-09-22 from `ir_ui_menu` × `ir_act_window`._
+_Generated 2026-09-24 from `ir_ui_menu` × `ir_act_window`._

@@ -267,6 +267,26 @@
    dressed as one. */
 .pl-issue.lvl-info    { border-left-color: #6fb3d6;       color: var(--muted); }
 
+/* CERP-10 — a question running on the server, not a frozen button. */
+.pl-waiting {
+    display: flex; align-items: center; gap: 10px;
+    margin: 10px 0 0; padding: 9px 12px; border-radius: 6px;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--muted); font-size: .84rem;
+}
+.pl-waiting .pl-btn { margin-left: auto; }
+.pl-spin {
+    width: 13px; height: 13px; flex: 0 0 auto; border-radius: 50%;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    animation: pl-spin 0.9s linear infinite;
+}
+@keyframes pl-spin { to { transform: rotate(360deg); } }
+/* Someone who has asked not to see motion still needs to know it is running;
+   the text says so, so the ring simply stops turning. */
+@media (prefers-reduced-motion: reduce) {
+    .pl-spin { animation: none; border-top-color: var(--accent); }
+}
+
 /* CERP-8 — the way out of an error, offered where the error is read. */
 .pl-fix {
     margin-left: auto; flex: 0 0 auto;

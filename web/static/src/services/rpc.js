@@ -35,12 +35,21 @@ const RpcService = (() => {
         return Number.isFinite(t) && t > 0 ? t : 45000;   // read per call, so a test can shorten it
     }
 
-    async function call(model, method, args = [], kwargs = {}) {
+    /**
+     * @param opts.timeoutMs  how long THIS call may take, when the default is
+     *   wrong for it. Asking a model a question is the case: the server is
+     *   allowed up to its configured ceiling — minutes, for a browsing
+     *   search — and a browser that gives up at 45 s reports a timeout for a
+     *   call that was still running and would have answered (CERP-10).
+     *   Callers pass the server's own limit plus a margin.
+     */
+    async function call(model, method, args = [], kwargs = {}, opts = {}) {
         // Inject session_id into context so the server can resolve the session
         // from the request body (fallback when cookies aren't transmitted).
         const ctx = Object.assign({ session_id: _session.sessionId }, kwargs.context || {});
         const fullKwargs = Object.assign({}, kwargs, { context: ctx });
-        const limit = rpcTimeoutMs();
+        const asked = opts && Number(opts.timeoutMs);
+        const limit = Number.isFinite(asked) && asked > 0 ? asked : rpcTimeoutMs();
         const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
         const timer = ctrl ? setTimeout(() => ctrl.abort(), limit) : 0;
         let res;
@@ -57,8 +66,14 @@ const RpcService = (() => {
             });
         } catch (e) {
             if (e && e.name === 'AbortError')
+                // "Nothing was saved" is only true of the default case — a
+                // call given its own longer budget is usually a question, not
+                // a save, and telling someone their work was lost when it was
+                // never a write is worse than saying nothing about it.
                 throw new Error('The server did not answer within ' +
-                                Math.round(limit / 1000) + ' s. Nothing was saved — try again.');
+                                Math.round(limit / 1000) + ' s. ' +
+                                (asked > 0 ? 'Try again, or allow it longer in Settings → AI agent.'
+                                           : 'Nothing was saved — try again.'));
             throw e;
         } finally {
             if (timer) clearTimeout(timer);

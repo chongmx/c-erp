@@ -268,8 +268,13 @@ class HelpCenter extends owl.Component {
         try {
             // The book being read is sent as context: the same words mean
             // different things in Accounting and in Inventory.
+            // The server gives this up to 55 s — it is a held-open request,
+            // so it is capped below the proxy. The browser's own 45 s default
+            // would abort first and blame a timeout on an answer that was
+            // still coming (CERP-10).
             const r = await RpcService.call('ir.ai.settings', 'ask_help',
-                                            [{ question: q, book: this.state.book }], {});
+                                            [{ question: q, book: this.state.book }], {},
+                                            { timeoutMs: 70000 });
             if (!r || !r.ok) {
                 this.state.aiError = (r && r.detail) || 'The assistant could not answer.';
             } else {

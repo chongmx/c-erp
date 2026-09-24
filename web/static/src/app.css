@@ -2756,6 +2756,9 @@ body.ct-resizing { cursor:col-resize; user-select:none; }
           background: var(--bg); color: var(--text); font-size: 13px; }
 .ai-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
 .ai-field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+/* A note that explains the fields beside it, so it spans the grid rather
+   than sitting in a 230px column as a wall of two-word lines. */
+.ai-field.ai-wide { grid-column: 1 / -1; }
 .ai-field select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px;
                    background: var(--bg); color: var(--text); font-size: 13px; }
 .ai-btn { padding: 7px 14px; border: 1px solid var(--border); border-radius: 5px;

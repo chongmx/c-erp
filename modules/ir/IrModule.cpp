@@ -28,9 +28,11 @@
 #include <drogon/MultiPart.h>
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
+#include <atomic>
 #include <cstdio>
 #include <iomanip>
 #include <memory>
+#include <thread>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1466,6 +1468,11 @@ public:
         REGISTER_METHOD("test_connection",  handleTest)
         REGISTER_METHOD("providers",        handleProviders)
         REGISTER_METHOD("ask",              handleAsk)
+        // CERP-10 — the same question, as a job the screen can stop watching.
+        REGISTER_MUTATOR("ask_async",       handleAskAsync)
+        REGISTER_METHOD("ask_status",       handleAskStatus)
+        REGISTER_MUTATOR("ask_cancel",      handleAskCancel)
+        REGISTER_METHOD("ask_latest",       handleAskLatest)
         REGISTER_METHOD("ask_help",         handleAskHelp)
         REGISTER_METHOD("map_bom_headers",  handleMapBomHeaders)
         REGISTER_METHOD("clean_bom_rows",   handleCleanBomRows)
@@ -1481,6 +1488,11 @@ public:
 
 private:
     std::shared_ptr<DbConnection> db_;
+
+    /// True only on the instance a job worker owns. It is what says "nobody
+    /// is holding a connection open for this", which is the difference
+    /// between a timeout the proxy will honour and one it will not.
+    bool background_ = false;
 
     void requireAdmin_(const core::CallKwArgs& call) {
         const auto ctx = extractContext_(call);
@@ -1510,6 +1522,8 @@ private:
             {"workspace_id",      r["workspace_id"].c_str()},
             {"web_search",        r["web_search"].as<bool>(true)},
             {"max_candidates",    r["max_candidates"].as<int>(3)},
+            {"reply_timeout_s",   r["reply_timeout_s"].as<int>(60)},
+            {"search_timeout_s",  r["search_timeout_s"].as<int>(180)},
             {"tls_available",     cerp::infrastructure::HttpClient::tlsAvailable()},
         };
     }
@@ -1588,6 +1602,22 @@ private:
             txn.exec("UPDATE ir_ai_settings SET max_candidates=$1, write_date=now() WHERE id=1",
                      pqxx::params{n});
         }
+        // CERP-10 — how long a model may take. Bounded at both ends: below
+        // 5 s nothing finishes, and above 600 s the browser, nginx and any
+        // CDN in front of them will all have given up long before we do, so
+        // a larger number would only promise patience nothing else honours.
+        auto saveTimeout = [&](const char* field, const char* column) {
+            if (!v.contains(field) || !v[field].is_number_integer()) return;
+            const int s = v[field].get<int>();
+            if (s < 5 || s > 600)
+                throw cerp::infrastructure::ValidationError(
+                    "A timeout must be between 5 and 600 seconds.");
+            txn.exec(std::string("UPDATE ir_ai_settings SET ") + column +
+                     "=$1, write_date=now() WHERE id=1", pqxx::params{s});
+        };
+        saveTimeout("reply_timeout_s",  "reply_timeout_s");
+        saveTimeout("search_timeout_s", "search_timeout_s");
+
         if (v.contains("api_base_url") && v["api_base_url"].is_string()) {
             const std::string u = v["api_base_url"].get<std::string>();
             // Only a scheme+host belongs here. A path would be silently
@@ -1661,11 +1691,17 @@ private:
     nlohmann::json handleTest(const core::CallKwArgs& call) {
         requireAdmin_(call);
         std::string provider, key, base, path, model, style, wsid;
+        int replyTimeout = 60;
         {
             auto conn = db_->acquire();
             pqxx::work txn{conn.get()};
             auto s0 = row_(txn);
             provider = s0["provider"].c_str();
+            // The test asks for one word, so it is the fastest thing this
+            // provider will ever do — but a slow model is slow to start, and
+            // a test that gives up before the model the user configured can
+            // answer reports "not connected" about a connection that works.
+            replyTimeout = s0["reply_timeout_s"].as<int>(60);
             auto p = txn.exec("SELECT * FROM ir_ai_provider WHERE name=$1", pqxx::params{provider});
             if (p.empty())
                 throw cerp::infrastructure::ValidationError("Provider '" + provider + "' is not configured.");
@@ -1704,7 +1740,11 @@ private:
             headers = {{"Authorization", "Bearer " + key}};
         }
 
-        auto res = cerp::infrastructure::HttpClient::postJson(base, path, payload.dump(), headers, 25.0);
+        // Capped like every other synchronous caller: the Test button is a
+        // held-open request, and the proxy in front of it gives up at 60 s
+        // however patient this setting is.
+        auto res = cerp::infrastructure::HttpClient::postJson(
+            base, path, payload.dump(), headers, std::min<double>(replyTimeout, 55.0));
 
         bool ok = res.ok;
         std::string detail;
@@ -2200,7 +2240,15 @@ private:
             ready = !p.empty() && (std::string(p[0][1].c_str()) == "none" ||
                                    !std::string(p[0][0].c_str()).empty());
         }
-        return {{"ready", ready}, {"admin", extractContext_(call).isAdmin}};
+        // The timeouts travel with `status` because the SCREEN has to wait at
+        // least as long as the server will (CERP-10): the browser gave up at
+        // a fixed 45 s while the server was still waiting for an answer it
+        // was allowed up to 180 s to produce, and the person was told it had
+        // timed out when nothing had. They are limits, not secrets, so this
+        // is readable by anyone who can ask a question.
+        return {{"ready", ready}, {"admin", extractContext_(call).isAdmin},
+                {"reply_timeout_s",  r["reply_timeout_s"].as<int>(60)},
+                {"search_timeout_s", r["search_timeout_s"].as<int>(180)}};
     }
 
     // ------------------------------------------------------------------
@@ -2233,6 +2281,7 @@ private:
         ProviderReply out;
         std::string key, base, path, style, wsid, searchStyle, searchTool, searchPath;
         int cap = 0, used = 0, maxTok = 1024;
+        int replyTimeout = 60, searchTimeout = 180;
         bool searchEnabled = true;
         {
             auto conn = db_->acquire();
@@ -2243,6 +2292,8 @@ private:
             used          = s0["calls_today"].as<int>(0);
             maxTok        = s0["max_output_tokens"].as<int>(1024);
             searchEnabled = s0["web_search"].as<bool>(true);
+            replyTimeout  = s0["reply_timeout_s"].as<int>(60);
+            searchTimeout = s0["search_timeout_s"].as<int>(180);
             if (!s0["enabled"].as<bool>(false))
                 throw cerp::infrastructure::ValidationError("The AI agent is disabled.");
             auto p = txn.exec("SELECT * FROM ir_ai_provider WHERE name=$1",
@@ -2310,9 +2361,21 @@ private:
         }
 
         // Browsing takes far longer than answering from memory — several
-        // fetches inside one request. A 60s ceiling that was generous for a
-        // memory answer is a timeout for a search.
-        const double timeout = doSearch ? 180.0 : 60.0;
+        // fetches inside one request. A ceiling that is generous for a memory
+        // answer is a timeout for a search, so the two are configured
+        // separately (CERP-10). Both were fixed numbers chosen for one
+        // model; a slower one had no way to be waited for.
+        double timeout = doSearch ? static_cast<double>(searchTimeout)
+                                  : static_cast<double>(replyTimeout);
+
+        // …but only a BACKGROUND job may actually take that long. When a
+        // caller is holding an HTTP request open, the reverse proxy decides
+        // how long the answer has (60 s here, and a CDN in front may allow
+        // less), and outliving it does not produce a slow answer — it
+        // produces a 504 and a call nobody can see the result of. So the
+        // synchronous callers are capped below the proxy, and anything that
+        // genuinely needs longer belongs in a job, where nothing is waiting.
+        if (!background_) timeout = std::min(timeout, 55.0);
         auto res = cerp::infrastructure::HttpClient::postJson(base, path, payload.dump(),
                                                               headers, timeout);
         {
@@ -2478,6 +2541,19 @@ private:
         std::string query = v.is_object() ? v.value("query", std::string{}) : std::string{};
         if (query.empty())
             throw cerp::infrastructure::ValidationError("ask: a query is required.");
+        return askPayload_(query);
+    }
+
+    /**
+     * The lookup itself, with no request attached to it.
+     *
+     * Split out of handleAsk so the same work can be run by a background
+     * worker against a job row (CERP-10). Nothing in here reads the call
+     * context: a worker has no request to read one from, and a lookup that
+     * behaved differently depending on who was watching would be worse than
+     * one that is slow.
+     */
+    nlohmann::json askPayload_(const std::string& query) {
 
         // The vocabulary the ERP will accept, stated up front. Without it the
         // model invents unit spellings and category names that describe()
@@ -2593,6 +2669,221 @@ private:
                 // Kept so an older caller (and the paste path) still works.
                 {"result", outCands[0]},
                 {"adjusted", outCands[0].value("adjusted", nlohmann::json::array())}};
+    }
+
+    // ==================================================================
+    // Asking as a JOB — ask_async / ask_status / ask_cancel  (CERP-10)
+    //
+    // The three calls are all short. The long part happens on a worker
+    // thread, against a row that records where it got to, so the screen can
+    // stop watching and come back — including after a reload, which is the
+    // case that a held-open request can never survive.
+    // ==================================================================
+
+    /// How many questions one person may have in flight, and how many the
+    /// server will run at once. Both are small on purpose: each one is a paid
+    /// call to somebody's API and a thread of ours, and a screen that can
+    /// start unbounded work is a way to spend money by holding down a key.
+    static constexpr int kMaxJobsPerUser  = 3;
+    static constexpr int kMaxJobsRunning  = 6;
+
+    static std::atomic<int>& liveWorkers_() {
+        static std::atomic<int> n{0};
+        return n;
+    }
+
+    nlohmann::json handleAskAsync(const core::CallKwArgs& call) {
+        // Asking still costs money and still reaches an outside service, so
+        // the gate is the same one `ask` has always had. Making it a job
+        // changes how long it takes, not who may do it.
+        requireAdmin_(call);
+        const auto ctx = extractContext_(call);
+        const auto v = call.arg(0);
+        const std::string query = v.is_object() ? v.value("query", std::string{}) : std::string{};
+        if (query.empty())
+            throw cerp::infrastructure::ValidationError("ask: a query is required.");
+        if (query.size() > 2000)
+            throw cerp::infrastructure::ValidationError("That question is too long.");
+
+        int jobId = 0;
+        {
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+
+            // Answers are not kept indefinitely: a question and its result are
+            // working data, and a table nobody prunes is a table that holds a
+            // year of them. Pruning here rather than on a timer means it
+            // happens on a server that never restarts, too.
+            txn.exec("DELETE FROM ir_ai_job WHERE create_date < now() - INTERVAL '7 days'");
+
+            auto mine = txn.exec(
+                "SELECT count(*)::int FROM ir_ai_job "
+                " WHERE user_id=$1 AND state IN ('queued','running')",
+                pqxx::params{ctx.uid});
+            if (!mine.empty() && mine[0][0].as<int>(0) >= kMaxJobsPerUser)
+                throw cerp::infrastructure::ValidationError(
+                    "You already have " + std::to_string(kMaxJobsPerUser) +
+                    " questions running. Wait for one to finish, or cancel it.");
+            if (liveWorkers_().load() >= kMaxJobsRunning)
+                throw cerp::infrastructure::ValidationError(
+                    "The agent is busy with other questions. Try again in a moment.");
+
+            auto ins = txn.exec(
+                "INSERT INTO ir_ai_job (kind, state, user_id, company_id, query) "
+                "VALUES ('lookup','queued',$1,NULLIF($2,0),$3) RETURNING id",
+                pqxx::params{ctx.uid, ctx.companyId, query});
+            jobId = ins[0][0].as<int>();
+            txn.commit();
+        }
+
+        // The worker gets its own ViewModel and its own connection. Capturing
+        // `this` would be a lifetime bug: a ViewModel belongs to the call that
+        // created it and is gone long before the model answers.
+        auto db = db_;
+        std::thread([db, jobId] {
+            liveWorkers_().fetch_add(1);
+            try {
+                auto worker = std::make_shared<IrAiSettingsViewModel>(db);
+                worker->background_ = true;     // no request is waiting on this
+                worker->runJob_(jobId);
+            } catch (const std::exception& ex) {
+                LOG_ERROR << "[ir/ai] job " << jobId << " worker died: " << ex.what();
+            } catch (...) {
+                LOG_ERROR << "[ir/ai] job " << jobId << " worker died";
+            }
+            liveWorkers_().fetch_sub(1);
+        }).detach();
+
+        return {{"ok", true}, {"job_id", jobId}, {"state", "queued"}};
+    }
+
+    /**
+     * Run one job to completion. Always ends in a terminal state.
+     *
+     * A worker that threw without writing anything back would leave a row
+     * that says "running" for ever, and a screen politely polling it until
+     * somebody closed the tab — so every path out of here writes a state.
+     */
+    void runJob_(int jobId) {
+        std::string query;
+        {
+            auto conn = db_->acquire();
+            pqxx::work txn{conn.get()};
+            auto r = txn.exec(
+                "UPDATE ir_ai_job SET state='running', started_at=now() "
+                " WHERE id=$1 AND state='queued' RETURNING query",
+                pqxx::params{jobId});
+            if (r.empty()) { txn.commit(); return; }   // cancelled before it began
+            query = r[0][0].c_str();
+            txn.commit();
+        }   // released before the network call — never held across a round trip
+
+        nlohmann::json result;
+        std::string error;
+        try {
+            result = askPayload_(query);
+        } catch (const std::exception& ex) {
+            error = ex.what();
+        } catch (...) {
+            error = "the lookup failed";
+        }
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        if (!error.empty()) {
+            txn.exec("UPDATE ir_ai_job SET state='failed', error=$1, finished_at=now() "
+                     " WHERE id=$2 AND state='running'", pqxx::params{error, jobId});
+        } else {
+            // `ok:false` is a real answer — the service said no — so the job
+            // finished. The screen reads the reason out of the result, the
+            // same way it did when this was one long call.
+            const std::string model = result.value("model", result.value("provider", std::string{}));
+            txn.exec("UPDATE ir_ai_job SET state='done', result=$1::jsonb, model=$2, "
+                     "  finished_at=now() WHERE id=$3 AND state='running'",
+                     pqxx::params{result.dump(), model, jobId});
+        }
+        txn.commit();
+    }
+
+    /**
+     * Where a job got to. Cheap, and safe to call every second.
+     *
+     * A job belongs to the person who asked it. The id is not a capability:
+     * ownership is checked here, on every call, so guessing a number gets you
+     * nothing — not even the existence of somebody else's question.
+     */
+    nlohmann::json handleAskStatus(const core::CallKwArgs& call) {
+        const auto ctx = extractContext_(call);
+        if (!ctx.isAuthenticated())
+            throw cerp::infrastructure::AccessDeniedError("Sign in to read a job.");
+        const auto v = call.arg(0);
+        const int id = v.is_object() && v.contains("job_id") && v["job_id"].is_number()
+                     ? v["job_id"].get<int>() : 0;
+        if (id <= 0) throw cerp::infrastructure::ValidationError("A job_id is required.");
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        auto r = txn.exec(
+            "SELECT state, query, error, model, "
+            "       COALESCE(result::text,''), "
+            "       EXTRACT(EPOCH FROM (COALESCE(finished_at, now()) - create_date))::int AS secs "
+            "  FROM ir_ai_job WHERE id=$1 AND user_id=$2",
+            pqxx::params{id, ctx.uid});
+        txn.commit();
+        // Not found and not yours are the same answer on purpose.
+        if (r.empty())
+            throw cerp::infrastructure::ValidationError("No such job.");
+
+        nlohmann::json out = {
+            {"job_id",  id},
+            {"state",   r[0][0].c_str()},
+            {"query",   r[0][1].c_str()},
+            {"error",   r[0][2].c_str()},
+            {"model",   r[0][3].c_str()},
+            {"seconds", r[0][5].as<int>(0)},
+        };
+        const std::string res = r[0][4].c_str();
+        if (!res.empty()) {
+            auto parsed = nlohmann::json::parse(res, nullptr, false);
+            if (!parsed.is_discarded()) out["result"] = parsed;
+        }
+        return out;
+    }
+
+    /// Stop waiting for one. The outbound call cannot be recalled, so this
+    /// marks the row: whatever comes back is discarded rather than shown.
+    nlohmann::json handleAskCancel(const core::CallKwArgs& call) {
+        const auto ctx = extractContext_(call);
+        if (!ctx.isAuthenticated())
+            throw cerp::infrastructure::AccessDeniedError("Sign in to cancel a job.");
+        const auto v = call.arg(0);
+        const int id = v.is_object() && v.contains("job_id") && v["job_id"].is_number()
+                     ? v["job_id"].get<int>() : 0;
+        if (id <= 0) throw cerp::infrastructure::ValidationError("A job_id is required.");
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        txn.exec("UPDATE ir_ai_job SET state='cancelled', finished_at=now() "
+                 " WHERE id=$1 AND user_id=$2 AND state IN ('queued','running')",
+                 pqxx::params{id, ctx.uid});
+        txn.commit();
+        return {{"ok", true}};
+    }
+
+    /// The caller's most recent unfinished question, so a reloaded screen can
+    /// pick up where it left off without being told which job it was waiting
+    /// for. This is what makes "close the tab and come back" work.
+    nlohmann::json handleAskLatest(const core::CallKwArgs& call) {
+        const auto ctx = extractContext_(call);
+        if (!ctx.isAuthenticated()) return nlohmann::json::object();
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        auto r = txn.exec(
+            "SELECT id, state FROM ir_ai_job "
+            " WHERE user_id=$1 AND state IN ('queued','running') "
+            " ORDER BY id DESC LIMIT 1", pqxx::params{ctx.uid});
+        txn.commit();
+        if (r.empty()) return nlohmann::json::object();
+        return {{"job_id", r[0][0].as<int>()}, {"state", r[0][1].c_str()}};
     }
 
     // ------------------------------------------------------------------
@@ -3207,6 +3498,54 @@ void IrModule::ensureSchema_() {
              "VARCHAR NOT NULL DEFAULT 'https://api.anthropic.com'");
     txn.exec("ALTER TABLE ir_ai_settings ADD COLUMN IF NOT EXISTS workspace_id "
              "VARCHAR NOT NULL DEFAULT ''");
+    // CERP-10: how long a model is given to answer, in seconds. Two numbers,
+    // because the two cases are not close: answering from memory is seconds,
+    // and browsing is several fetches inside one request. Both were hard-coded
+    // (60 and 180), and a slower model than the one they were chosen for had
+    // no way to be waited for.
+    txn.exec("ALTER TABLE ir_ai_settings ADD COLUMN IF NOT EXISTS reply_timeout_s "
+             "INTEGER NOT NULL DEFAULT 60");
+    txn.exec("ALTER TABLE ir_ai_settings ADD COLUMN IF NOT EXISTS search_timeout_s "
+             "INTEGER NOT NULL DEFAULT 180");
+
+    // ---- CERP-10: asking is a JOB, not a held-open request ----------------
+    //
+    // A model may think for minutes. Holding an HTTP request open for that
+    // long means three separate things must agree to wait — the browser, the
+    // reverse proxy, and any CDN in front of it — and the shortest of them
+    // decides. It was the browser at 45 s, so the answer arrived to a screen
+    // that had stopped listening, and the person was told it timed out when
+    // nothing had.
+    //
+    // So the work is a row with a state. `ask_async` creates it and returns
+    // at once; a worker fills it in; the screen polls. Every HTTP request is
+    // short again, and — the part that matters for anyone on a laptop — the
+    // answer survives a refresh, a closed tab and a dropped connection,
+    // because it is in the database rather than in flight.
+    txn.exec(R"(
+        CREATE TABLE IF NOT EXISTS ir_ai_job (
+            id          SERIAL PRIMARY KEY,
+            kind        VARCHAR NOT NULL DEFAULT 'lookup',
+            state       VARCHAR NOT NULL DEFAULT 'queued'
+                        CHECK (state IN ('queued','running','done','failed','cancelled')),
+            user_id     INTEGER NOT NULL,
+            company_id  INTEGER,
+            query       TEXT    NOT NULL DEFAULT '',
+            result      JSONB,
+            error       VARCHAR NOT NULL DEFAULT '',
+            model       VARCHAR NOT NULL DEFAULT '',
+            create_date TIMESTAMP DEFAULT now(),
+            started_at  TIMESTAMP,
+            finished_at TIMESTAMP
+        )
+    )");
+    txn.exec("CREATE INDEX IF NOT EXISTS idx_ir_ai_job_user ON ir_ai_job(user_id, id DESC)");
+    // A job still marked running at boot cannot be running: its thread died
+    // with the process. Saying so is the difference between a failure and a
+    // screen that polls a job that will never move for as long as it is open.
+    txn.exec("UPDATE ir_ai_job SET state='failed', finished_at=now(), "
+             "  error='The server restarted while this question was running.' "
+             " WHERE state IN ('queued','running')");
     txn.exec(R"(
         CREATE TABLE IF NOT EXISTS ir_ai_provider (
             name         VARCHAR PRIMARY KEY,

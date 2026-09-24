@@ -118,7 +118,8 @@ after the table appears here too.
 | `ir_act_window` | 12 | `id`, `name`, `res_model`, `view_mode`, `domain`, `context`, `target`, `path`, `help`, `active`, `create_date`, `write_date` |
 | `ir_ai_prompt` | 4 | `task`, `body`, `updated_by`, `write_date` |
 | `ir_ai_provider` | 12 | `name`, `label`, `api_key`, `base_url`, `path`, `model`, `auth_style`, `workspace_id`, `write_date`, `search_style`, `search_tool`, `search_path` |
-| `ir_ai_settings` | 17 | `id`, `enabled`, `provider`, `api_key`, `model`, `max_output_tokens`, `daily_call_cap`, `calls_today`, `calls_date`, `last_ok_at`, `last_error`, `create_date`, `write_date`, `api_base_url`, `workspace_id`, `web_search`, `max_candidates` |
+| `ir_ai_job` | 12 | `id`, `kind`, `state`, `user_id`, `company_id`, `query`, `result`, `error`, `model`, `create_date`, `started_at`, `finished_at` |
+| `ir_ai_settings` | 19 | `id`, `enabled`, `provider`, `api_key`, `model`, `max_output_tokens`, `daily_call_cap`, `calls_today`, `calls_date`, `last_ok_at`, `last_error`, `create_date`, `write_date`, `api_base_url`, `workspace_id`, `web_search`, `max_candidates`, `reply_timeout_s`, `search_timeout_s` |
 | `ir_attachment` | 18 | `id`, `name`, `description`, `res_model`, `res_id`, `res_field`, `type`, `url`, `mimetype`, `file_size`, `checksum`, `store_fname`, `public`, `company_id`, `create_uid`, `create_date`, `write_date`, `document_type` |
 | `ir_config_parameter` | 5 | `id`, `key`, `value`, `create_date`, `write_date` |
 | `ir_model_data` | 8 | `id`, `module`, `name`, `model`, `res_id`, `noupdate`, `create_date`, `write_date` |

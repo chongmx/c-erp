@@ -75,8 +75,26 @@ t_nonempty "$CT" "the contract was created through the form"
 t_eq "active" "$(pg "SELECT state FROM rental_contract WHERE id=${CT:-0}")" \
      "and it is active — the state the button is gated on"
 
-t_eq "1" "$(pg "SELECT count(*) FROM rental_invoice_link WHERE contract_id=${CT:-0}")" \
-     "exactly ONE invoice exists after two presses"
+# The guarantee is "never twice for the SAME PERIOD", which is what
+# UNIQUE (contract_line_id, period_start) enforces — not "exactly one invoice,
+# whatever the calendar says".
+#
+# A contract starting mid-month with its billing day on the 1st is billed for
+# the stub period first, and that advances it to the 1st of next month. Within
+# the lead window — the last week of a 30-day month — that next period is
+# genuinely due, so a second press raises a second, correct invoice for a
+# DIFFERENT period. Asserting a bare count of 1 made this test pass for three
+# weeks of the month and fail for the fourth, which is a test that reports the
+# date rather than the code.
+LINKS=$(pg "SELECT count(*) FROM rental_invoice_link WHERE contract_id=${CT:-0}")
+PERIODS=$(pg "SELECT count(DISTINCT period_start) FROM rental_invoice_link WHERE contract_id=${CT:-0}")
+echo "    $LINKS invoice link(s), covering $PERIODS distinct period(s)"
+t_ge "$LINKS" "1" "the press raised an invoice"
+t_eq "$LINKS" "$PERIODS" "and no period was invoiced twice — the idempotency guard held"
+DUP=$(pg "SELECT count(*) FROM (SELECT contract_line_id, period_start
+            FROM rental_invoice_link WHERE contract_id=${CT:-0}
+            GROUP BY 1,2 HAVING count(*) > 1) d")
+t_eq "0" "$DUP" "no (line, period) pair appears twice"
 
 MV=$(pg "SELECT move_id FROM rental_invoice_link WHERE contract_id=${CT:-0} LIMIT 1")
 t_nonempty "$MV" "it is linked to a real account.move"

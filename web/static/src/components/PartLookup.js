@@ -39,6 +39,19 @@ class PartLookup extends owl.Component {
             </button>
         </div>
 
+        <!-- The question is running on the SERVER (CERP-10), so this is a
+             progress report, not a held-open request. Saying so matters: it
+             is what tells someone they may reload, or come back later, and
+             still get their answer. -->
+        <div class="pl-waiting" t-if="state.asking">
+            <span class="pl-spin"/>
+            <span>
+                Thinking<t t-if="state.askSeconds"> — <t t-esc="state.askSeconds"/>s</t>.
+                This runs on the server: you can leave this page and come back.
+            </span>
+            <button class="pl-btn ghost" data-pl="cancel-ask" t-on-click="cancelAsk">Stop waiting</button>
+        </div>
+
         <!-- What the agent came back with, directly under what was asked.
              NOTHING here has been staged: these are candidates, and picking
              one is a decision a person makes. -->
@@ -401,11 +414,17 @@ class PartLookup extends owl.Component {
             // The two fix-ups offered on an error: adding the unit the
             // datasheet used, and keeping a value that is not a number.
             unitForm: null, quantities: [],
+            // CERP-10 — the question in flight, as a job on the server.
+            jobId: 0, askSeconds: 0,
             edit: { mpn: '', manufacturer: '', name: '', source: '',
                     datasheet_url: '', parameters: [] },
             paste: false, pasteText: '',
         });
         this.pasteRef = owl.useRef('paste');
+        this._poll = null;
+        // A timer that outlives the screen keeps polling for a component that
+        // is no longer on it, which is a leak and a wasted request a second.
+        owl.onWillUnmount(() => this.stopPolling());
         this.init();
     }
 
@@ -471,6 +490,7 @@ class PartLookup extends owl.Component {
     async init() {
         await this.loadUnits();
         await this.reload();
+        await this.resumeJob();     // CERP-10 — pick up a question left running
     }
 
     /**
@@ -498,6 +518,15 @@ class PartLookup extends owl.Component {
      * incomplete query: asking about "4.7k 0805" has several right answers, and
      * silently picking one buries the ambiguity instead of showing it.
      */
+    /**
+     * Ask, as a job (CERP-10).
+     *
+     * The call returns a job id at once; the model keeps thinking on the
+     * server. Nothing here holds an HTTP request open, so the browser, nginx
+     * and the CDN each see a request that finishes in milliseconds — and the
+     * answer lands in a row, which is what makes it survive a reload, a
+     * closed tab or a dropped connection.
+     */
     async ask() {
         const q = (this.state.askText || '').trim();
         if (!q) return;
@@ -505,25 +534,108 @@ class PartLookup extends owl.Component {
         this.state.error = '';
         this.state.notice = '';
         this.state.askRes = null;
+        this.state.askSeconds = 0;
         try {
-            const r = await RpcService.call('ir.ai.settings', 'ask', [{ query: q }], {});
-            if (!r || !r.ok) {
-                this.state.error = 'The agent could not answer: ' + ((r && r.detail) || 'unknown error');
-            } else {
-                this.state.askRes = {
-                    notes: r.notes || '',
-                    sources: r.sources || [],
-                    searches: r.searches || [],
-                    candidates: r.candidates || [],
-                    searched: !!r.searched,
-                    mocked: !!r.mocked,
-                    model: r.model || r.provider || '',
-                };
-            }
+            const r = await RpcService.call('ir.ai.settings', 'ask_async', [{ query: q }], {});
+            this.watchJob(r && r.job_id);
         } catch (e) {
+            this.state.asking = false;
             this.state.error = String((e && e.message) || e);
         }
+    }
+
+    /**
+     * Follow a job until it finishes.
+     *
+     * The id is remembered in this browser, so reopening the screen picks the
+     * same job back up rather than starting a second paid call. Polling is
+     * the baseline on purpose: a pushed notification is faster, but if the
+     * socket drops the answer still has to be found somewhere, and that
+     * somewhere is this call.
+     */
+    watchJob(jobId) {
+        if (!jobId) { this.state.asking = false; return; }
+        this.state.jobId = jobId;
+        this.state.asking = true;
+        try { localStorage.setItem('cerp.lookup.job', String(jobId)); } catch (_) {}
+        this.stopPolling();
+        this._poll = setInterval(() => this.pollJob(), 1500);
+        this.pollJob();
+    }
+
+    stopPolling() {
+        if (this._poll) { clearInterval(this._poll); this._poll = null; }
+    }
+
+    forgetJob() {
+        this.stopPolling();
+        this.state.jobId = 0;
         this.state.asking = false;
+        try { localStorage.removeItem('cerp.lookup.job'); } catch (_) {}
+    }
+
+    async pollJob() {
+        const id = this.state.jobId;
+        if (!id) return;
+        let s;
+        try {
+            s = await RpcService.call('ir.ai.settings', 'ask_status', [{ job_id: id }], {});
+        } catch (e) {
+            // A job this browser remembers but the server does not — pruned,
+            // or from another account. Stop, rather than polling for ever.
+            this.forgetJob();
+            this.state.error = String((e && e.message) || e);
+            return;
+        }
+        this.state.askSeconds = Number(s.seconds) || 0;
+        if (s.state === 'queued' || s.state === 'running') {
+            if (!this.state.askText) this.state.askText = s.query || '';
+            return;                       // still thinking; poll again
+        }
+        this.forgetJob();
+        if (s.state === 'cancelled') { this.state.notice = 'That question was cancelled.'; return; }
+        if (s.state === 'failed')    { this.state.error = s.error || 'The lookup failed.'; return; }
+
+        const r = s.result || {};
+        if (!r.ok) {
+            this.state.error = 'The agent could not answer: ' + (r.detail || 'unknown error');
+            return;
+        }
+        this.state.askRes = {
+            notes: r.notes || '',
+            sources: r.sources || [],
+            searches: r.searches || [],
+            candidates: r.candidates || [],
+            searched: !!r.searched,
+            mocked: !!r.mocked,
+            model: r.model || r.provider || '',
+        };
+    }
+
+    async cancelAsk() {
+        const id = this.state.jobId;
+        if (!id) return;
+        try { await RpcService.call('ir.ai.settings', 'ask_cancel', [{ job_id: id }], {}); } catch (_) {}
+        this.forgetJob();
+        this.state.notice = 'Stopped waiting. The question was cancelled.';
+    }
+
+    /**
+     * Re-attach to whatever this person already had running.
+     *
+     * Two sources, because they fail in different ways: the id this browser
+     * remembers covers a reload of the same tab, and the server's own "what
+     * is still running for you" covers a different browser, a new tab, or a
+     * cleared cache.
+     */
+    async resumeJob() {
+        let remembered = 0;
+        try { remembered = Number(localStorage.getItem('cerp.lookup.job')) || 0; } catch (_) {}
+        if (remembered) { this.watchJob(remembered); return; }
+        try {
+            const s = await RpcService.call('ir.ai.settings', 'ask_latest', [{}], {});
+            if (s && s.job_id) this.watchJob(s.job_id);
+        } catch (_) { /* nothing to resume is the normal case */ }
     }
 
     /** Stage one candidate. The others stay on screen — a second one is often
