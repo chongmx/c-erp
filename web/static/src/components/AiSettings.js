@@ -117,13 +117,30 @@ class AiSettings extends owl.Component {
                                 <span class="ai-label">Model</span>
                                 <!-- The model belongs to the PROVIDER, not to the settings row.
                                      A shared dropdown offered Claude models while Grok was
-                                     selected, which is a setting you cannot act on. -->
-                                <input class="ai-num wide" type="text" spellcheck="false"
-                                       placeholder="model id"
-                                       t-att-value="state.modelInput"
-                                       t-on-input="ev => state.modelInput = ev.target.value"
-                                       t-on-keydown="ev => ev.key === 'Enter' &amp;&amp; this.saveModel()"
-                                       t-on-blur="saveModel"/>
+                                     selected, which is a setting you cannot act on.
+
+                                     CERP-9: a datalist rather than a <select>, on purpose.
+                                     The list is what the provider says it offers, and it is
+                                     genuinely useful — but a model released this morning is
+                                     in no list we cached, and a closed dropdown would make
+                                     that model unreachable. So: suggestions, still typable. -->
+                                <datalist id="ai-model-list">
+                                    <option t-foreach="state.models" t-as="m" t-key="m" t-att-value="m"/>
+                                </datalist>
+                                <div class="ai-combo">
+                                    <input class="ai-num wide" type="text" spellcheck="false"
+                                           list="ai-model-list" data-ai="model"
+                                           placeholder="model id"
+                                           t-att-value="state.modelInput"
+                                           t-on-input="ev => state.modelInput = ev.target.value"
+                                           t-on-keydown="ev => ev.key === 'Enter' &amp;&amp; this.saveModel()"
+                                           t-on-blur="saveModel"/>
+                                    <button class="ai-btn" data-ai="refresh-models"
+                                            t-att-disabled="state.modelsBusy"
+                                            t-on-click="refreshModels"
+                                            t-esc="state.modelsBusy ? 'Asking…' : 'Refresh list'"/>
+                                </div>
+                                <span class="ai-val ai-muted" t-if="state.modelsNote" t-esc="state.modelsNote"/>
                             </label>
                             <label class="ai-field">
                                 <span class="ai-label">Max output tokens</span>
@@ -167,6 +184,38 @@ class AiSettings extends owl.Component {
                                     How long the model is given to answer. A part lookup runs as a
                                     job on the server, so nothing in the browser has to wait that
                                     long — you can leave the page and the answer will be there.
+                                </span>
+                            </div>
+
+                            <!-- CERP-12 — the model that reads a reply the main
+                                 one wrote badly. Only ever used on failure. -->
+                            <label class="ai-field">
+                                <span class="ai-label">Fallback parser</span>
+                                <div class="ai-combo">
+                                    <input class="ai-num wide" type="text" spellcheck="false"
+                                           list="ai-model-list" data-ai="parser-model"
+                                           placeholder="auto — pick a fast one"
+                                           t-att-value="state.parserInput"
+                                           t-on-input="ev => state.parserInput = ev.target.value"
+                                           t-on-keydown="ev => ev.key === 'Enter' &amp;&amp; this.saveParser()"
+                                           t-on-blur="saveParser"/>
+                                </div>
+                            </label>
+                            <label class="ai-field">
+                                <span class="ai-label">Use the fallback</span>
+                                <input type="checkbox" data-ai="parser-enabled"
+                                       t-att-checked="state.s.parser_enabled"
+                                       t-on-change="ev => this.set('parser_enabled', ev.target.checked)"/>
+                            </label>
+                            <div class="ai-field ai-wide">
+                                <span class="ai-label"/>
+                                <span class="ai-val ai-muted">
+                                    When the main model answers in something that is not JSON, a
+                                    second, cheaper model is asked to read it — extracting JSON
+                                    from prose does not need the model that did the research.
+                                    Leave it empty for <b>auto</b>, which picks a fast one from the
+                                    list above. It runs once, on failure only, and never invents a
+                                    value that was not there.
                                 </span>
                             </div>
                         </div>
@@ -296,6 +345,9 @@ class AiSettings extends owl.Component {
             s: {}, keyInput: '', test: null, reveal: null,
             wsInput: '', wsSaved: false,
             providers: [], modelInput: '',
+            // CERP-9: what this provider says it offers, and CERP-12: which of
+            // them reads a reply the main model wrote badly.
+            models: [], modelsBusy: false, modelsNote: '', parserInput: '',
             prompts: [], promptSel: '', promptBody: '', promptMsg: '',
         });
         owl.onWillStart(() => this.load());
@@ -363,6 +415,8 @@ class AiSettings extends owl.Component {
             this.state.wsInput = this.state.s.workspace_id || '';
             this.state.providers = await RpcService.call('ir.ai.settings', 'providers', [{}], {});
             this.state.modelInput = this.activeProvider.model || '';
+            this.state.parserInput = this.state.s.parser_model || '';
+            await this.loadModels(false);    // cached only — no network on open
             await this.loadPrompts(false);
             this.state.error = '';
         } catch (e) {
@@ -417,6 +471,43 @@ class AiSettings extends owl.Component {
         if (!m || m === this.activeProvider.model) return;
         await this.saveProvider({ model: m });
         this.state.test = null;
+    }
+
+    /**
+     * The provider's model list (CERP-9).
+     *
+     * `refresh` false reads the cache and never touches the network, so
+     * opening this page costs nothing; the button passes true.
+     */
+    async loadModels(refresh) {
+        this.state.modelsBusy = !!refresh;
+        try {
+            const r = await RpcService.call('ir.ai.settings', 'models',
+                                            [{ refresh: !!refresh }], {},
+                                            { timeoutMs: 40000 });
+            this.state.models = (r && r.models) || [];
+            if (r && r.ok) {
+                this.state.modelsNote = r.cached
+                    ? `${this.state.models.length} model(s), as of ${r.fetched_at || 'earlier'}`
+                    : `${this.state.models.length} model(s), just now`;
+            } else if (refresh) {
+                // Only complain when a person asked: a provider with no key
+                // has no list, and saying so on every page open is noise.
+                this.state.modelsNote = (r && r.detail) || 'Could not read the model list.';
+            }
+        } catch (e) {
+            if (refresh) this.state.modelsNote = String((e && e.message) || e);
+        }
+        this.state.modelsBusy = false;
+    }
+
+    async refreshModels() { await this.loadModels(true); }
+
+    /** Empty means AUTO, which is a real choice and must be savable. */
+    async saveParser() {
+        const m = (this.state.parserInput || '').trim();
+        if (m === (this.state.s.parser_model || '')) return;
+        await this.write({ parser_model: m });
     }
 
     onWsKey(ev) { if (ev.key === 'Enter') this.saveWorkspace(); }

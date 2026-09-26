@@ -120,6 +120,48 @@ public:
         }
     }
 
+    /**
+     * GET a JSON document.
+     *
+     * Same loop discipline as postJson, and the same silence about headers:
+     * one of them is an API key. Used for asking a provider what models it
+     * actually offers, which is a question with no body.
+     */
+    static HttpResult getJson(const std::string& baseUrl,
+                              const std::string& path,
+                              const std::vector<std::pair<std::string, std::string>>& headers,
+                              double timeout = 20.0)
+    {
+        HttpResult out;
+        try {
+            trantor::EventLoopThread loopThread;
+            loopThread.run();
+
+            auto client = drogon::HttpClient::newHttpClient(baseUrl, loopThread.getLoop());
+            if (!client) { out.error = "could not create a client for " + baseUrl; return out; }
+
+            auto req = drogon::HttpRequest::newHttpRequest();
+            req->setMethod(drogon::Get);
+            req->setPath(path);
+            for (const auto& [k, v] : headers) req->addHeader(k, v);
+
+            auto [result, resp] = client->sendRequest(req, timeout);
+            if (result != drogon::ReqResult::Ok || !resp) {
+                out.error = describe_(result);
+                return out;
+            }
+            out.status = static_cast<int>(resp->statusCode());
+            out.body.assign(resp->body().data(), resp->body().size());
+            out.ok = (out.status >= 200 && out.status < 300);
+            if (!out.ok && out.error.empty())
+                out.error = "the service replied " + std::to_string(out.status);
+            return out;
+        } catch (const std::exception& e) {
+            out.error = std::string("the request could not be made (") + e.what() + ")";
+            return out;
+        }
+    }
+
 private:
     static std::string describe_(drogon::ReqResult r) {
         using R = drogon::ReqResult;

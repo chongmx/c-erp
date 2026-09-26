@@ -232,6 +232,63 @@ Rules the design turns on:
 - Jobs older than seven days are pruned when the next one is created, so this
   is not a table that quietly keeps a year of questions and answers.
 
+### Reading a reply that is not JSON
+
+`modules/ir/AiReply.hpp` holds the reader, as pure functions so they can be
+unit-tested without a model on the other end (`tests/unit/ai_reply`).
+
+`extractJsonObject` takes the **first complete** `{…}`, counting braces with
+string and escape awareness. The rule it replaces — first `{` to last `}` —
+survived prose and code fences and failed on a **truncated** reply, because
+the last `}` in the text then belongs to some inner object. That is what
+"8Mhz temperature controlled crystal" hit (CERP-11): a model that reasons
+before it answers spends the output budget thinking, and the JSON stops
+mid-string.
+
+The three causes now read differently, because they need different answers:
+
+| What happened | What it says |
+|---|---|
+| cut off | names the ceiling it hit and says to raise **Max output tokens** |
+| not JSON | says so, and points at the prompt |
+| nothing at all | says the model returned nothing |
+
+Truncation is taken from the provider where it says so — `finish_reason:
+"length"` (OpenAI-compatible, which xAI speaks), `stop_reason: "max_tokens"`
+(Anthropic), `status: "incomplete"` (Responses wire) — and from the shape of
+the text when it does not. The reply itself comes back with the failure and is
+shown on screen under *What the model sent back*, because the only other
+account of what happened is our summary of it.
+
+### The fallback parser
+
+When the reply still cannot be read, a **second, cheaper model** is asked to
+extract the JSON from it (CERP-12). Extracting JSON out of prose is a small
+mechanical job; the model that did the research is the wrong tool for it.
+
+- Settings → AI agent ▸ **Fallback parser**: a model id, or empty for **auto**,
+  which picks a fast one out of the provider's list (`mini`, `flash`, `lite`,
+  `haiku`, …, shortest match wins).
+- It runs **once**, on the failure path only, and never on its own output.
+- It may only **re-state** what is there. A truncated reply is salvaged for the
+  candidates that are complete and the half-written one is dropped, never
+  finished by guesswork — an invented digit in a part number is worse than no
+  part, and this goes to a person to approve.
+- The answer is labelled *repaired by <model>* on screen, so a reviewer knows
+  it was reconstructed and that a candidate may be missing.
+- The text being repaired came from a model reading vendor pages, so it is
+  passed as delimited **data**, with the instruction that nothing inside it is
+  an instruction.
+
+### The model list
+
+`ir_ai_provider.models` caches what a provider says it offers (`GET
+/v1/models`, which both wires serve), with `models_at`. Settings → AI agent
+offers it as a **datalist**, not a closed dropdown: the list is genuinely
+useful, and a model released this morning is in no list we cached, so the box
+stays typable. *Refresh list* re-reads it; opening the page never touches the
+network. The same list is what **auto** chooses the fallback parser from.
+
 ## account
 
 The largest module: 24 tables of its own, plus `account_partial_reconcile` from

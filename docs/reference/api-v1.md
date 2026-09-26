@@ -19,8 +19,18 @@ Create one under **Settings → Users & Access → API Keys**. A key:
   | `tickets:write` | create tickets; change status, assignee, reporter, type, priority, labels, due date, estimate, parent, project; watch/unwatch |
   | `comments:write` | post comments; edit or delete **your own** |
   | `attachments:write` | upload files and screenshots to tickets; remove them |
+  | `parts:lookup` | ask the AI agent to identify a component, and read the answer |
 
-  Any write scope includes `tickets:read`.
+  Any write scope includes `tickets:read`. **`parts:lookup` is implied by
+  nothing**, and implies nothing: each lookup is a paid call to the model
+  provider and counts against the daily call cap, so a key that reads tickets
+  must not acquire it because somebody widened a list.
+- **can be re-scoped.** *Permissions…* on the API Keys page changes what an
+  existing key may do **without changing the token** — granting one more
+  permission should not mean revoking the key and pasting a new one wherever
+  it was used. Scopes are read from the row on every request, so narrowing a
+  key stops it immediately. A **revoked** key cannot be edited back into use,
+  and permission changes are written to the audit log.
 - **may be limited to projects.** A ticket outside them answers **404**, as
   though it did not exist, so a key cannot probe for other projects.
 - **expires** after 30 / 90 / 365 days, or never, and can be **revoked** at any
@@ -81,6 +91,56 @@ All under `/api/v1`.
 | GET | `/attachments/{id}` | read | the bytes, always as a download |
 | DELETE | `/attachments/{id}` | attachments | |
 | PUT / DELETE | `/tickets/{key}/watch` | write | watch / stop watching |
+| POST | `/parts/lookup` | parts | `{"query": "…"}` → **202** `{job_id, state, poll}` — starts it, does not wait |
+| GET | `/parts/lookup/{job_id}` | parts | where it got to, and the answer once it is there |
+
+### Looking a part up — `POST /parts/lookup`
+
+Asking a model takes as long as it takes — a browsing search is minutes — so
+this is a **job**, the same one the Part Lookup screen uses. The POST answers
+in milliseconds with an id; you poll the GET. Nothing holds a request open, so
+no proxy or CDN timeout is involved, and a caller that goes away can come back
+to the id.
+
+```bash
+JOB=$(curl -s -X POST -H "Authorization: Bearer $CERP_KEY" \
+       -H 'Content-Type: application/json' \
+       -d '{"query":"8MHz temperature compensated crystal"}' \
+       https://…/api/v1/parts/lookup | jq -r .job_id)
+
+curl -s -H "Authorization: Bearer $CERP_KEY" https://…/api/v1/parts/lookup/$JOB
+```
+
+While it runs: `{"job_id":7,"state":"running","query":"…","seconds":12}`.
+
+When it finishes well:
+
+```jsonc
+{"job_id":7, "state":"done", "seconds":104, "ok":true,
+ "model":"grok-latest", "searched":true, "repaired_by":"",
+ "notes":"…", "candidates":[ … ], "sources":[{"url":"…","title":"…"}]}
+```
+
+`candidates` are **proposals**, not catalogue entries: nothing has been
+written. `repaired_by` is set when the model's reply could not be read and a
+second, cheaper model salvaged it — the answer was reconstructed, and a
+truncated reply loses its last candidate rather than having it guessed.
+
+When it finishes badly:
+
+```jsonc
+{"job_id":8, "state":"done", "ok":false, "truncated":true,
+ "detail":"The model ran out of room and its answer was cut off after 2048 tokens…",
+ "raw":"{\"notes\":\"Searching manufacturer and distributor listings…"}
+```
+
+`raw` is the model's own reply. It is the field that makes a bad answer
+diagnosable instead of a shrug, and it is why this endpoint exists: the reply
+that produced *"the agent did not reply with valid JSON"* was only understood
+because it had been recorded.
+
+A lookup belongs to the key's owner. Someone else's is **404**, in the same
+words as one that never existed.
 
 ### Searching — `GET /tickets`
 

@@ -14,7 +14,7 @@
  */
 /** One table of keys — yours, or (for an administrator) everyone's. */
 class ApiKeyTable extends owl.Component {
-    static props = ['rows', 'showOwner?', 'onRevoke'];
+    static props = ['rows', 'showOwner?', 'onRevoke', 'onEdit'];
     static template = owl.xml`
         <table class="ak-table">
             <thead><tr>
@@ -38,8 +38,15 @@ class ApiKeyTable extends owl.Component {
                         <t t-else=""><span class="ak-muted">never</span></t>
                     </td>
                     <td><span t-attf-class="ak-status {{ k.status }}" t-esc="k.status"/></td>
-                    <td><button class="btn btn-sm btn-danger" t-if="k.status === 'active'" data-ak="revoke"
-                                t-on-click="() => this.props.onRevoke(k)">Revoke</button></td>
+                    <td>
+                        <!-- CERP-14. Permissions change without the token
+                             changing: needing a new key to grant one more
+                             permission is why people over-grant at creation. -->
+                        <button class="btn btn-sm" t-if="k.status === 'active'" data-ak="edit"
+                                t-on-click="() => this.props.onEdit(k)">Permissions…</button>
+                        <button class="btn btn-sm btn-danger" t-if="k.status === 'active'" data-ak="revoke"
+                                t-on-click="() => this.props.onRevoke(k)">Revoke</button>
+                    </td>
                 </tr>
                 <tr t-if="!props.rows.length"><td colspan="9" class="ak-muted">No keys.</td></tr>
             </tbody>
@@ -157,14 +164,49 @@ class ApiKeys extends owl.Component {
                 </t>
             </div>
 
+            <!-- editing what an existing key may do (CERP-14) -->
+            <div class="ak-card" t-if="state.edit">
+                <div class="ak-card-h">
+                    <span>Permissions for "<t t-esc="state.edit.name"/>"</span>
+                    <span class="ak-hint">the token does not change</span>
+                </div>
+                <div class="ak-row top">
+                    <label>Permissions</label>
+                    <div class="ak-scopes">
+                        <t t-foreach="scopeGroups" t-as="grp" t-key="grp.area">
+                            <div class="ak-area" t-esc="grp.area"/>
+                            <t t-foreach="grp.scopes" t-as="s" t-key="s.name">
+                                <label class="ak-scope" t-att-class="{locked: isLocked(s.name)}">
+                                    <input type="checkbox" t-att-data-edit-scope="s.name"
+                                           t-att-checked="state.edit.scopes.includes(s.name)"
+                                           t-att-disabled="isLocked(s.name)"
+                                           t-on-change="(ev) => this.toggleEditScope(s.name, ev.target.checked)"/>
+                                    <span class="ak-scope-b">
+                                        <b t-esc="s.label"/> <code t-esc="s.name"/>
+                                        <span class="ak-scope-d" t-esc="s.description"/>
+                                    </span>
+                                </label>
+                            </t>
+                        </t>
+                    </div>
+                </div>
+                <div class="ak-actions">
+                    <button class="btn btn-primary" data-ak="save-scopes"
+                            t-att-disabled="state.busy" t-on-click="saveScopes">Save permissions</button>
+                    <button class="btn" t-on-click="() => (state.edit = null)">Cancel</button>
+                </div>
+            </div>
+
             <!-- the keys -->
             <div class="ak-card">
                 <div class="ak-card-h"><span>Your keys</span></div>
-                <ApiKeyTable rows="state.mine" showOwner="false" onRevoke.bind="revoke"/>
+                <ApiKeyTable rows="state.mine" showOwner="false"
+                             onRevoke.bind="revoke" onEdit.bind="editKey"/>
             </div>
             <div class="ak-card" t-if="state.isAdmin">
                 <div class="ak-card-h"><span>All keys</span><span class="ak-hint">administrators only</span></div>
-                <ApiKeyTable rows="state.all" showOwner="true" onRevoke.bind="revoke"/>
+                <ApiKeyTable rows="state.all" showOwner="true"
+                             onRevoke.bind="revoke" onEdit.bind="editKey"/>
             </div>
 
             <div class="ak-card ak-help">
@@ -181,6 +223,8 @@ class ApiKeys extends owl.Component {
             error: '', busy: false, formOpen: false, copied: false,
             scopes: [], projects: [], mine: [], all: [], isAdmin: false, created: null,
             form: this.blankForm(),
+            // CERP-14 — the key whose permissions are being changed, if any.
+            edit: null,
         });
         owl.onWillStart(() => this.load());
     }
@@ -221,7 +265,37 @@ class ApiKeys extends owl.Component {
     hasScope(name) { return this.state.form.scopes.includes(name); }
     /** Any write implies read: the answer to a write is the ticket. */
     isLocked(name) {
-        return name === 'tickets:read' && this.state.form.scopes.some(s => s !== 'tickets:read');
+        // tickets:read is implied by every write, so it is ticked and fixed
+        // while any write scope is on — in the create form, or in the editor.
+        const chosen = this.state.edit ? this.state.edit.scopes : this.state.form.scopes;
+        return name === 'tickets:read' && chosen.some(s => s !== 'tickets:read');
+    }
+
+    // --- changing an existing key's permissions (CERP-14) ----------
+    editKey(k) {
+        this.state.error = '';
+        // A copy: abandoning the panel must leave the key alone.
+        this.state.edit = { id: k.id, name: k.name, scopes: [...(k.scopes || [])] };
+    }
+    toggleEditScope(name, on) {
+        const set = new Set(this.state.edit.scopes);
+        if (on) set.add(name); else set.delete(name);
+        if ([...set].some(s => s !== 'tickets:read')) set.add('tickets:read');
+        this.state.edit.scopes = [...set];
+    }
+    async saveScopes() {
+        const e = this.state.edit;
+        if (!e) return;
+        if (!e.scopes.length) { this.state.error = 'Choose at least one permission.'; return; }
+        this.state.busy = true;
+        try {
+            await RpcService.call('api.key', 'set_scopes',
+                                  [{ id: e.id, scopes: e.scopes }], {});
+            this.state.edit = null;
+            await this.load();
+        } catch (err) {
+            this.state.error = (err && err.message) || 'Could not change the permissions.';
+        } finally { this.state.busy = false; }
     }
     toggleScope(name, on) {
         const set = new Set(this.state.form.scopes);

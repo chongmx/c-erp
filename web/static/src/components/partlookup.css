@@ -267,6 +267,18 @@
    dressed as one. */
 .pl-issue.lvl-info    { border-left-color: #6fb3d6;       color: var(--muted); }
 
+/* The model's own words, when we could not read them. Monospace and
+   pre-wrapped: a truncated JSON reply is only diagnosable if you can see
+   where it stopped. */
+.pl-raw { margin: 8px 0 0; font-size: .8rem; color: var(--muted); }
+.pl-raw summary { cursor: pointer; user-select: none; }
+.pl-raw pre {
+    margin: 6px 0 0; padding: 9px 11px; max-height: 260px; overflow: auto;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+    font-family: ui-monospace, Consolas, monospace; font-size: .76rem;
+    white-space: pre-wrap; word-break: break-word; color: var(--text);
+}
+
 /* CERP-10 — a question running on the server, not a frozen button. */
 .pl-waiting {
     display: flex; align-items: center; gap: 10px;

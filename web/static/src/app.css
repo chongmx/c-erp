@@ -2759,6 +2759,11 @@ body.ct-resizing { cursor:col-resize; user-select:none; }
 /* A note that explains the fields beside it, so it spans the grid rather
    than sitting in a 230px column as a wall of two-word lines. */
 .ai-field.ai-wide { grid-column: 1 / -1; }
+/* A typable field with its button beside it: the model list suggests, it
+   does not constrain, so the input keeps its full behaviour. */
+.ai-combo { display: flex; gap: 6px; align-items: center; }
+.ai-combo .ai-num.wide { flex: 1 1 auto; min-width: 0; }
+.ai-combo .ai-btn { flex: 0 0 auto; padding: 6px 10px; font-size: 12px; }
 .ai-field select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px;
                    background: var(--bg); color: var(--text); font-size: 13px; }
 .ai-btn { padding: 7px 14px; border: 1px solid var(--border); border-radius: 5px;

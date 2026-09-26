@@ -3,6 +3,7 @@
 // =============================================================
 #include "ApiModule.hpp"
 #include "AttachmentStore.hpp"
+#include "AuditService.hpp"
 #include "BaseViewModel.hpp"
 #include "DbConnection.hpp"
 #include "Errors.hpp"
@@ -47,6 +48,13 @@ static const std::vector<ScopeDef>& scopeDefs() {
          "Post comments, and edit or delete the key owner's own comments."},
         {"attachments:write", "Issue tracker", "Attach files",
          "Upload screenshots and files to tickets, and remove them."},
+        // CERP-13. Deliberately its own scope and not implied by any other:
+        // this one spends money. A key that reads tickets must not start
+        // paying for model calls because somebody widened a list.
+        {"parts:lookup",      "Parts",         "Look parts up with the AI agent",
+         "Ask the configured AI agent to identify a component, and read the answer. "
+         "Each lookup is a paid call to the model provider and counts against the "
+         "daily call cap."},
     };
     return k;
 }
@@ -84,6 +92,8 @@ public:
         REGISTER_METHOD("list",        handleList)
         REGISTER_MUTATOR("create_key", handleCreate)
         REGISTER_MUTATOR("revoke",     handleRevoke)
+        // CERP-14 — change what an existing key may do, without re-issuing it.
+        REGISTER_MUTATOR("set_scopes", handleSetScopes)
     }
     std::string modelName() const override { return "api.key"; }
 
@@ -189,6 +199,72 @@ private:
                          pgArray({scopes.begin(), scopes.end()}), pgIntArray(projects), days});
         txn.commit();
         return {{"id", r[0][0].as<int>()}, {"token", token}, {"prefix", token.substr(0, 13)}};
+    }
+
+    /**
+     * Change an existing key's permissions — CERP-14.
+     *
+     * The token does not change and is not re-issued: only what it may do.
+     * Without this, granting one more permission meant revoking the key,
+     * making another and pasting it everywhere it was used, so in practice
+     * people over-granted at creation instead, which is the opposite of what
+     * scopes are for.
+     *
+     * Scopes are read from the row on every request, so a narrowed key stops
+     * being able to do the thing immediately, not at its next rotation.
+     */
+    json handleSetScopes(const CallKwArgs& call) {
+        const auto v = call.arg(0);
+        const int id = v.is_object() ? v.value("id", 0) : 0;
+        if (id <= 0) throw ValidationError("Which key?");
+        const auto ctx = extractContext_(call);
+
+        auto conn = db_->acquire();
+        pqxx::work txn{conn.get()};
+        auto r = txn.exec("SELECT user_id, revoked_at IS NOT NULL AS dead, name "
+                          "  FROM res_users_apikey WHERE id = $1", pqxx::params{id});
+        if (r.empty()) throw ValidationError("No such key.");
+        if (r[0][0].as<int>() != ctx.uid && !ctx.isAdmin)
+            throw ValidationError("You can only change your own keys.");
+        // A revoked key is a closed account, not a narrow one. Editing it back
+        // into use would resurrect a token someone revoked for a reason.
+        if (r[0][1].as<bool>(false))
+            throw ValidationError("That key is revoked. Create a new one instead.");
+
+        std::set<std::string> scopes;
+        if (v.contains("scopes") && v["scopes"].is_array())
+            for (const auto& s : v["scopes"]) {
+                if (!s.is_string() || !knownScope(s.get<std::string>()))
+                    throw ValidationError("Unknown scope: " + s.dump());
+                scopes.insert(s.get<std::string>());
+            }
+        if (scopes.empty()) throw ValidationError("Choose at least one permission.");
+        scopes.insert("tickets:read");          // every write answers with the ticket
+
+        std::vector<int> projects;
+        bool setProjects = false;
+        if (v.contains("project_ids") && v["project_ids"].is_array()) {
+            setProjects = true;
+            for (const auto& p : v["project_ids"])
+                if (p.is_number_integer()) projects.push_back(p.get<int>());
+        }
+
+        if (setProjects)
+            txn.exec("UPDATE res_users_apikey SET scopes = $1, project_ids = $2 WHERE id = $3",
+                     pqxx::params{pgArray({scopes.begin(), scopes.end()}),
+                                  pgIntArray(projects), id});
+        else
+            txn.exec("UPDATE res_users_apikey SET scopes = $1 WHERE id = $2",
+                     pqxx::params{pgArray({scopes.begin(), scopes.end()}), id});
+        txn.commit();
+
+        // Widening a key is worth a line in the audit log: it is a permission
+        // change on a credential that acts as a person.
+        if (infrastructure::AuditService::ready())
+            infrastructure::AuditService::instance().log(
+                "api.key", "set_scopes", {id}, ctx.uid);
+        return {{"ok", true}, {"id", id},
+                {"scopes", std::vector<std::string>(scopes.begin(), scopes.end())}};
     }
 
     /// Your own key, or anyone's if you are an administrator. Takes effect on
@@ -1060,6 +1136,89 @@ void ApiModule::registerRoutes() {
                 return {200, {{"key", key}, {"watching", on}}};
             });
         }, {drogon::Put, drogon::Delete});
+
+    // ================================================================
+    // Parts — asking the AI agent to identify a component.  (CERP-13)
+    //
+    // The same job the Part Lookup screen uses (CERP-10), reachable with a
+    // key: POST starts it and answers at once, GET polls it. Nothing here
+    // holds a request open, so a model that thinks for two minutes is not a
+    // proxy's problem, and a caller that goes away can come back to the id.
+    //
+    // Why it exists: every diagnosis of a bad reply needed somebody sitting
+    // at the screen. The failure payload carries the model's own words, which
+    // is what made "8Mhz temperature controlled crystal" understandable at all.
+    // ================================================================
+
+    // POST /api/v1/parts/lookup   {"query": "..."}
+    drogon::app().registerHandler("/api/v1/parts/lookup",
+        [serve, callVm, body](const drogon::HttpRequestPtr& req, Cb&& cb) {
+            serve(req, std::move(cb), [&](const ApiUser& u) -> std::pair<int, json> {
+                u.need("parts:lookup");
+                const json b = body(req);
+                for (auto it = b.begin(); it != b.end(); ++it)
+                    if (it.key() != "query")
+                        throw ApiError(400, "invalid",
+                                       "Unknown field '" + it.key() + "'. Fields: query.");
+                if (!b.contains("query") || !b["query"].is_string() ||
+                    b["query"].get<std::string>().empty())
+                    throw ApiError(400, "invalid", "query is required.");
+                // ask_async is administrator-only on the model, as it has
+                // always been: the scope says this KEY may ask, and the model
+                // still says who may. A non-admin key gets 403 from there.
+                const json r = callVm(u, "ir.ai.settings", "ask_async",
+                                      json::array({{{"query", b["query"]}}}));
+                return {202, {{"job_id", r.value("job_id", 0)},
+                              {"state", r.value("state", std::string("queued"))},
+                              {"poll", "/api/v1/parts/lookup/" +
+                                       std::to_string(r.value("job_id", 0))}}};
+            });
+        }, {drogon::Post});
+
+    // GET /api/v1/parts/lookup/{job_id}
+    drogon::app().registerHandler("/api/v1/parts/lookup/{1}",
+        [serve, callVm](const drogon::HttpRequestPtr& req, Cb&& cb, const std::string& idStr) {
+            serve(req, std::move(cb), [&](const ApiUser& u) -> std::pair<int, json> {
+                u.need("parts:lookup");
+                int jid = 0;
+                try { jid = std::stoi(idStr); } catch (...) {}
+                if (jid <= 0) throw ApiError(404, "not_found", "No lookup " + idStr + ".");
+                json s;
+                try {
+                    // A job belongs to the person who asked it; the model
+                    // refuses anyone else's in the same words as one that does
+                    // not exist, and that is the answer to give here too.
+                    s = callVm(u, "ir.ai.settings", "ask_status",
+                               json::array({{{"job_id", jid}}}));
+                } catch (const std::exception&) {
+                    throw ApiError(404, "not_found", "No lookup " + idStr + ".");
+                }
+                json out = {{"job_id", jid},
+                            {"state",   s.value("state", std::string{})},
+                            {"query",   s.value("query", std::string{})},
+                            {"seconds", s.value("seconds", 0)}};
+                if (s.contains("result")) {
+                    const json& r = s["result"];
+                    out["ok"] = r.value("ok", false);
+                    if (r.value("ok", false)) {
+                        out["model"]       = r.value("model", std::string{});
+                        out["searched"]    = r.value("searched", false);
+                        out["repaired_by"] = r.value("repaired_by", std::string{});
+                        out["notes"]       = r.value("notes", std::string{});
+                        out["candidates"]  = r.value("candidates", json::array());
+                        out["sources"]     = r.value("sources", json::array());
+                    } else {
+                        out["detail"]    = r.value("detail", std::string{});
+                        out["truncated"] = r.value("truncated", false);
+                        // The model's own reply. This is the field that makes
+                        // a bad answer diagnosable instead of a shrug.
+                        out["raw"]       = r.value("raw", std::string{});
+                    }
+                }
+                if (!s.value("error", std::string{}).empty()) out["error"] = s["error"];
+                return {200, out};
+            });
+        }, {drogon::Get});
 }
 
 } // namespace cerp::modules::api

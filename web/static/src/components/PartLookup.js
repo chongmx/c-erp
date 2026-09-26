@@ -24,6 +24,14 @@ class PartLookup extends owl.Component {
         </div>
 
         <t t-if="state.error"><div class="pl-error" t-esc="state.error"/></t>
+        <!-- What the model actually said, when we could not read it. Without
+             this the only evidence of a failure is our summary of it, and
+             "the reply was not valid JSON" is not something anyone can act
+             on. Folded away, because it is long and it is not the answer. -->
+        <details class="pl-raw" t-if="state.errorRaw">
+            <summary>What the model sent back</summary>
+            <pre t-esc="state.errorRaw"/>
+        </details>
         <t t-if="state.notice"><div class="pl-notice" t-esc="state.notice"/></t>
 
         <!-- Ask the agent. The answer is only ever a PROPOSAL: this button
@@ -65,6 +73,13 @@ class PartLookup extends owl.Component {
                      knowing. A model answering from memory will still give you
                      a part number and a URL; only this says whether it looked. -->
                 <span class="pl-badge ok" t-if="state.askRes.searched">searched the web</span>
+                <!-- CERP-12. A salvaged answer is not a wrong one, but it IS a
+                     reconstructed one: the main model's reply could not be
+                     read, and a second model pulled this out of it. If it was
+                     cut off, the last candidate was dropped rather than
+                     guessed — so a reviewer should know to expect fewer. -->
+                <span class="pl-badge warn" t-if="state.askRes.repairedBy"
+                      t-esc="'repaired by ' + state.askRes.repairedBy"/>
                 <span class="pl-badge warn" t-else="">from memory — did not search</span>
                 <span class="pl-agent-model"
                       t-esc="state.askRes.mocked ? 'mock provider' : state.askRes.model"/>
@@ -407,6 +422,9 @@ class PartLookup extends owl.Component {
             rows: [], detail: null, sel: 0, categories: [],
             filter: 'pending', categId: '0', productId: '0',
             loading: true, busy: false, error: '', notice: '',
+            // The model's own words, kept beside the error so an unreadable
+            // reply can be read by the person it happened to.
+            errorRaw: '',
             askRes: null, units: [],
             // CERP-8 — what the parameter vocabulary makes of each name on
             // the proposal, and the keywords it can be mapped onto.
@@ -532,6 +550,7 @@ class PartLookup extends owl.Component {
         if (!q) return;
         this.state.asking = true;
         this.state.error = '';
+        this.state.errorRaw = '';
         this.state.notice = '';
         this.state.askRes = null;
         this.state.askSeconds = 0;
@@ -599,6 +618,7 @@ class PartLookup extends owl.Component {
         const r = s.result || {};
         if (!r.ok) {
             this.state.error = 'The agent could not answer: ' + (r.detail || 'unknown error');
+            this.state.errorRaw = r.raw || '';
             return;
         }
         this.state.askRes = {
@@ -609,6 +629,7 @@ class PartLookup extends owl.Component {
             searched: !!r.searched,
             mocked: !!r.mocked,
             model: r.model || r.provider || '',
+            repairedBy: r.repaired_by || '',
         };
     }
 

@@ -99,6 +99,9 @@ target_include_directories(erp_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/modules/website
+    # AiReply.hpp is header-only and pure: reading JSON out of a model's
+    # answer is testable without a model, and was not before it moved there.
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/ir
     ${CMAKE_CURRENT_SOURCE_DIR}/core/infrastructure
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/json/include
