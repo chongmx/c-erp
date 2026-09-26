@@ -15,6 +15,7 @@ server, and with the change visible in git** like any other change.
 | `help_assistant.md` | Answer a question from the manual | Help → Help Centre, assistant rail |
 | `bom_headers.md` | Map the columns of an unrecognised BOM export | Manufacturing → BOM Editor |
 | `bom_clean.md` | Normalise imported BOM rows to house conventions | Manufacturing → BOM Editor |
+| `json_repair.md` | Extract the JSON from a reply the main model wrote badly | the fallback parser, on a failed lookup only |
 
 `bom_clean.md` is the one most worth editing for your own shop: it encodes how
 *you* write a value, a package and a description. The shipped version prefers

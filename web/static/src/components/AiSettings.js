@@ -54,6 +54,22 @@ class AiSettings extends owl.Component {
                             <span class="ai-label">Last error</span>
                             <span class="ai-val ai-err" t-esc="state.s.last_error"/>
                         </div>
+                        <!-- Every job that uses the agent, named here, because
+                             the question people actually ask is "where do I
+                             change what it is told?" and the answer was a
+                             panel at the bottom of a long page. -->
+                        <div class="ai-row" t-if="state.prompts.length">
+                            <span class="ai-label">Jobs using it</span>
+                            <span class="ai-val">
+                                <t t-foreach="state.prompts" t-as="p" t-key="p.task">
+                                    <button class="ai-jobchip" t-att-data-ai-job="p.task"
+                                            t-att-title="p.about"
+                                            t-on-click="() => this.jumpToPrompt(p.task)"
+                                            t-esc="p.label"/>
+                                </t>
+                                <span class="ai-muted">— what each is told is in Prompts, below</span>
+                            </span>
+                        </div>
                     </div>
 
                     <!-- the key -->
@@ -375,6 +391,17 @@ class AiSettings extends owl.Component {
         this.state.promptMsg = '';
         const p = this.currentPrompt;
         this.state.promptBody = p ? p.body : '';
+    }
+
+    /** Select a job's prompt and scroll it into view, from the list at the top. */
+    jumpToPrompt(task) {
+        this.pickPrompt(task);
+        // After the re-render, or the panel being scrolled to still shows the
+        // previously selected prompt.
+        setTimeout(() => {
+            const el = document.querySelector('.ai-prompt');
+            if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }, 60);
     }
 
     async savePrompt() {

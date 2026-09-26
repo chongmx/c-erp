@@ -2789,6 +2789,15 @@ body.ct-resizing { cursor:col-resize; user-select:none; }
    badge on each task says which of the two is actually being sent, because
    that is the first question when an answer looks wrong. */
 .ai-tasks { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 12px; }
+/* The jobs that use the agent, listed where the status is, each one a way
+   into its own instructions further down. */
+.ai-jobchip {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 10px; padding: 2px 9px; margin: 0 5px 4px 0;
+    cursor: pointer; font: inherit; font-size: 12px;
+}
+.ai-jobchip:hover { border-color: var(--accent); }
+
 .ai-task {
     display: flex; align-items: center; gap: 8px;
     background: var(--bg); color: var(--text);

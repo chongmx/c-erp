@@ -268,7 +268,11 @@ mechanical job; the model that did the research is the wrong tool for it.
 
 - Settings → AI agent ▸ **Fallback parser**: a model id, or empty for **auto**,
   which picks a fast one out of the provider's list (`mini`, `flash`, `lite`,
-  `haiku`, …, shortest match wins).
+  `haiku`, …, shortest match wins). What it is *told* is
+  `prompts/json_repair.md`, editable under ▸ Prompts like every other
+  instruction — it was written into the C++ at first, which made the one piece
+  of AI wording nobody could read the one you most want to read when a
+  salvaged answer comes out wrong.
 - It runs **once**, on the failure path only, and never on its own output.
 - It may only **re-state** what is there. A truncated reply is salvaged for the
   candidates that are complete and the half-written one is dropped, never
