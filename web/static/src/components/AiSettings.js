@@ -135,18 +135,32 @@ class AiSettings extends owl.Component {
                                      A shared dropdown offered Claude models while Grok was
                                      selected, which is a setting you cannot act on.
 
-                                     CERP-9: a datalist rather than a <select>, on purpose.
-                                     The list is what the provider says it offers, and it is
-                                     genuinely useful — but a model released this morning is
-                                     in no list we cached, and a closed dropdown would make
-                                     that model unreachable. So: suggestions, still typable. -->
-                                <datalist id="ai-model-list">
-                                    <option t-foreach="state.models" t-as="m" t-key="m" t-att-value="m"/>
-                                </datalist>
-                                <div class="ai-combo">
+                                     A real <select>, so it drops down exactly as Provider
+                                     does beside it. It was a datalist first, to keep a
+                                     model newer than the cache reachable — but a datalist
+                                     is a suggestion popup, not a dropdown, and two
+                                     controls side by side that behave differently is worse
+                                     than the problem it solved. The escape hatch is the
+                                     last option instead: "type a name". -->
+                                <div class="ai-combo" t-if="!state.modelTyping and state.models.length">
+                                    <select data-ai="model" t-on-change="onModelPick">
+                                        <t t-foreach="modelOptions" t-as="m" t-key="m">
+                                            <option t-att-value="m"
+                                                    t-att-selected="state.modelInput === m"
+                                                    t-esc="m"/>
+                                        </t>
+                                        <option value="__type">Type a name…</option>
+                                    </select>
+                                    <button class="ai-btn" data-ai="refresh-models"
+                                            t-att-disabled="state.modelsBusy"
+                                            t-on-click="refreshModels"
+                                            t-esc="state.modelsBusy ? 'Asking…' : 'Refresh list'"/>
+                                </div>
+                                <!-- No list yet (no key, never refreshed), or a name being
+                                     typed: the field must still work. -->
+                                <div class="ai-combo" t-else="">
                                     <input class="ai-num wide" type="text" spellcheck="false"
-                                           list="ai-model-list" data-ai="model"
-                                           placeholder="model id"
+                                           data-ai="model" placeholder="model id"
                                            t-att-value="state.modelInput"
                                            t-on-input="ev => state.modelInput = ev.target.value"
                                            t-on-keydown="ev => ev.key === 'Enter' &amp;&amp; this.saveModel()"
@@ -207,15 +221,25 @@ class AiSettings extends owl.Component {
                                  one wrote badly. Only ever used on failure. -->
                             <label class="ai-field">
                                 <span class="ai-label">Fallback parser</span>
-                                <div class="ai-combo">
-                                    <input class="ai-num wide" type="text" spellcheck="false"
-                                           list="ai-model-list" data-ai="parser-model"
-                                           placeholder="auto — pick a fast one"
-                                           t-att-value="state.parserInput"
-                                           t-on-input="ev => state.parserInput = ev.target.value"
-                                           t-on-keydown="ev => ev.key === 'Enter' &amp;&amp; this.saveParser()"
-                                           t-on-blur="saveParser"/>
-                                </div>
+                                <!-- The same dropdown, with auto first: empty is a real
+                                     choice here and the commonest one. -->
+                                <select data-ai="parser-model" t-if="state.models.length"
+                                        t-on-change="onParserPick">
+                                    <option value=""
+                                            t-att-selected="!state.parserInput">auto — pick a fast one</option>
+                                    <t t-foreach="parserOptions" t-as="m" t-key="m">
+                                        <option t-att-value="m"
+                                                t-att-selected="state.parserInput === m"
+                                                t-esc="m"/>
+                                    </t>
+                                </select>
+                                <input t-else="" class="ai-num wide" type="text" spellcheck="false"
+                                       data-ai="parser-model"
+                                       placeholder="auto — pick a fast one"
+                                       t-att-value="state.parserInput"
+                                       t-on-input="ev => state.parserInput = ev.target.value"
+                                       t-on-keydown="ev => ev.key === 'Enter' &amp;&amp; this.saveParser()"
+                                       t-on-blur="saveParser"/>
                             </label>
                             <label class="ai-field">
                                 <span class="ai-label">Use the fallback</span>
@@ -364,6 +388,9 @@ class AiSettings extends owl.Component {
             // CERP-9: what this provider says it offers, and CERP-12: which of
             // them reads a reply the main model wrote badly.
             models: [], modelsBusy: false, modelsNote: '', parserInput: '',
+            // True while "Type a name…" is chosen: the dropdown gives way to a
+            // text box for a model newer than the cached list.
+            modelTyping: false,
             prompts: [], promptSel: '', promptBody: '', promptMsg: '',
         });
         owl.onWillStart(() => this.load());
@@ -493,9 +520,53 @@ class AiSettings extends owl.Component {
         this.state.busy = false;
     }
 
+    /**
+     * The dropdown's options: what the provider offers, plus the model that is
+     * actually set if it is not among them.
+     *
+     * That second part matters. The saved model may predate the cached list,
+     * or be one this account can use and the list does not mention; without it
+     * the box would open showing somebody else's model as selected, which is
+     * a setting silently changing itself.
+     */
+    get modelOptions() {
+        const list = [...(this.state.models || [])];
+        const cur = (this.state.modelInput || '').trim();
+        if (cur && !list.includes(cur)) list.unshift(cur);
+        return list;
+    }
+
+    /** The parser list, without "auto" — that is the empty option above it. */
+    get parserOptions() {
+        const list = [...(this.state.models || [])];
+        const cur = (this.state.parserInput || '').trim();
+        if (cur && !list.includes(cur)) list.unshift(cur);
+        return list;
+    }
+
+    onModelPick(ev) {
+        if (ev.target.value === '__type') {
+            // Back to a text box for a model the list has not heard of.
+            this.state.modelTyping = true;
+            this.state.modelInput = '';
+            return;
+        }
+        this.state.modelInput = ev.target.value;
+        this.saveModel();
+    }
+
+    onParserPick(ev) {
+        this.state.parserInput = ev.target.value;
+        this.saveParser();
+    }
+
     async saveModel() {
         const m = (this.state.modelInput || '').trim();
-        if (!m || m === this.activeProvider.model) return;
+        // Leaving the typing box empty is not a choice — it would clear the
+        // model — so an empty field simply drops back to the dropdown.
+        if (!m) { this.state.modelTyping = false; return; }
+        this.state.modelTyping = false;
+        if (m === this.activeProvider.model) return;
         await this.saveProvider({ model: m });
         this.state.test = null;
     }
